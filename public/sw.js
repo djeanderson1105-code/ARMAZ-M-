@@ -1,9 +1,9 @@
 const CACHE_NAME = "sstr-cache-v1";
 const ASSETS_TO_CACHE = [
-  "/",
-  "/index.html",
-  "/logo-sstr.svg",
-  "/manifest.json"
+  "./",
+  "./index.html",
+  "./logo-sstr.svg",
+  "./manifest.json"
 ];
 
 // Install Service Worker and Cache Core Assets
