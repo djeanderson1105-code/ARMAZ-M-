@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Default-deny catch-all safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // State documents matching sstr_state
+    match /sstr_state/{docId} {
+      allow read: if true;
+      allow create, update: if isValidId(docId) && 
+        (docId == 'records' || docId == 'batches' || docId == 'pendingRequests' || 
+         docId == 'managers' || docId == 'vales' || docId == 'crewList' || 
+         docId == 'repsSetor' || docId == 'customPdvs') &&
+        request.resource.data.keys().hasAll(['data', 'updatedAt']) && 
+        request.resource.data.keys().size() == 2 &&
+        request.resource.data.updatedAt is number;
+      allow delete: if false; // State documents should never be deleted
+    }
+
+    // Log collection validation
+    match /sstr_logs/{logId} {
+      allow read: if true;
+      allow create: if isValidId(logId) &&
+        request.resource.data.keys().hasAll(['usuario', 'action', 'tabela', 'timestamp']) &&
+        request.resource.data.usuario is string &&
+        request.resource.data.action is string &&
+        request.resource.data.tabela is string &&
+        request.resource.data.timestamp is number;
+      allow update, delete: if false; // Logs are immortal and append-only
+    }
+  }
+}

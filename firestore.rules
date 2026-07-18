@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Default-deny catch-all safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper function for document identifiers
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    // Authorization rules for newly normalized collections
+    match /exchangeRecords/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
+    match /batches/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
+    match /pendingRequests/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
+    match /managers/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
+    match /vales/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
+    match /crewList/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
+    match /repsSetor/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
+    match /customPdvs/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
+    // Log collection validation
+    match /sstr_logs/{logId} {
+      allow read: if true;
+      allow create: if true;
+      allow update, delete: if false; // Logs are immortal and append-only
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "appId": "com.sstr.paubrasil",
+  "appName": "SSTR Pau Brasil",
+  "webDir": "dist",
+  "server": {
+    "url": "https://ais-pre-zm53rfl4iol6u6dn4r6ymj-565626140350.us-west2.run.app",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

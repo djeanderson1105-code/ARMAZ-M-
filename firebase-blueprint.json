@@ -1,0 +1,246 @@
+{
+  "entities": {
+    "ExchangeRecord": {
+      "title": "ExchangeRecord",
+      "description": "Represents an approved/settled replacement or exchange record of beverages.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique generated record ID" },
+        "unb": { "type": "string" },
+        "descricaoUnb": { "type": "string" },
+        "codigoCliente": { "type": "string" },
+        "nomeCliente": { "type": "string" },
+        "solicitacao": { "type": "string" },
+        "tipo": { "type": "string" },
+        "dataSolicitacao": { "type": "string" },
+        "hora": { "type": "string" },
+        "status": { "type": "string" },
+        "dataAcao": { "type": "string" },
+        "usuarioAcao": { "type": "string" },
+        "mapa": { "type": "string" },
+        "nf": { "type": "string" },
+        "statusNf": { "type": "string" },
+        "produto": { "type": "string" },
+        "descricaoProduto": { "type": "string" },
+        "quantidade": { "type": "number" },
+        "um": { "type": "string" },
+        "valorUnitario": { "type": "number" },
+        "valorTotal": { "type": "number" },
+        "justificativa": { "type": "string" },
+        "fatorHecto": { "type": "number" },
+        "hectolitros": { "type": "number" },
+        "veiculo": { "type": "string" },
+        "placa": { "type": "string" },
+        "transportadora": { "type": "string" },
+        "nomeTransportadora": { "type": "string" },
+        "motorista": { "type": "string" },
+        "nomeMotorista": { "type": "string" },
+        "conferente": { "type": "string" },
+        "conferenteCarregamento": { "type": "string" },
+        "nrPedidoReposicao": { "type": "string" },
+        "statusCheck": { "type": "string" },
+        "sistemaOrigem": { "type": "string" },
+        "observacao": { "type": "string" },
+        "setorVenda": { "type": "string" },
+        "importTimestamp": { "type": "number" },
+        "importBatchName": { "type": "string" }
+      }
+    },
+    "ExchangeRecordList": {
+      "title": "ExchangeRecordList",
+      "description": "List of ExchangeRecord entities wrapped in state document",
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "description": "Array of ExchangeRecord items"
+        },
+        "updatedAt": { "type": "number" }
+      }
+    },
+    "ImportBatch": {
+      "title": "ImportBatch",
+      "description": "Record of a CSV upload action",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "fileName": { "type": "string" },
+        "recordCount": { "type": "number" },
+        "totalValue": { "type": "number" }
+      }
+    },
+    "ImportBatchList": {
+      "title": "ImportBatchList",
+      "description": "List of ImportBatch entities",
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array"
+        },
+        "updatedAt": { "type": "number" }
+      }
+    },
+    "PendingRequest": {
+      "title": "PendingRequest",
+      "description": "A pending or newly requested replacement/shortage log waiting for Promax input or field confirmation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "data": { "type": "string" },
+        "setor": { "type": "string" },
+        "mapa": { "type": "string" },
+        "nb": { "type": "string" },
+        "nf": { "type": "string" },
+        "fotoUrl": { "type": "string" },
+        "observacao": { "type": "string" },
+        "statusPromax": { "type": "string" },
+        "cadastroUser": { "type": "string" },
+        "cadastroDate": { "type": "string" },
+        "motivo": { "type": "string" },
+        "notified": { "type": "boolean" },
+        "rejeitadoObs": { "type": "string" },
+        "reprovadoDate": { "type": "string" },
+        "reprovadoUser": { "type": "string" },
+        "item": { "type": "string" },
+        "quantidade": { "type": "number" },
+        "fatorHecto": { "type": "number" },
+        "hectolitros": { "type": "number" },
+        "isOffline": { "type": "boolean" },
+        "faltaBaixa": { "type": "boolean" },
+        "faltaBaixaDate": { "type": "string" },
+        "faltaBaixaUser": { "type": "string" },
+        "faltaBaixaReciboName": { "type": "string" },
+        "faltaBaixaReciboUrl": { "type": "string" },
+        "faltaBaixaReciboType": { "type": "string" },
+        "faltaBaixaObs": { "type": "string" },
+        "faltaTipoErro": { "type": "string" },
+        "faltaMotorista": { "type": "string" },
+        "faltaMotoristaCpf": { "type": "string" },
+        "faltaAjudantes": { "type": "string" },
+        "faltaAjudante1": { "type": "string" },
+        "faltaAjudante1Cpf": { "type": "string" },
+        "faltaAjudante2": { "type": "string" },
+        "faltaAjudante2Cpf": { "type": "string" },
+        "mapaDataAnomalia": { "type": "string" },
+        "dataEntregaRecibo": { "type": "string" },
+        "observacaoRecibo": { "type": "string" },
+        "municipioRecibo": { "type": "string" }
+      }
+    },
+    "PendingRequestList": {
+      "title": "PendingRequestList",
+      "description": "List of PendingRequest entities",
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array"
+        },
+        "updatedAt": { "type": "number" }
+      }
+    },
+    "CrewMember": {
+      "title": "CrewMember",
+      "description": "Logistics delivery team member (driver or assistant)",
+      "type": "object",
+      "properties": {
+        "nome": { "type": "string" },
+        "cargo": { "type": "string" },
+        "cpf": { "type": "string" }
+      }
+    },
+    "CrewMemberList": {
+      "title": "CrewMemberList",
+      "description": "List of CrewMember entities",
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array"
+        },
+        "updatedAt": { "type": "number" }
+      }
+    },
+    "PdvInfo": {
+      "title": "PdvInfo",
+      "description": "Point of Sale details",
+      "type": "object",
+      "properties": {
+        "codigo": { "type": "string" },
+        "razaoSocial": { "type": "string" },
+        "nomeFantasia": { "type": "string" },
+        "municipio": { "type": "string" },
+        "documento": { "type": "string" },
+        "endereco": { "type": "string" },
+        "complemento": { "type": "string" },
+        "bairro": { "type": "string" },
+        "uf": { "type": "string" },
+        "cep": { "type": "string" }
+      }
+    },
+    "PdvInfoList": {
+      "title": "PdvInfoList",
+      "description": "List of PdvInfo entities",
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array"
+        },
+        "updatedAt": { "type": "number" }
+      }
+    },
+    "SstrLog": {
+      "title": "SstrLog",
+      "description": "Audit and compliance action logs",
+      "type": "object",
+      "properties": {
+        "usuario": { "type": "string" },
+        "action": { "type": "string" },
+        "tabela": { "type": "string" },
+        "dataHora": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "detalhes": { "type": "string" },
+        "dados": { "type": "object" }
+      },
+      "required": ["usuario", "action", "tabela", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/sstr_state/records": {
+      "schema": "ExchangeRecordList",
+      "description": "Collection of all processed historical records"
+    },
+    "/sstr_state/batches": {
+      "schema": "ImportBatchList",
+      "description": "CSV upload batch history"
+    },
+    "/sstr_state/pendingRequests": {
+      "schema": "PendingRequestList",
+      "description": "Active in-field replacement requests"
+    },
+    "/sstr_state/managers": {
+      "schema": "object",
+      "description": "Registered and authorized managers"
+    },
+    "/sstr_state/vales": {
+      "schema": "object",
+      "description": "Voucher historical records list"
+    },
+    "/sstr_state/crewList": {
+      "schema": "CrewMemberList",
+      "description": "Active driver and helper lists"
+    },
+    "/sstr_state/repsSetor": {
+      "schema": "object",
+      "description": "Setor-representative mappings"
+    },
+    "/sstr_state/customPdvs": {
+      "schema": "PdvInfoList",
+      "description": "Custom registered PDV database"
+    },
+    "/sstr_logs/{logId}": {
+      "schema": "SstrLog",
+      "description": "Real-time auditing trail"
+    }
+  }
+}
