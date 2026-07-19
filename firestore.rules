@@ -16,6 +16,10 @@ service cloud.firestore {
       allow read, write: if isValidId(docId);
     }
 
+    match /exchangeRecords_chunks/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
     match /batches/{docId} {
       allow read, write: if isValidId(docId);
     }
