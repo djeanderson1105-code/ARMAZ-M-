@@ -6,54 +6,49 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Helper function for document identifiers
-    function isValidId(id) {
-      return id is string && id.size() <= 128;
-    }
-
-    // Authorization rules for newly normalized collections
+    // Authorization rules for normalized collections
     match /exchangeRecords/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /exchangeRecords_chunks/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /batches/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /pendingRequests/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /managers/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /vales/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /crewList/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /repsSetor/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /motoristasRotas/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /products/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     match /customPdvs/{docId} {
-      allow read, write: if isValidId(docId);
+      allow read, write: if true;
     }
 
     // Log collection validation

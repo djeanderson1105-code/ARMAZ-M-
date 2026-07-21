@@ -27,6 +27,55 @@ import { parseCSVToRecords } from "./csvParser";
 import { RAW_SAMPLE_DATA } from "../sampleData";
 import { getProductsDatabase } from "../data/products";
 import { DEFAULT_LISTA_CREW, DEFAULT_REPRESENTATIVOS_SETOR, DEFAULT_MOTORISTAS_ROTAS } from "../types";
+import { getAuth } from "firebase/auth";
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  }
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const auth = getAuth(firebaseApp);
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid || null,
+      email: auth.currentUser?.email || null,
+      emailVerified: auth.currentUser?.emailVerified || null,
+      isAnonymous: auth.currentUser?.isAnonymous || null,
+      tenantId: auth.currentUser?.tenantId || null,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 // Initialize Firebase
 const firebaseApp = initializeApp(firebaseConfig);
@@ -171,6 +220,7 @@ async function syncArrayToFirestore(collectionName: string, oldList: any[], newL
       console.log(`[SYNC-WRITE] Committed batch of ${chunk.length} changes to Firestore collection "${collectionName}".`);
     } catch (err) {
       console.error(`[SYNC-WRITE] Error committing batch chunk to ${collectionName}:`, err);
+      handleFirestoreError(err, OperationType.WRITE, collectionName);
     }
   }
 }
@@ -221,6 +271,7 @@ async function syncObjectToFirestore(collectionName: string, oldObj: Record<stri
       console.log(`[SYNC-WRITE] Committed object batch of ${chunk.length} key changes to Firestore collection "${collectionName}".`);
     } catch (err) {
       console.error(`[SYNC-WRITE] Error committing object batch chunk to ${collectionName}:`, err);
+      handleFirestoreError(err, OperationType.WRITE, collectionName);
     }
   }
 }
@@ -253,6 +304,7 @@ async function syncExchangeRecordsConsolidated(newList: any[]) {
     console.log(`[SYNC-CONSOLIDATED] Successfully wrote ${newList.length} records in ${chunks.length} chunks.`);
   } catch (err) {
     console.error("[SYNC-CONSOLIDATED] Error syncing exchange records:", err);
+    handleFirestoreError(err, OperationType.WRITE, "exchangeRecords_chunks");
   }
 }
 
@@ -304,6 +356,7 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
         resolved = true;
         resolve();
       }
+      handleFirestoreError(err, OperationType.GET, "exchangeRecords_chunks");
     });
   });
 }
@@ -420,15 +473,19 @@ async function logChange(key: string, oldList: any[], newList: any[]) {
     }
     
     const createLogEntry = async (action: "CRIACAO" | "EDICAO" | "EXCLUSAO", details: string, itemData: any) => {
-      await addDoc(logsCol, {
-        usuario: operator,
-        action,
-        tabela: COLLECTION_MAP[key]?.name || key,
-        dataHora: new Date().toLocaleString("pt-BR"),
-        timestamp: Date.now(),
-        detalhes: details,
-        dados: itemData
-      });
+      try {
+        await addDoc(logsCol, {
+          usuario: operator,
+          action,
+          tabela: COLLECTION_MAP[key]?.name || key,
+          dataHora: new Date().toLocaleString("pt-BR"),
+          timestamp: Date.now(),
+          detalhes: details,
+          dados: itemData
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, "sstr_logs");
+      }
     };
     
     if (added.length > 10) {
@@ -502,6 +559,7 @@ function subscribeCollection(collectionName: string, localKey: string, isObject:
         resolved = true;
         resolve(); // resolve anyway to not block app load
       }
+      handleFirestoreError(err, OperationType.LIST, collectionName);
     });
   });
 }
@@ -583,7 +641,12 @@ export function initializeSync() {
       console.log("[FAST-SYNC] Phase 1: Fetching critical auth & metadata...");
       
       const managersCol = collection(firestoreDb, "managers");
-      const managersSnap = await withTimeout(getDocs(query(managersCol, limit(1))), 4000);
+      const managersSnap = await withTimeout(
+        getDocs(query(managersCol, limit(1))).catch((err) => {
+          handleFirestoreError(err, OperationType.GET, "managers");
+        }),
+        4000
+      );
 
       if (!managersSnap) {
         console.warn("[FAST-SYNC] Não foi possível contactar o Firestore diretamente (timeout/offline). Continuando com inscrições em segundo plano usando cache local.");
@@ -700,7 +763,11 @@ async function seedFirestoreBaselines() {
             batch.set(doc(firestoreDb, colName, id), item);
           }
         });
-        await batch.commit();
+        try {
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, colName);
+        }
         chunk = [];
       }
     }
@@ -711,7 +778,11 @@ async function seedFirestoreBaselines() {
     for (const [key, val] of Object.entries(obj)) {
       batch.set(doc(firestoreDb, colName, key), val);
     }
-    await batch.commit();
+    try {
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, colName);
+    }
   };
 
   await syncExchangeRecordsConsolidated(defaultRecords);
