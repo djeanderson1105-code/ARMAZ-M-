@@ -24,6 +24,8 @@ import firebaseConfig from "../../firebase-applet-config.json";
 import { extractImagesToIDB, restoreImagesFromCache } from "./indexedDbCache";
 import { parseCSVToRecords } from "./csvParser";
 import { RAW_SAMPLE_DATA } from "../sampleData";
+import { getProductsDatabase } from "../data/products";
+import { DEFAULT_LISTA_CREW, DEFAULT_REPRESENTATIVOS_SETOR, DEFAULT_MOTORISTAS_ROTAS } from "../types";
 
 // Initialize Firebase
 const firebaseApp = initializeApp(firebaseConfig);
@@ -49,7 +51,8 @@ export const COLLECTION_MAP: Record<string, { name: string; isObject: boolean }>
   "sstr_lista_crew": { name: "crewList", isObject: false },
   "sstr_reps_setor": { name: "repsSetor", isObject: true },
   "sstr_motoristas_rotas": { name: "motoristasRotas", isObject: true },
-  "sstr_custom_pdvs_v1": { name: "customPdvs", isObject: false }
+  "sstr_custom_pdvs_v1": { name: "customPdvs", isObject: false },
+  "sstr_products_database": { name: "products", isObject: false }
 };
 
 // Flag to prevent sync loops
@@ -177,7 +180,7 @@ async function syncObjectToFirestore(collectionName: string, oldObj: Record<stri
 
 async function syncExchangeRecordsConsolidated(newList: any[]) {
   try {
-    const chunkSize = 1000;
+    const chunkSize = 150;
     const chunks: any[][] = [];
     for (let i = 0; i < newList.length; i += chunkSize) {
       chunks.push(newList.slice(i, i + chunkSize));
@@ -193,7 +196,7 @@ async function syncExchangeRecordsConsolidated(newList: any[]) {
     }
     
     // Clean up old potential chunks
-    for (let i = chunks.length; i < 50; i++) {
+    for (let i = chunks.length; i < 150; i++) {
       const chunkRef = doc(firestoreDb, "exchangeRecords_chunks", `chunk_${i}`);
       batch.delete(chunkRef);
     }
@@ -486,7 +489,8 @@ export function initializeSync() {
     "sstr_motoristas_rotas",
     "sstr_custom_pdvs_v1",
     "sstr_representative_pending_requests",
-    "sstr_cached_batches_v1"
+    "sstr_cached_batches_v1",
+    "sstr_products_database"
   ];
   const heavyKeys = [
     "sstr_cached_records_v1",
@@ -494,6 +498,28 @@ export function initializeSync() {
   ];
 
   console.log("Initializing SSTR Two-Phase Real-time Sync Engine with network timeouts...");
+
+  // Detect project changes and clear local cache
+  const savedProjectId = originalGetItem.call(localStorage, "sstr_connected_project_id");
+  if (savedProjectId && savedProjectId !== firebaseConfig.projectId) {
+    console.log(`[PROJECT-CHANGE] Firebase Project changed from ${savedProjectId} to ${firebaseConfig.projectId}. Clearing local storage cache for a fresh sync...`);
+    const keysToClear = [
+      "sstr_cached_records_v1",
+      "sstr_cached_batches_v1",
+      "sstr_representative_pending_requests",
+      "sstr_registered_managers",
+      "sstr_vales_historico_reg",
+      "sstr_lista_crew",
+      "sstr_reps_setor",
+      "sstr_motoristas_rotas",
+      "sstr_custom_pdvs_v1",
+      "sstr_products_database",
+      "sstr_offline_requests_queue",
+      "sstr_active_creation_draft"
+    ];
+    keysToClear.forEach(key => localStorage.removeItem(key));
+  }
+  originalSetItem.call(localStorage, "sstr_connected_project_id", firebaseConfig.projectId);
 
   const fastSyncPromise = (async () => {
     try {
@@ -582,6 +608,10 @@ function seedLocalStorageDefaults() {
   originalSetItem.call(localStorage, "sstr_registered_managers", JSON.stringify(defaultManagers));
   originalSetItem.call(localStorage, "sstr_vales_historico_reg", JSON.stringify([]));
   originalSetItem.call(localStorage, "sstr_custom_pdvs_v1", JSON.stringify([]));
+  originalSetItem.call(localStorage, "sstr_products_database", JSON.stringify(getProductsDatabase()));
+  originalSetItem.call(localStorage, "sstr_lista_crew", JSON.stringify(DEFAULT_LISTA_CREW));
+  originalSetItem.call(localStorage, "sstr_reps_setor", JSON.stringify(DEFAULT_REPRESENTATIVOS_SETOR));
+  originalSetItem.call(localStorage, "sstr_motoristas_rotas", JSON.stringify(DEFAULT_MOTORISTAS_ROTAS));
 }
 
 async function seedFirestoreBaselines() {
@@ -619,9 +649,21 @@ async function seedFirestoreBaselines() {
     }
   };
 
+  const seedObjectInFirestore = async (colName: string, obj: Record<string, any>) => {
+    const batch = writeBatch(firestoreDb);
+    for (const [key, val] of Object.entries(obj)) {
+      batch.set(doc(firestoreDb, colName, key), val);
+    }
+    await batch.commit();
+  };
+
   await syncExchangeRecordsConsolidated(defaultRecords);
   await seedArrayInChunks("batches", [initialBatch]);
   await seedArrayInChunks("managers", defaultManagers);
+  await seedArrayInChunks("products", getProductsDatabase());
+  await seedArrayInChunks("crewList", DEFAULT_LISTA_CREW);
+  await seedObjectInFirestore("repsSetor", DEFAULT_REPRESENTATIVOS_SETOR);
+  await seedObjectInFirestore("motoristasRotas", DEFAULT_MOTORISTAS_ROTAS);
 
   seedLocalStorageDefaults();
 

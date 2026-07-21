@@ -44,6 +44,14 @@ service cloud.firestore {
       allow read, write: if isValidId(docId);
     }
 
+    match /motoristasRotas/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
+    match /products/{docId} {
+      allow read, write: if isValidId(docId);
+    }
+
     match /customPdvs/{docId} {
       allow read, write: if isValidId(docId);
     }

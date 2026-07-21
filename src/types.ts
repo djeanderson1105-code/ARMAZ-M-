@@ -70,7 +70,7 @@ export interface RepresentativeInfo {
   gv: string;
 }
 
-const DEFAULT_REPRESENTATIVOS_SETOR: Record<string, RepresentativeInfo> = {
+export const DEFAULT_REPRESENTATIVOS_SETOR: Record<string, RepresentativeInfo> = {
   "600": { setor: "600", nome: "THIAGO BATISTA", gv: "DIEGO" },
   "601": { setor: "601", nome: "FELIPE MOREIRA", gv: "DIEGO" },
   "602": { setor: "602", nome: "JEAN REGIS", gv: "DIEGO" },
@@ -153,7 +153,7 @@ export interface RouteDriverInfo {
   veiculo: string;
 }
 
-const DEFAULT_MOTORISTAS_ROTAS: Record<string, RouteDriverInfo> = {
+export const DEFAULT_MOTORISTAS_ROTAS: Record<string, RouteDriverInfo> = {
   "R101": { rota: "R101", nome: "EDENILSON DE SOUSA SILVA", veiculo: "Motorista de Distribuição" },
   "R102": { rota: "R102", nome: "VITOR MACENA GOMES", veiculo: "Ajudante de Distribuição" },
   "R103": { rota: "R103", nome: "IDALMO FELIPE DOS SANTOS", veiculo: "Ajudante de Distribuição" },
@@ -303,7 +303,7 @@ export interface CrewMember {
   cpf: string;
 }
 
-const DEFAULT_LISTA_CREW: CrewMember[] = [
+export const DEFAULT_LISTA_CREW: CrewMember[] = [
   { nome: "EDENILSON DE SOUSA SILVA", cargo: "MOTORISTA DE DISTRIBUICAO", cpf: "104.695.814-33" },
   { nome: "GEOVANE ARAUJO DA SILVA", cargo: "AJUDANTE DE DISTRIBUICAO", cpf: "099.123.694-75" },
   { nome: "FELIPE GOMES DA SILVA", cargo: "AJUDANTE DE DISTRIBUICAO", cpf: "700.552.584-17" },
