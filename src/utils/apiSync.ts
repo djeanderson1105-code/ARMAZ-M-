@@ -5,6 +5,7 @@
 
 import { initializeApp } from "firebase/app";
 import {
+  getFirestore,
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
@@ -31,15 +32,62 @@ import { DEFAULT_LISTA_CREW, DEFAULT_REPRESENTATIVOS_SETOR, DEFAULT_MOTORISTAS_R
 const firebaseApp = initializeApp(firebaseConfig);
 const dbId = (firebaseConfig as any).firestoreDatabaseId || (firebaseConfig as any).databaseId;
 
-// Initialize Firestore with modern local cache persistence (handles offline capability and tab-sync natively)
-export const firestoreDb = initializeFirestore(firebaseApp, {
-  localCache: persistentLocalCache({
-    tabManager: persistentMultipleTabManager()
-  })
-}, dbId && dbId !== "(default)" ? dbId : undefined);
+// Initialize Firestore with modern local cache persistence, with a fallback to memory-only standard instance if blocked by the browser (Incognito/Private browsing/Iframe sandbox constraints)
+let firestoreDbInstance: any;
+try {
+  firestoreDbInstance = initializeFirestore(firebaseApp, {
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager()
+    })
+  }, dbId && dbId !== "(default)" ? dbId : undefined);
+  console.log("[FIREBASE-INIT] Firestore initialized with persistent multiple-tab local cache.");
+} catch (cacheErr) {
+  console.warn("[FIREBASE-INIT] Failed to initialize Firestore with persistent local cache (e.g. Incognito / Private window or sandboxed iframe restriction). Falling back to memory-only standard Firestore...", cacheErr);
+  try {
+    firestoreDbInstance = getFirestore(firebaseApp, dbId && dbId !== "(default)" ? dbId : undefined);
+  } catch (fallbackErr) {
+    console.error("[FIREBASE-INIT] Critical: Could not initialize standard fallback. Retrying getFirestore default...", fallbackErr);
+    try {
+      firestoreDbInstance = getFirestore(firebaseApp);
+    } catch (finalErr) {
+      console.error("[FIREBASE-INIT] Ultimate: Failed all Firestore initializations", finalErr);
+    }
+  }
+}
+
+export const firestoreDb = firestoreDbInstance;
 
 const originalSetItem = localStorage.setItem;
 const originalGetItem = localStorage.getItem;
+const originalRemoveItem = localStorage.removeItem;
+
+// In-RAM fallback cache for extremely restrictive environments (Safari Private browsing, restricted iframe sandbox)
+const memoryStorage = new Map<string, string>();
+
+function safeGetItem(key: string): string | null {
+  try {
+    return originalGetItem.call(localStorage, key);
+  } catch (e) {
+    return memoryStorage.get(key) || null;
+  }
+}
+
+function safeSetItem(key: string, value: string) {
+  try {
+    originalSetItem.call(localStorage, key, value);
+  } catch (e) {
+    console.warn(`[STORAGE-WARN] Failed to write key "${key}" to native localStorage. Using in-memory fallback:`, e);
+    memoryStorage.set(key, value);
+  }
+}
+
+function safeRemoveItem(key: string) {
+  try {
+    originalRemoveItem.call(localStorage, key);
+  } catch (e) {
+    memoryStorage.delete(key);
+  }
+}
 
 // Mapping of LocalStorage keys to Firestore Collections
 export const COLLECTION_MAP: Record<string, { name: string; isObject: boolean }> = {
@@ -236,11 +284,11 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
       }
       
       const remoteStr = JSON.stringify(combinedList);
-      const localStr = originalGetItem.call(localStorage, localKey);
+      const localStr = safeGetItem(localKey);
       
       if (localStr !== remoteStr) {
         isSyncingFromFirestore = true;
-        originalSetItem.call(localStorage, localKey, remoteStr);
+        safeSetItem(localKey, remoteStr);
         isSyncingFromFirestore = false;
         
         window.dispatchEvent(new Event("storage"));
@@ -262,65 +310,74 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
 
 // Monkey-patching localStorage.setItem to strip heavy base64 images and sync immediately to Firestore
 localStorage.setItem = function(key: string, value: string) {
-  const mapping = COLLECTION_MAP[key];
-  if (!mapping) {
-    originalSetItem.apply(this, [key, value]);
-    return;
-  }
-
-  let processedValue = value;
-  if (
-    key === "sstr_representative_pending_requests" ||
-    key === "sstr_vales_historico_reg"
-  ) {
-    processedValue = extractImagesToIDB(value);
-  }
-
-  const oldValue = originalGetItem.call(localStorage, key);
-  originalSetItem.apply(this, [key, processedValue]);
-  
-  if (mapping && !isSyncingFromFirestore && oldValue !== processedValue) {
-    // Notify other tabs locally
-    window.dispatchEvent(new Event("storage"));
-    
-    // Save to Firestore individually in background
-    try {
-      const oldParsed = oldValue ? JSON.parse(oldValue) : (mapping.isObject ? {} : []);
-      const newParsed = JSON.parse(processedValue);
-
-      if (mapping.isObject) {
-        syncObjectToFirestore(mapping.name, oldParsed, newParsed);
-      } else {
-        if (key === "sstr_cached_records_v1") {
-          syncExchangeRecordsConsolidated(newParsed);
-        } else {
-          syncArrayToFirestore(mapping.name, oldParsed, newParsed);
-        }
-      }
-
-      // Log operations by comparing with existing local storage
-      if (Array.isArray(oldParsed) && Array.isArray(newParsed)) {
-        logChange(key, oldParsed, newParsed);
-      }
-    } catch (err) {
-      console.error(`Error parsing or sync-writing key ${key}:`, err);
+  try {
+    const mapping = COLLECTION_MAP[key];
+    if (!mapping) {
+      safeSetItem(key, value);
+      return;
     }
+
+    let processedValue = value;
+    if (
+      key === "sstr_representative_pending_requests" ||
+      key === "sstr_vales_historico_reg"
+    ) {
+      processedValue = extractImagesToIDB(value);
+    }
+
+    const oldValue = safeGetItem(key);
+    safeSetItem(key, processedValue);
+    
+    if (mapping && !isSyncingFromFirestore && oldValue !== processedValue) {
+      // Notify other tabs locally
+      window.dispatchEvent(new Event("storage"));
+      
+      // Save to Firestore individually in background
+      try {
+        const oldParsed = oldValue ? JSON.parse(oldValue) : (mapping.isObject ? {} : []);
+        const newParsed = JSON.parse(processedValue);
+
+        if (mapping.isObject) {
+          syncObjectToFirestore(mapping.name, oldParsed, newParsed);
+        } else {
+          if (key === "sstr_cached_records_v1") {
+            syncExchangeRecordsConsolidated(newParsed);
+          } else {
+            syncArrayToFirestore(mapping.name, oldParsed, newParsed);
+          }
+        }
+
+        // Log operations by comparing with existing local storage
+        if (Array.isArray(oldParsed) && Array.isArray(newParsed)) {
+          logChange(key, oldParsed, newParsed);
+        }
+      } catch (err) {
+        console.error(`Error parsing or sync-writing key ${key}:`, err);
+      }
+    }
+  } catch (err) {
+    console.warn(`[STORAGE-WARN] Error in patched localStorage.setItem for ${key}:`, err);
   }
 };
 
 // Monkey-patching localStorage.getItem to transparently restore images from synchronous cache
 localStorage.getItem = function(key: string): string | null {
-  const rawValue = originalGetItem.apply(this, [key]);
-  if (!rawValue) return rawValue;
+  try {
+    const rawValue = safeGetItem(key);
+    if (!rawValue) return rawValue;
 
-  if (
-    key === "sstr_representative_pending_requests" ||
-    key === "sstr_vales_historico_reg"
-  ) {
-    return restoreImagesFromCache(rawValue);
+    if (
+      key === "sstr_representative_pending_requests" ||
+      key === "sstr_vales_historico_reg"
+    ) {
+      return restoreImagesFromCache(rawValue);
+    }
+
+    return rawValue;
+  } catch (err) {
+    console.warn(`[STORAGE-WARN] Error in patched localStorage.getItem for ${key}:`, err);
+    return null;
   }
-
-  return rawValue;
 };
 
 // Helper to determine active operator
@@ -425,10 +482,10 @@ function subscribeCollection(collectionName: string, localKey: string, isObject:
         remoteStr = extractImagesToIDB(remoteStr);
       }
 
-      const localStr = originalGetItem.call(localStorage, localKey);
+      const localStr = safeGetItem(localKey);
       if (localStr !== remoteStr) {
         isSyncingFromFirestore = true;
-        originalSetItem.call(localStorage, localKey, remoteStr);
+        safeSetItem(localKey, remoteStr);
         isSyncingFromFirestore = false;
 
         // Dispatch storage event so React updates
@@ -500,7 +557,7 @@ export function initializeSync() {
   console.log("Initializing SSTR Two-Phase Real-time Sync Engine with network timeouts...");
 
   // Detect project changes and clear local cache
-  const savedProjectId = originalGetItem.call(localStorage, "sstr_connected_project_id");
+  const savedProjectId = safeGetItem("sstr_connected_project_id");
   if (savedProjectId && savedProjectId !== firebaseConfig.projectId) {
     console.log(`[PROJECT-CHANGE] Firebase Project changed from ${savedProjectId} to ${firebaseConfig.projectId}. Clearing local storage cache for a fresh sync...`);
     const keysToClear = [
@@ -517,9 +574,9 @@ export function initializeSync() {
       "sstr_offline_requests_queue",
       "sstr_active_creation_draft"
     ];
-    keysToClear.forEach(key => localStorage.removeItem(key));
+    keysToClear.forEach(key => safeRemoveItem(key));
   }
-  originalSetItem.call(localStorage, "sstr_connected_project_id", firebaseConfig.projectId);
+  safeSetItem("sstr_connected_project_id", firebaseConfig.projectId);
 
   const fastSyncPromise = (async () => {
     try {
@@ -530,7 +587,7 @@ export function initializeSync() {
 
       if (!managersSnap) {
         console.warn("[FAST-SYNC] Não foi possível contactar o Firestore diretamente (timeout/offline). Continuando com inscrições em segundo plano usando cache local.");
-        if (!originalGetItem.call(localStorage, "sstr_cached_records_v1")) {
+        if (!safeGetItem("sstr_cached_records_v1")) {
           seedLocalStorageDefaults();
         }
       } else if (managersSnap.empty) {
@@ -602,16 +659,16 @@ function seedLocalStorageDefaults() {
     { username: "admin", password: "admin", name: "Administrador" }
   ];
 
-  originalSetItem.call(localStorage, "sstr_cached_records_v1", JSON.stringify(defaultRecords));
-  originalSetItem.call(localStorage, "sstr_cached_batches_v1", JSON.stringify([initialBatch]));
-  originalSetItem.call(localStorage, "sstr_representative_pending_requests", JSON.stringify([]));
-  originalSetItem.call(localStorage, "sstr_registered_managers", JSON.stringify(defaultManagers));
-  originalSetItem.call(localStorage, "sstr_vales_historico_reg", JSON.stringify([]));
-  originalSetItem.call(localStorage, "sstr_custom_pdvs_v1", JSON.stringify([]));
-  originalSetItem.call(localStorage, "sstr_products_database", JSON.stringify(getProductsDatabase()));
-  originalSetItem.call(localStorage, "sstr_lista_crew", JSON.stringify(DEFAULT_LISTA_CREW));
-  originalSetItem.call(localStorage, "sstr_reps_setor", JSON.stringify(DEFAULT_REPRESENTATIVOS_SETOR));
-  originalSetItem.call(localStorage, "sstr_motoristas_rotas", JSON.stringify(DEFAULT_MOTORISTAS_ROTAS));
+  safeSetItem("sstr_cached_records_v1", JSON.stringify(defaultRecords));
+  safeSetItem("sstr_cached_batches_v1", JSON.stringify([initialBatch]));
+  safeSetItem("sstr_representative_pending_requests", JSON.stringify([]));
+  safeSetItem("sstr_registered_managers", JSON.stringify(defaultManagers));
+  safeSetItem("sstr_vales_historico_reg", JSON.stringify([]));
+  safeSetItem("sstr_custom_pdvs_v1", JSON.stringify([]));
+  safeSetItem("sstr_products_database", JSON.stringify(getProductsDatabase()));
+  safeSetItem("sstr_lista_crew", JSON.stringify(DEFAULT_LISTA_CREW));
+  safeSetItem("sstr_reps_setor", JSON.stringify(DEFAULT_REPRESENTATIVOS_SETOR));
+  safeSetItem("sstr_motoristas_rotas", JSON.stringify(DEFAULT_MOTORISTAS_ROTAS));
 }
 
 async function seedFirestoreBaselines() {
