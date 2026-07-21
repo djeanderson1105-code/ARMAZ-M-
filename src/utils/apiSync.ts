@@ -334,8 +334,8 @@ localStorage.setItem = function(key: string, value: string) {
       
       // Save to Firestore individually in background
       try {
-        const oldParsed = oldValue ? JSON.parse(oldValue) : (mapping.isObject ? {} : []);
-        const newParsed = JSON.parse(processedValue);
+        const oldParsed = oldValue ? JSON.parse(restoreImagesFromCache(oldValue)) : (mapping.isObject ? {} : []);
+        const newParsed = JSON.parse(value);
 
         if (mapping.isObject) {
           syncObjectToFirestore(mapping.name, oldParsed, newParsed);

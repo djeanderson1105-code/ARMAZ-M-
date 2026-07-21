@@ -185,32 +185,7 @@ export default function App() {
 
     heavySyncPromise.then(() => {
       setIsSyncingHeavy(false);
-      
-      const cachedRecs = localStorage.getItem(STORAGE_RECORDS_KEY);
-      if (!cachedRecs) {
-        // First boot with empty Firestore/offline: seed default dataset
-        const defaultRecords = parseCSVToRecords(RAW_SAMPLE_DATA, "Planilha Base Pau Brasil");
-        const initialBatch: ImportBatch = {
-          id: "batch_default",
-          timestamp: Date.now(),
-          fileName: "Planilha Base Pau Brasil.csv",
-          recordCount: defaultRecords.length,
-          totalValue: defaultRecords.reduce((acc, r) => acc + r.valorTotal, 0)
-        };
-
-        // This will write to local storage and sync to Firestore if online & empty
-        saveStateToStorage(defaultRecords, [initialBatch]);
-      } else {
-        try {
-          setRecords(JSON.parse(cachedRecs));
-          const cachedBatches = localStorage.getItem(STORAGE_BATCHES_KEY);
-          if (cachedBatches) {
-            setBatches(JSON.parse(cachedBatches));
-          }
-        } catch (e) {
-          console.error("Erro ao analisar registros salvos localmente:", e);
-        }
-      }
+      loadRecordsFromLocal();
     }).catch((err) => {
       console.error("Erro na sincronização de dados históricos:", err);
       setIsSyncingHeavy(false);
