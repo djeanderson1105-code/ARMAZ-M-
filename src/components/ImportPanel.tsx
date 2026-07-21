@@ -1,6 +1,7 @@
 import React, { useState, useRef, useMemo } from "react";
 import { ExchangeRecord } from "../types";
 import { parseCSVToRecords } from "../utils/csvParser";
+import * as XLSX from "xlsx";
 import { 
   UploadCloud, 
   CheckCircle, 
@@ -117,24 +118,62 @@ export default function ImportPanel({
 
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const file = e.dataTransfer.files[0];
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const text = event.target?.result as string;
-        processRawText(text, file.name);
-      };
-      reader.readAsText(file, "UTF-8");
+      const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.type.includes("sheet") || file.type.includes("excel");
+
+      if (isExcel) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const data = new Uint8Array(event.target?.result as ArrayBuffer);
+            const workbook = XLSX.read(data, { type: "array" });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            const csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ";" });
+            processRawText(csvText, file.name);
+          } catch (err: any) {
+            setErrorMessage("Erro ao ler arquivo Excel: " + err.message);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const text = event.target?.result as string;
+          processRawText(text, file.name);
+        };
+        reader.readAsText(file, "UTF-8");
+      }
     }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const text = event.target?.result as string;
-        processRawText(text, file.name);
-      };
-      reader.readAsText(file, "UTF-8");
+      const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.type.includes("sheet") || file.type.includes("excel");
+
+      if (isExcel) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const data = new Uint8Array(event.target?.result as ArrayBuffer);
+            const workbook = XLSX.read(data, { type: "array" });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            const csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ";" });
+            processRawText(csvText, file.name);
+          } catch (err: any) {
+            setErrorMessage("Erro ao ler arquivo Excel: " + err.message);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const text = event.target?.result as string;
+          processRawText(text, file.name);
+        };
+        reader.readAsText(file, "UTF-8");
+      }
     }
   };
 
@@ -388,13 +427,13 @@ export default function ImportPanel({
                 <UploadCloud className={`w-10 h-10 ${dragActive ? "text-blue-400" : "text-slate-500"}`} />
                 <div className="text-center">
                   <p className="text-xs font-semibold text-slate-200">Selecione o arquivo ou arraste para aqui</p>
-                  <p className="text-[10px] text-slate-400 font-mono mt-1">Aceita planilhas (.csv, .txt) com divisores de ponto-e-vírgula (;)</p>
+                  <p className="text-[10px] text-slate-400 font-mono mt-1">Aceita planilhas (.xlsx, .xls, .csv, .txt) com divisores de ponto-e-vírgula (;)</p>
                 </div>
                 <input
                   type="file"
                   ref={fileInputRef}
                   onChange={handleFileSelect}
-                  accept=".csv,.txt"
+                  accept=".csv,.txt,.xlsx,.xls"
                   className="hidden"
                 />
               </div>

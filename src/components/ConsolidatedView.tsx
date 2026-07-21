@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { ExchangeRecord } from "../types";
+import { getApiUrl } from "../utils/apiUrl";
 import { 
   TrendingUp, 
   DollarSign, 
@@ -443,7 +444,7 @@ export default function ConsolidatedView({
     setAiLoading(true);
 
     try {
-      const response = await fetch("/api/gemini/chat", {
+      const response = await fetch(getApiUrl("/api/gemini/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -465,13 +466,57 @@ export default function ConsolidatedView({
     }
   };
 
+  // Dynamically identify the current/vigent date (data vigente) of the platform based on the records
+  const today = useMemo(() => {
+    if (records.length === 0) return new Date();
+    
+    let maxDateObj: Date | null = null;
+    records.forEach(r => {
+      if (!r.dataSolicitacao) return;
+      const parts = r.dataSolicitacao.split("/");
+      if (parts.length === 3) {
+        const d = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        const y = parseInt(parts[2], 10);
+        const dt = new Date(y, m, d);
+        if (!isNaN(dt.getTime())) {
+          if (!maxDateObj || dt > maxDateObj) {
+            maxDateObj = dt;
+          }
+        }
+      }
+    });
+
+    const sysToday = new Date();
+    
+    // If we have a max date from records, and it's in the same year as system today or the system year is later,
+    // we can use the actual system today. This ensures that in live/active operations, 
+    // the system date is the absolute source of truth.
+    // If we are viewing a historical year, we use the maximum record date in that dataset.
+    if (maxDateObj) {
+      if (sysToday.getFullYear() === (maxDateObj as Date).getFullYear()) {
+        return sysToday;
+      }
+      return maxDateObj;
+    }
+    return sysToday;
+  }, [records]);
+
+  // Active year dynamically determined
+  const activeYear = useMemo(() => {
+    if (selectedMonthYear && selectedMonthYear !== "todos") {
+      const parts = selectedMonthYear.split("/");
+      return parseInt(parts[1], 10);
+    }
+    return today.getFullYear();
+  }, [selectedMonthYear, today]);
+
   // 1. Calculate number of days dynamically based on the active selection
   const { calculatedDays, fullPeriodDays, periodName } = useMemo(() => {
     if (selectedMonthYear && selectedMonthYear !== "todos") {
       const [mStr, yStr] = selectedMonthYear.split("/");
       const m = parseInt(mStr, 10);
       const y = parseInt(yStr, 10);
-      const today = new Date("2026-07-16"); // current local date from metadata
       const isCurrentMonth = today.getFullYear() === y && (today.getMonth() + 1) === m;
       
       const totalDays = new Date(y, m, 0).getDate();
@@ -512,7 +557,7 @@ export default function ConsolidatedView({
     }
     
     return { calculatedDays: 30, fullPeriodDays: 30, periodName: "Geral" };
-  }, [filteredRecords, selectedMonthYear]);
+  }, [filteredRecords, selectedMonthYear, today]);
 
   // Averages calculations (daily)
   const averages = useMemo(() => {
@@ -527,25 +572,175 @@ export default function ConsolidatedView({
     };
   }, [filteredRecords, totalHLFiltered, stats.approvedValue, calculatedDays]);
 
+  // Calculate monthly average based on month in course (mês vigente)
+  const currentMonthDailyReal = useMemo(() => {
+    const currentMonthStr = String(today.getMonth() + 1).padStart(2, "0");
+    const currentYearStr = String(today.getFullYear());
+    const defaultMonthYear = `${currentMonthStr}/${currentYearStr}`;
+
+    const activeMonthYearStr = (selectedMonthYear && selectedMonthYear !== "todos") ? selectedMonthYear : defaultMonthYear;
+    const [mStr, yStr] = activeMonthYearStr.split("/");
+    const m = parseInt(mStr, 10);
+    const y = parseInt(yStr, 10);
+
+    const mRecords = records.filter(r => {
+      if (!r.dataSolicitacao) return false;
+      const parts = r.dataSolicitacao.split("/");
+      return parts.length === 3 && parseInt(parts[1], 10) === m && parseInt(parts[2], 10) === y;
+    });
+
+    const approvedValue = mRecords
+      .filter(r => r.status.toLowerCase().trim().includes("aprov"))
+      .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
+
+    const isCurrentMonth = today.getFullYear() === y && (today.getMonth() + 1) === m;
+    const totalDays = new Date(y, m, 0).getDate();
+    const elapsedDays = isCurrentMonth ? Math.min(today.getDate(), totalDays) : totalDays;
+    const days = elapsedDays > 0 ? elapsedDays : 30;
+
+    return {
+      dailyReal: approvedValue / days,
+      fullPeriodDays: totalDays,
+      elapsedDays: days,
+      label: `${mStr}/${yStr}`
+    };
+  }, [records, selectedMonthYear, today]);
+
+  // Calculate annual average based on everything registered in the year so far
+  const yearAverages = useMemo(() => {
+    const activeYearLocal = today.getFullYear();
+    const yearRecords = records.filter(r => {
+      if (!r.dataSolicitacao) return false;
+      const parts = r.dataSolicitacao.split("/");
+      return parts.length === 3 && parts[2] === String(activeYearLocal);
+    });
+
+    const approvedValue = yearRecords
+      .filter(r => r.status.toLowerCase().trim().includes("aprov"))
+      .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
+
+    const startOfYear = new Date(activeYearLocal, 0, 1);
+    const diffTime = Math.abs(today.getTime() - startOfYear.getTime());
+    const elapsedDaysInYear = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    const days = elapsedDaysInYear > 0 ? elapsedDaysInYear : 365;
+
+    return {
+      dailyReal: approvedValue / days,
+      elapsedDays: days
+    };
+  }, [records, today]);
+
+  // Calculate semester average based on the active semester window
+  const semesterAverages = useMemo(() => {
+    let activeSemester: 1 | 2 = 2; // Default to 2nd Semester since today is July 2026
+    let activeYearLocal = today.getFullYear();
+
+    if (selectedMonthYear && selectedMonthYear !== "todos") {
+      const [mStr, yStr] = selectedMonthYear.split("/");
+      const m = parseInt(mStr, 10);
+      const y = parseInt(yStr, 10);
+      activeYearLocal = y;
+      if (m >= 1 && m <= 6) {
+        activeSemester = 1;
+      } else {
+        activeSemester = 2;
+      }
+    } else {
+      const currentMonth = today.getMonth() + 1;
+      if (currentMonth >= 1 && currentMonth <= 6) {
+        activeSemester = 1;
+      } else {
+        activeSemester = 2;
+      }
+    }
+
+    const semesterRecords = records.filter(r => {
+      if (!r.dataSolicitacao) return false;
+      const parts = r.dataSolicitacao.split("/");
+      if (parts.length !== 3) return false;
+      const rMonth = parseInt(parts[1], 10);
+      const rYear = parseInt(parts[2], 10);
+      
+      if (rYear !== activeYearLocal) return false;
+      
+      if (activeSemester === 1) {
+        return rMonth >= 1 && rMonth <= 6;
+      } else {
+        return rMonth >= 7 && rMonth <= 12;
+      }
+    });
+
+    const approvedValue = semesterRecords
+      .filter(r => r.status.toLowerCase().trim().includes("aprov"))
+      .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
+
+    let elapsedDays = 180;
+    let totalDays = 180;
+
+    if (activeSemester === 1) {
+      // 1º Semestre: 01/01 a 30/06
+      const isLeap = (activeYearLocal % 4 === 0 && activeYearLocal % 100 !== 0) || (activeYearLocal % 400 === 0);
+      totalDays = isLeap ? 182 : 181;
+      
+      const endOfSem1 = new Date(activeYearLocal, 5, 30); // June 30
+      if (today > endOfSem1) {
+        elapsedDays = totalDays;
+      } else if (today < new Date(activeYearLocal, 0, 1)) {
+        elapsedDays = 0;
+      } else {
+        const startOfSem1 = new Date(activeYearLocal, 0, 1);
+        const diffTime = Math.abs(today.getTime() - startOfSem1.getTime());
+        elapsedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+      }
+    } else {
+      // 2º Semestre: 01/07 a 31/12
+      totalDays = 184; // Jul(31) + Aug(31) + Sep(30) + Oct(31) + Nov(30) + Dec(31)
+      
+      const endOfSem2 = new Date(activeYearLocal, 11, 31); // Dec 31
+      if (today > endOfSem2) {
+        elapsedDays = totalDays;
+      } else if (today < new Date(activeYearLocal, 6, 1)) {
+        elapsedDays = 0;
+      } else {
+        const startOfSem2 = new Date(activeYearLocal, 6, 1); // July 1
+        const diffTime = Math.abs(today.getTime() - startOfSem2.getTime());
+        elapsedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+      }
+    }
+
+    const days = elapsedDays > 0 ? elapsedDays : 1;
+    const dailyReal = approvedValue / days;
+
+    return {
+      dailyReal,
+      approvedValue,
+      elapsedDays: days,
+      totalDays,
+      semesterLabel: activeSemester === 1 ? "1º Semestre" : "2º Semestre",
+      semesterNumber: activeSemester
+    };
+  }, [records, selectedMonthYear, today]);
+
   // Triple Projection (Mensal, Semestral, Anual)
   const tripleTrend = useMemo(() => {
-    const dailyReal = averages.dailyReal;
-    
-    // 1. Monthly (using actual days in month if selected, or default 30)
-    const mDays = (selectedMonthYear && selectedMonthYear !== "todos") ? fullPeriodDays : 30;
-    const mProjected = dailyReal * mDays;
+    // 1. Monthly (projection of the active or current month using currentMonthDailyReal)
+    const mDailyReal = currentMonthDailyReal.dailyReal;
+    const mDays = currentMonthDailyReal.fullPeriodDays;
+    const mProjected = mDailyReal * mDays;
     const mMeta = 12000;
     const mPercent = mMeta > 0 ? (mProjected / mMeta) * 100 : 0;
     
-    // 2. Semestral (180 days representing 6 months)
-    const sDays = 180;
-    const sProjected = dailyReal * sDays;
+    // 2. Semestral (dynamically using active semester)
+    const sDailyReal = semesterAverages.dailyReal;
+    const sDays = semesterAverages.totalDays;
+    const sProjected = sDailyReal * sDays;
     const sMeta = 72000;
     const sPercent = sMeta > 0 ? (sProjected / sMeta) * 100 : 0;
     
-    // 3. Annual (365 days representing 1 year)
+    // 3. Annual (365 days based on the annual average)
+    const aDailyReal = yearAverages.dailyReal;
     const aDays = 365;
-    const aProjected = dailyReal * aDays;
+    const aProjected = aDailyReal * aDays;
     const aMeta = 144000;
     const aPercent = aMeta > 0 ? (aProjected / aMeta) * 100 : 0;
     
@@ -560,7 +755,7 @@ export default function ConsolidatedView({
         diff: Math.abs(mProjected - mMeta)
       },
       semestral: {
-        name: "Meta Semestral (1º e 2º H)",
+        name: `Meta Semestral (${semesterAverages.semesterLabel})`,
         days: sDays,
         projected: sProjected,
         meta: sMeta,
@@ -578,7 +773,82 @@ export default function ConsolidatedView({
         diff: Math.abs(aProjected - aMeta)
       }
     };
-  }, [averages.dailyReal, selectedMonthYear, fullPeriodDays]);
+  }, [currentMonthDailyReal, semesterAverages, yearAverages]);
+
+  // Dedicated monthly metric state for the "Atingimento do Mês" card
+  const monthlyCardMetrics = useMemo(() => {
+    // 1. If a specific month is selected, use it!
+    if (selectedMonthYear && selectedMonthYear !== "todos") {
+      const [mStr, yStr] = selectedMonthYear.split("/");
+      const m = parseInt(mStr, 10);
+      const y = parseInt(yStr, 10);
+      
+      const mRecords = records.filter(r => {
+        if (!r.dataSolicitacao) return false;
+        const parts = r.dataSolicitacao.split("/");
+        return parts.length === 3 && parseInt(parts[1], 10) === m && parseInt(parts[2], 10) === y;
+      });
+
+      const approvedValue = mRecords
+        .filter(r => r.status.toLowerCase().trim().includes("aprov"))
+        .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
+
+      const limit = 12000;
+      const percent = limit > 0 ? (approvedValue / limit) * 100 : 0;
+
+      return {
+        value: approvedValue,
+        limit,
+        percent,
+        label: `${mStr}/${yStr}`
+      };
+    }
+
+    // 2. If "todos" is selected, find the "vigent/current" month within the current filtered records or calendar
+    let targetMonth = today.getMonth() + 1;
+    let targetYear = today.getFullYear();
+
+    // If we have filtered records and our current month/year is NOT in the filtered set (e.g. historical 1º Semestre),
+    // let's use the latest month/year from the filtered records
+    const filteredMonthYears = Array.from(new Set(filteredRecords.map(r => {
+      if (!r.dataSolicitacao) return "";
+      const parts = r.dataSolicitacao.split("/");
+      return parts.length === 3 ? `${parts[1]}/${parts[2]}` : "";
+    }).filter(Boolean)));
+
+    const todayStr = `${String(today.getMonth() + 1).padStart(2, "0")}/${today.getFullYear()}`;
+    if (filteredMonthYears.length > 0 && !filteredMonthYears.includes(todayStr)) {
+      // Sort filtered month/years chronologically and take the latest
+      filteredMonthYears.sort((a, b) => {
+        const [mA, yA] = a.split("/").map(Number);
+        const [mB, yB] = b.split("/").map(Number);
+        return (yB - yA) || (mB - mA);
+      });
+      const [latestM, latestY] = filteredMonthYears[0].split("/").map(Number);
+      targetMonth = latestM;
+      targetYear = latestY;
+    }
+
+    const mRecords = records.filter(r => {
+      if (!r.dataSolicitacao) return false;
+      const parts = r.dataSolicitacao.split("/");
+      return parts.length === 3 && parseInt(parts[1], 10) === targetMonth && parseInt(parts[2], 10) === targetYear;
+    });
+
+    const approvedValue = mRecords
+      .filter(r => r.status.toLowerCase().trim().includes("aprov"))
+      .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
+
+    const limit = 12000;
+    const percent = limit > 0 ? (approvedValue / limit) * 100 : 0;
+
+    return {
+      value: approvedValue,
+      limit,
+      percent,
+      label: `${String(targetMonth).padStart(2, "0")}/${targetYear}`
+    };
+  }, [records, filteredRecords, selectedMonthYear, today]);
 
   return (
     <div className="space-y-6">
@@ -599,26 +869,28 @@ export default function ConsolidatedView({
               <div className="bg-slate-950/40 p-3 rounded-xl border border-slate-850/60 space-y-2">
                 <div className="flex justify-between items-center text-xs">
                   <div>
-                    <span className="text-[10px] uppercase font-bold tracking-wider font-mono text-blue-400">Atingimento do Mês</span>
+                    <span className="text-[10px] uppercase font-bold tracking-wider font-mono text-blue-400">
+                      Atingimento do Mês ({monthlyCardMetrics.label})
+                    </span>
                     <p className="text-white font-bold font-mono text-base mt-0.5">
-                      {formatCurrency(stats.approvedValue)} <span className="text-slate-500 font-normal text-xs">de {formatCurrency(12000)}</span>
+                      {formatCurrency(monthlyCardMetrics.value)} <span className="text-slate-500 font-normal text-xs">de {formatCurrency(monthlyCardMetrics.limit)}</span>
                     </p>
                   </div>
                   <div className="text-right">
                     <span className="text-[10px] text-slate-400 block font-mono">Status da Meta</span>
-                    <span className={`font-bold font-mono text-sm ${monthlyAtingimento > 100 ? "text-rose-450" : "text-blue-400"}`}>
-                      {monthlyAtingimento.toFixed(1)}% {monthlyAtingimento > 100 ? "⚠️" : "✓"}
+                    <span className={`font-bold font-mono text-sm ${monthlyCardMetrics.percent > 100 ? "text-rose-450" : "text-blue-400"}`}>
+                      {monthlyCardMetrics.percent.toFixed(1)}% {monthlyCardMetrics.percent > 100 ? "⚠️" : "✓"}
                     </span>
                   </div>
                 </div>
                 <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden relative">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ease-out ${
-                      monthlyAtingimento > 100 
+                      monthlyCardMetrics.percent > 100 
                         ? "bg-gradient-to-r from-blue-600 to-rose-600" 
                         : "bg-gradient-to-r from-blue-600 to-blue-400"
                     }`}
-                    style={{ width: `${Math.min(monthlyAtingimento, 100)}%` }}
+                    style={{ width: `${Math.min(monthlyCardMetrics.percent, 100)}%` }}
                   ></div>
                 </div>
               </div>
@@ -938,7 +1210,7 @@ export default function ConsolidatedView({
             {/* 2. SEMESTRAL */}
             <div className="bg-slate-950/40 p-2.5 rounded-xl border border-slate-850/60 space-y-2">
               <div className="flex justify-between items-center text-xs">
-                <span className="font-bold text-slate-200 font-sans">2. Meta Semestral (1º/2º H)</span>
+                <span className="font-bold text-slate-200 font-sans">2. {tripleTrend.semestral.name}</span>
                 <span className={`text-[10px] font-bold font-mono px-1.5 py-0.2 rounded ${
                   tripleTrend.semestral.isExceeding ? "text-rose-450 bg-rose-950/65" : "text-emerald-400 bg-emerald-950/65"
                 }`}>
@@ -1020,10 +1292,19 @@ export default function ConsolidatedView({
             </div>
           </div>
 
-          <div className="text-[10px] text-slate-400 font-mono bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/60 leading-normal">
-            No ritmo diário de <strong>{formatCurrency(averages.dailyReal)}</strong>,
-            {tripleTrend.monthly.isExceeding ? " haverá estouro no fechamento mensal" : " o teto de gastos mensal está sob controle"} e
-            {tripleTrend.annual.isExceeding ? " haverá estouro anual." : " o teto anual está seguro."}
+          <div className="text-[10px] text-slate-400 font-mono bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/60 leading-normal space-y-1">
+            <div>
+              No ritmo do mês vigente (<strong>{formatCurrency(currentMonthDailyReal.dailyReal)}</strong>/dia), 
+              {tripleTrend.monthly.isExceeding ? " haverá estouro no fechamento mensal." : " o teto mensal está sob controle."}
+            </div>
+            <div>
+              Pela média do {semesterAverages.semesterNumber === 1 ? "1º" : "2º"} semestre (<strong>{formatCurrency(semesterAverages.dailyReal)}</strong>/dia), 
+              {tripleTrend.semestral.isExceeding ? " haverá estouro no teto semestral." : " o teto semestral está seguro."}
+            </div>
+            <div>
+              Pela média anual (<strong>{formatCurrency(yearAverages.dailyReal)}</strong>/dia), 
+              {tripleTrend.annual.isExceeding ? " haverá estouro no teto anual de gastos." : " o teto anual está seguro."}
+            </div>
           </div>
         </div>
       </div>
@@ -1142,7 +1423,7 @@ export default function ConsolidatedView({
                 <button
                   key={m.id}
                   onClick={() => {
-                    setSelectedMonthYear(`${m.id}/2026`);
+                    setSelectedMonthYear(`${m.id}/${activeYear}`);
                     setFilterMode("mes");
                   }}
                   className="px-2.5 py-1 bg-slate-950/80 hover:bg-blue-800 border border-slate-800 hover:border-blue-700 text-blue-400 hover:text-white rounded-lg text-[9px] font-bold font-sans transition-all cursor-pointer"
@@ -1268,8 +1549,8 @@ export default function ConsolidatedView({
                             hoveredNode.monthId === "09" ? "Setembro" :
                             hoveredNode.monthId === "10" ? "Outubro" :
                             hoveredNode.monthId === "11" ? "Novembro" : "Dezembro"
-                          } 2026`
-                        : `Dia ${hoveredNode.day}/${selectedMonth}/2026`
+                          } ${activeYear}`
+                        : `Dia ${hoveredNode.day}/${selectedMonth}/${activeYear}`
                       }
                     </span>
                     {timelineViewMode === "days" && peakDayInfo?.day === hoveredNode.day && (
@@ -1403,7 +1684,7 @@ export default function ConsolidatedView({
                       onMouseLeave={() => setHoveredNode(null)}
                       onClick={() => {
                         if (timelineViewMode === "months") {
-                          setSelectedMonthYear(`${p.monthId}/2026`);
+                          setSelectedMonthYear(`${p.monthId}/${activeYear}`);
                           setFilterMode("mes");
                         }
                       }}
@@ -1449,7 +1730,7 @@ export default function ConsolidatedView({
                     key={d.date} 
                     onClick={() => {
                       if (timelineViewMode === "months") {
-                        setSelectedMonthYear(`${d.monthId}/2026`);
+                        setSelectedMonthYear(`${d.monthId}/${activeYear}`);
                         setFilterMode("mes");
                       }
                     }}

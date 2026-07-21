@@ -1,10 +1,12 @@
 export interface ProductInfo {
   codigo: string;
   descricao: string;
+  fator?: number;
+  valor?: number;
   fatorHecto: number;
 }
 
-export const PRODUCT_DATABASE: ProductInfo[] = [
+const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "29508", descricao: "JOHNNIE WALKER WHISKY GOLD LABEL RESERVE GFA VD 750 ML", fatorHecto: 0.01 },
   { codigo: "23028", descricao: "BUCHANANS WHISKY DELUXE 12 ANOS GARRAFA VIDRO 1 L", fatorHecto: 0.01 },
   { codigo: "29926", descricao: "JOHNNIE WALKER BLACK LABEL WHISKY ICONS GARRAFA VIDRO 1 L", fatorHecto: 0.01 },
@@ -322,6 +324,101 @@ export const PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "35134", descricao: "YPE SABAO BARRA NEUTRO PCT PLAST 800G", fatorHecto: 0.01 },
   { codigo: "19164", descricao: "GUARANA CHP ANTARCTICA PET 1L PACK C/2 MULTPACK", fatorHecto: 0.02 }
 ];
+
+let cachedProducts: ProductInfo[] | null = null;
+
+export const clearProductsCache = () => {
+  cachedProducts = null;
+};
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", () => {
+    cachedProducts = null;
+  });
+}
+
+export function extractFatorFromDescricao(descricao: string): number {
+  const descUpper = descricao.toUpperCase();
+  const match = descUpper.match(/\b(?:CX|FD|C\/|C-|C\s+|C)([0-9]+)\b/);
+  if (match) {
+    const val = parseInt(match[1], 10);
+    if (!isNaN(val) && val > 0 && val <= 100) {
+      return val;
+    }
+  }
+  return 12; // Standard default
+}
+
+export const getProductsDatabase = (): ProductInfo[] => {
+  if (cachedProducts) return cachedProducts;
+  if (typeof window === "undefined") {
+    return DEFAULT_PRODUCT_DATABASE.map(p => ({
+      ...p,
+      fator: p.fator !== undefined ? p.fator : extractFatorFromDescricao(p.descricao),
+      valor: p.valor !== undefined ? p.valor : 98.50
+    }));
+  }
+  const saved = localStorage.getItem("sstr_products_database");
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved) as ProductInfo[];
+      let updated = false;
+      const migrated = parsed.map(p => {
+        let isModified = false;
+        let { fator, valor } = p;
+        if (fator === undefined) {
+          fator = extractFatorFromDescricao(p.descricao);
+          isModified = true;
+        }
+        if (valor === undefined) {
+          valor = 98.50;
+          isModified = true;
+        }
+        if (isModified) {
+          updated = true;
+        }
+        return {
+          ...p,
+          fator,
+          valor
+        };
+      });
+      if (updated) {
+        localStorage.setItem("sstr_products_database", JSON.stringify(migrated));
+      }
+      cachedProducts = migrated;
+      return migrated;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  
+  const mappedDefaults = DEFAULT_PRODUCT_DATABASE.map(p => ({
+    ...p,
+    fator: p.fator !== undefined ? p.fator : extractFatorFromDescricao(p.descricao),
+    valor: p.valor !== undefined ? p.valor : 98.50
+  }));
+  localStorage.setItem("sstr_products_database", JSON.stringify(mappedDefaults));
+  cachedProducts = mappedDefaults;
+  return mappedDefaults;
+};
+
+export const PRODUCT_DATABASE: ProductInfo[] = new Proxy([] as ProductInfo[], {
+  get(target, prop) {
+    const list = getProductsDatabase();
+    const val = (list as any)[prop];
+    if (typeof val === "function") {
+      return val.bind(list);
+    }
+    return val;
+  },
+  getOwnPropertyDescriptor(target, prop) {
+    return Reflect.getOwnPropertyDescriptor(getProductsDatabase(), prop);
+  },
+  ownKeys(target) {
+    return Reflect.ownKeys(getProductsDatabase());
+  }
+});
 
 export function getProductByCodeOrName(term: string): ProductInfo | undefined {
   const t = term.trim().toLowerCase();

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache } from "../types";
+import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache } from "../types";
+import { getApiUrl } from "../utils/apiUrl";
 import { PRODUCT_DATABASE } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
 import ValesHistoryDashboard from "./ValesHistoryDashboard";
@@ -95,12 +96,18 @@ const isSwapRequest = (req: PendingRequest): boolean => {
 const getRequestValue = (req: PendingRequest, promaxRecords: ExchangeRecord[]): number => {
   if (req.items && req.items.length > 0) {
     return req.items.reduce((sum, current) => {
-      const itemUnitPrice = promaxRecords.find(r => r.produto === current.item)?.valorUnitario || 98.50;
+      const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === current.item);
+      const itemUnitPrice = dbProduct && dbProduct.valor !== undefined && dbProduct.valor > 0 
+        ? dbProduct.valor 
+        : (promaxRecords.find(r => r.produto === current.item)?.valorUnitario || 98.50);
       return sum + (itemUnitPrice * current.quantidade);
     }, 0);
   }
   if (req.item) {
-    const itemUnitPrice = promaxRecords.find(r => r.produto === req.item)?.valorUnitario || 98.50;
+    const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === req.item);
+    const itemUnitPrice = dbProduct && dbProduct.valor !== undefined && dbProduct.valor > 0 
+        ? dbProduct.valor 
+        : (promaxRecords.find(r => r.produto === req.item)?.valorUnitario || 98.50);
     return itemUnitPrice * (req.quantidade || 1);
   }
   return 0;
@@ -228,7 +235,7 @@ export default function PendingRequestsTab() {
       console.log(`[CLIENT-PDF] Triggering PDF compile for ${requestId}...`);
 
       try {
-        const res = await fetch("/api/compile-pdf", {
+        const res = await fetch(getApiUrl("/api/compile-pdf"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ requestId, docData: req })
@@ -265,6 +272,7 @@ export default function PendingRequestsTab() {
   }, [requests]);
 
   const [repsList, setRepsList] = useState(() => getRepresentativosSetor());
+  const [motoristasList, setMotoristasList] = useState(() => getMotoristasRotas());
   const [promaxRecords, setPromaxRecords] = useState<ExchangeRecord[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState<"pendente" | "cadastrado" | "reprovado" | "faltas_inversoes" | "historico_baixas" | "historico_vales" | "espelho">("pendente");
@@ -806,7 +814,7 @@ export default function PendingRequestsTab() {
       if (reqFotoUrl && reqFotoUrl.startsWith("data:image/")) {
         setUploadingImage(true);
         try {
-          const upRes = await fetch("/api/upload", {
+          const upRes = await fetch(getApiUrl("/api/upload"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ image: reqFotoUrl })
@@ -1174,7 +1182,9 @@ export default function PendingRequestsTab() {
       loadRequests();
       loadPromaxRecords();
       clearRepresentativosCache();
+      clearMotoristasRotasCache();
       setRepsList(getRepresentativosSetor());
+      setMotoristasList(getMotoristasRotas());
       try {
         const savedVales = localStorage.getItem("sstr_vales_historico_reg");
         if (savedVales) {
@@ -1481,7 +1491,7 @@ export default function PendingRequestsTab() {
     let defaultMotorista = cast.faltaMotorista || "";
     if (!defaultMotorista) {
       const sectorKey = req.setor ? req.setor.replace("ROTA - ", "").trim() : "";
-      const routeDriver = MOTORISTAS_ROTAS[sectorKey];
+      const routeDriver = motoristasList[sectorKey];
       if (routeDriver) {
         defaultMotorista = routeDriver.nome;
       } else if (inferredDriver) {
@@ -1592,7 +1602,7 @@ export default function PendingRequestsTab() {
 
     let compiledPdfUrl = "";
     try {
-      const compileRes = await fetch("/api/compile-pdf", {
+      const compileRes = await fetch(getApiUrl("/api/compile-pdf"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1641,7 +1651,7 @@ export default function PendingRequestsTab() {
     let finalReciboUrl = baixaReciboFile.dataUrl;
     if (baixaReciboFile.dataUrl && baixaReciboFile.dataUrl.startsWith("data:image/")) {
       try {
-        const upRes = await fetch("/api/upload", {
+        const upRes = await fetch(getApiUrl("/api/upload"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ image: baixaReciboFile.dataUrl })
@@ -2294,7 +2304,7 @@ export default function PendingRequestsTab() {
                 <option value="todos">Todos os Setores</option>
                 {uniqueSectors.map(sec => {
                   const rep = repsList[sec.trim()];
-                  const rot = MOTORISTAS_ROTAS[sec.trim()];
+                  const rot = motoristasList[sec.trim()];
                   const label = rep 
                     ? `Setor ${sec} (${rep.nome})` 
                     : rot 
@@ -3109,7 +3119,7 @@ export default function PendingRequestsTab() {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 no-print">
             {filteredRequests.map((req) => {
               const repInfo = repsList[req.setor.trim()];
-              const rotInfo = MOTORISTAS_ROTAS[req.setor.trim()];
+              const rotInfo = motoristasList[req.setor.trim()];
               const isShortage = isFaltaOrInversao(req);
               const cast = req as any;
               const pdvDb = getPdvDatabase();

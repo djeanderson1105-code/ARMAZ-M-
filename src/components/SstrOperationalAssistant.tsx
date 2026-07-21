@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { ExchangeRecord } from "../types";
+import { getApiUrl } from "../utils/apiUrl";
 import { 
   BookOpen, 
   Bot, 
@@ -177,7 +178,7 @@ export default function SstrOperationalAssistant({ records }: SstrOperationalAss
     setIsAiLoading(true);
 
     try {
-      const response = await fetch("/api/gemini/chat", {
+      const response = await fetch(getApiUrl("/api/gemini/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { ExchangeRecord, SectorAnalytics, REPRESENTATIVOS_SETOR } from "../types";
+import { getApiUrl } from "../utils/apiUrl";
 import { parseSectorAnalytics } from "../utils/csvParser";
 import { calculateHL, getHectoFactor } from "../utils/hectoFactors";
 import ConsolidatedView from "./ConsolidatedView";
@@ -92,6 +93,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
   const [endDateStr, setEndDateStr] = useState<string>("");
   const [selectedReason, setSelectedReason] = useState<string>("todos");
   const [selectedGv, setSelectedGv] = useState<string>("todos");
+  const [sectorStatusFilter, setSectorStatusFilter] = useState<"todos" | "aprovado" | "reprovado" | "pendente">("todos");
 
   // Interactive inner states for clicking products or clients
   const [selectedProductCode, setSelectedProductCode] = useState<string | null>(null);
@@ -376,16 +378,31 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
     return Object.values(dateMap).sort((a, b) => a.timestamp - b.timestamp);
   }, [filteredRecords]);
 
-  // Dynamic goal determination: 12.000 if specific month is selected, else 12.000 * 6 = 72.000 (1º H Semestral)
+  // Dynamic goal determination: 12.000 if specific month is selected, else 12.000 * active months
   const isMonthSelected = useMemo(() => {
     return filterMode === "mes" && selectedMonthYear !== "todos";
   }, [filterMode, selectedMonthYear]);
 
+  // Count the number of unique months with records in the current filtered set to scale the target limit appropriately
+  const distinctMonthsCount = useMemo(() => {
+    const months = new Set<string>();
+    filteredRecords.forEach(r => {
+      if (r.dataSolicitacao) {
+        const parts = r.dataSolicitacao.split("/");
+        if (parts.length === 3) {
+          // Store "MM/YYYY" to correctly group distinct months
+          months.add(`${parts[1]}/${parts[2]}`);
+        }
+      }
+    });
+    return months.size || 1;
+  }, [filteredRecords]);
+
   const activeGoal = useMemo(() => {
     if (filterMode === "mes") {
       if (selectedMonthYear !== "todos") return META_MENSAL;
-      if (semesterFilter === "all") return META_MENSAL * 12; // Annual Meta
-      return META_MENSAL * 6; // Semestral Meta
+      // If month is "todos", scale the meta dynamically by the number of months with actual records
+      return META_MENSAL * distinctMonthsCount;
     } else {
       // filterMode === "dias"
       if (startDateStr && endDateStr) {
@@ -399,10 +416,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
         const dayCount = 1;
         return Number((dayCount * (META_MENSAL / 30.41)).toFixed(2));
       }
-      if (semesterFilter === "all") return META_MENSAL * 12; // Annual Meta
-      return META_MENSAL * 6; // Semestral Meta
+      return META_MENSAL * distinctMonthsCount;
     }
-  }, [filterMode, selectedMonthYear, semesterFilter, startDateStr, endDateStr, META_MENSAL]);
+  }, [filterMode, selectedMonthYear, distinctMonthsCount, startDateStr, endDateStr, META_MENSAL]);
 
   const activeGoalName = useMemo(() => {
     if (filterMode === "mes") {
@@ -449,17 +465,29 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
     return (annualApprovedAccumulated / META_ANUAL) * 100;
   }, [annualApprovedAccumulated]);
 
+  // Filter sector records based on status filter
+  const sectorRecordsForTree = useMemo(() => {
+    if (sectorStatusFilter === "todos") return filteredRecords;
+    return filteredRecords.filter(r => {
+      const statusClean = r.status.toLowerCase().trim();
+      if (sectorStatusFilter === "aprovado") return statusClean.includes("aprov");
+      if (sectorStatusFilter === "reprovado") return statusClean.includes("reprov");
+      if (sectorStatusFilter === "pendente") return statusClean.includes("pend");
+      return true;
+    });
+  }, [filteredRecords, sectorStatusFilter]);
+
   // Sector Analytics based on filtered records
   const sectorAnalytics = useMemo(() => {
-    return parseSectorAnalytics(filteredRecords);
-  }, [filteredRecords]);
+    return parseSectorAnalytics(sectorRecordsForTree);
+  }, [sectorRecordsForTree]);
 
   // --- Dynamic Sector Audit Exploration & Inner Rankings ---
   // Records specifically belonging to the active sector
   const activeSectorRecords = useMemo(() => {
     if (!selectedSector) return [];
-    return filteredRecords.filter(r => r.setorVenda === selectedSector);
-  }, [filteredRecords, selectedSector]);
+    return sectorRecordsForTree.filter(r => r.setorVenda === selectedSector);
+  }, [sectorRecordsForTree, selectedSector]);
 
   // Total spent in this active sector
   const activeSectorTotalSpent = useMemo(() => {
@@ -655,7 +683,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
     setAiLoading(true);
 
     try {
-      const response = await fetch("/api/gemini/chat", {
+      const response = await fetch(getApiUrl("/api/gemini/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1230,9 +1258,39 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
         
         {/* SECTION 1: Sector Expenses Tree */}
         <div className="lg:col-span-5 bg-slate-900/90 p-5 rounded-2xl border border-slate-800/80 shadow-md">
-          <div className="mb-4">
-            <h3 className="text-md font-bold font-display text-white">Árvore de Custos por Setor</h3>
-            <p className="text-xs text-slate-400">Selecione um Setor da lista abaixo para uma auditoria pormenorizada</p>
+          <div className="mb-4 space-y-3">
+            <div>
+              <h3 className="text-md font-bold font-display text-white">Árvore de Custos por Setor</h3>
+              <p className="text-xs text-slate-400">Selecione um Setor da lista abaixo para uma auditoria pormenorizada</p>
+            </div>
+
+            {/* Status Filter for Tree */}
+            <div className="bg-slate-950/60 p-2 rounded-xl border border-slate-850/60">
+              <span className="text-[9px] uppercase font-bold text-slate-500 tracking-wider font-mono block mb-1.5 px-1">Filtro de Status na Árvore:</span>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { id: "todos", label: "Todos" },
+                  { id: "aprovado", label: "Aprovados" },
+                  { id: "pendente", label: "Pendentes" },
+                  { id: "reprovado", label: "Reprovados" }
+                ].map(item => {
+                  const isActive = sectorStatusFilter === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => setSectorStatusFilter(item.id as any)}
+                      className={`py-1 rounded text-[11px] font-semibold transition-all cursor-pointer border text-center ${
+                        isActive
+                          ? "bg-blue-600 text-white border-blue-500 shadow-sm"
+                          : "bg-slate-900/40 hover:bg-slate-900 text-slate-400 border-slate-800"
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           <div className="space-y-3 max-h-[580px] overflow-y-auto pr-1">

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import * as XLSX from "xlsx";
 import { 
   UserPlus, 
   Shield, 
@@ -27,12 +28,16 @@ import {
 import { 
   getListaCrew, 
   getRepresentativosSetor, 
+  getMotoristasRotas,
+  clearMotoristasRotasCache,
+  clearRepresentativosCache,
   CrewMember, 
   RepresentativeInfo,
+  RouteDriverInfo,
   PendingRequest,
   RequestItem
 } from "../types";
-import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros } from "../data/products";
+import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, getProductsDatabase, clearProductsCache } from "../data/products";
 import { getPdvDatabase, registerNewPdv, registerMultiplePdvs, clearPdvCache } from "../data/pdvData";
 
 interface ManagerUser {
@@ -42,7 +47,7 @@ interface ManagerUser {
 }
 
 export default function ManagersTab() {
-  const [activeSubTab, setActiveSubTab] = useState<"gestores" | "crew" | "rns" | "otimizacao" | "pdvs">("gestores");
+  const [activeSubTab, setActiveSubTab] = useState<"gestores" | "crew" | "rns" | "rotas" | "otimizacao" | "pdvs" | "produtos">("gestores");
 
   // PDV States
   const [pdvCode, setPdvCode] = useState("");
@@ -625,6 +630,37 @@ export default function ManagersTab() {
   const [newRepSetor, setNewRepSetor] = useState("");
   const [newRepNome, setNewRepNome] = useState("");
   const [newRepGv, setNewRepGv] = useState("DIEGO");
+  const [rnDragActive, setRnDragActive] = useState(false);
+  const [rnPasteText, setRnPasteText] = useState("");
+
+  // Route Driver (SSTR Rotas) states
+  const [motoristasRotasList, setMotoristasRotasList] = useState<Record<string, RouteDriverInfo>>({});
+  const [searchRoute, setSearchRoute] = useState("");
+  const [newRouteCode, setNewRouteCode] = useState("");
+  const [newRouteDriverName, setNewRouteDriverName] = useState("");
+  const [newRouteVehicle, setNewRouteVehicle] = useState("Motorista de Distribuição");
+
+  const [editingRouteCode, setEditingRouteCode] = useState<string | null>(null);
+  const [confirmDeleteRoute, setConfirmDeleteRoute] = useState<string | null>(null);
+  const [routeDragActive, setRouteDragActive] = useState(false);
+  const [routePasteText, setRoutePasteText] = useState("");
+
+  // Crew drag states
+  const [crewDragActive, setCrewDragActive] = useState(false);
+  const [crewPasteText, setCrewPasteText] = useState("");
+
+  // Product states
+  const [productsList, setProductsList] = useState<ProductInfo[]>([]);
+  const [searchProduct, setSearchProduct] = useState("");
+  const [productDragActive, setProductDragActive] = useState(false);
+  const [productPasteText, setProductPasteText] = useState("");
+  const [newProductCodigo, setNewProductCodigo] = useState("");
+  const [newProductDescricao, setNewProductDescricao] = useState("");
+  const [newProductFator, setNewProductFator] = useState("12");
+  const [newProductValor, setNewProductValor] = useState("98.50");
+  const [newProductFatorHecto, setNewProductFatorHecto] = useState("0.05");
+  const [editingProductCodigo, setEditingProductCodigo] = useState<string | null>(null);
+  const [confirmDeleteProduct, setConfirmDeleteProduct] = useState<string | null>(null);
 
   // Editing state trackers
   const [editingRepId, setEditingRepId] = useState<string | null>(null);
@@ -695,6 +731,8 @@ export default function ManagersTab() {
       // Dyn lists
       setCrewList(getListaCrew());
       setRepsList(getRepresentativosSetor());
+      setMotoristasRotasList(getMotoristasRotas());
+      setProductsList(getProductsDatabase());
       
       // Load PDV database
       loadPdvDatabase();
@@ -714,8 +752,8 @@ export default function ManagersTab() {
     setError(null);
     setSuccess(null);
 
-    // Strip any leading "@" characters (e.g. @admin -> admin, @1234 -> 1234)
-    const normUser = newUsername.trim().replace(/^@+/, "");
+    // Strip any leading "@" characters and convert to lowercase (e.g. @G1002 -> g1002, @1234 -> 1234)
+    const normUser = newUsername.trim().toLowerCase().replace(/^@+/, "");
     const normName = newName.trim();
     const normPass = newPassword.trim();
 
@@ -864,6 +902,7 @@ export default function ManagersTab() {
     const updated = crewList.filter(c => c.cpf !== cpfToDelete);
     setCrewList(updated);
     localStorage.setItem("sstr_lista_crew", JSON.stringify(updated));
+    window.dispatchEvent(new Event("storage"));
     setSuccess(`Colaborador "${target.nome}" excluído do sistema.`);
     setConfirmDeleteCrew(null);
     setTimeout(() => setSuccess(null), 3000);
@@ -903,6 +942,8 @@ export default function ManagersTab() {
 
       setRepsList(updated);
       localStorage.setItem("sstr_reps_setor", JSON.stringify(updated));
+      clearRepresentativosCache();
+      window.dispatchEvent(new Event("storage"));
 
       setNewRepSetor("");
       setNewRepNome("");
@@ -920,6 +961,8 @@ export default function ManagersTab() {
       };
       setRepsList(updated);
       localStorage.setItem("sstr_reps_setor", JSON.stringify(updated));
+      clearRepresentativosCache();
+      window.dispatchEvent(new Event("storage"));
 
       setNewRepSetor("");
       setNewRepNome("");
@@ -939,8 +982,87 @@ export default function ManagersTab() {
     delete updated[setorToDelete];
     setRepsList(updated);
     localStorage.setItem("sstr_reps_setor", JSON.stringify(updated));
+    clearRepresentativosCache();
+    window.dispatchEvent(new Event("storage"));
     setSuccess(`Setor ${setorToDelete} (RN: ${target.nome}) removido do sistema.`);
     setConfirmDeleteRep(null);
+    setTimeout(() => setSuccess(null), 3000);
+  };
+
+  // Route Driver (SSTR Rotas) Handlers
+  const handleAddRoute = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+
+    const rota = newRouteCode.trim().toUpperCase();
+    const nome = newRouteDriverName.trim().toUpperCase();
+    const veiculo = newRouteVehicle.trim();
+
+    if (!rota || !nome || !veiculo) {
+      setError("Favor preencher todos os campos da Rota / Condutor.");
+      return;
+    }
+
+    if (editingRouteCode) {
+      if (rota !== editingRouteCode && motoristasRotasList[rota]) {
+        setError(`A rota "${rota}" já está cadastrada para o condutor "${motoristasRotasList[rota].nome}".`);
+        return;
+      }
+
+      const updated = { ...motoristasRotasList };
+      if (rota !== editingRouteCode) {
+        delete updated[editingRouteCode];
+      }
+      updated[rota] = { rota, nome, veiculo };
+
+      setMotoristasRotasList(updated);
+      localStorage.setItem("sstr_motoristas_rotas", JSON.stringify(updated));
+      clearMotoristasRotasCache();
+      window.dispatchEvent(new Event("storage"));
+
+      setNewRouteCode("");
+      setNewRouteDriverName("");
+      setEditingRouteCode(null);
+      setSuccess(`Rota ${rota} (Condutor: ${nome}) atualizada com sucesso!`);
+    } else {
+      if (motoristasRotasList[rota]) {
+        setError(`A rota "${rota}" já está cadastrada para o condutor "${motoristasRotasList[rota].nome}".`);
+        return;
+      }
+
+      const updated = {
+        ...motoristasRotasList,
+        [rota]: { rota, nome, veiculo }
+      };
+      setMotoristasRotasList(updated);
+      localStorage.setItem("sstr_motoristas_rotas", JSON.stringify(updated));
+      clearMotoristasRotasCache();
+      window.dispatchEvent(new Event("storage"));
+
+      setNewRouteCode("");
+      setNewRouteDriverName("");
+      setSuccess(`Rota ${rota} (Condutor: ${nome}) cadastrada com sucesso!`);
+    }
+
+    setTimeout(() => setSuccess(null), 3000);
+  };
+
+  const executeDeleteRoute = (rotaToDelete: string) => {
+    setError(null);
+    setSuccess(null);
+    const target = motoristasRotasList[rotaToDelete];
+    if (!target) return;
+
+    const updated = { ...motoristasRotasList };
+    delete updated[rotaToDelete];
+    setMotoristasRotasList(updated);
+    localStorage.setItem("sstr_motoristas_rotas", JSON.stringify(updated));
+    clearMotoristasRotasCache();
+    window.dispatchEvent(new Event("storage"));
+
+    setSuccess(`Rota ${rotaToDelete} (Condutor: ${target.nome}) removida do sistema.`);
+    setConfirmDeleteRoute(null);
     setTimeout(() => setSuccess(null), 3000);
   };
 
@@ -956,6 +1078,13 @@ export default function ManagersTab() {
     if (!searchRep) return true;
     const q = searchRep.toLowerCase();
     return r.nome.toLowerCase().includes(q) || r.setor.includes(q) || r.gv.toLowerCase().includes(q);
+  });
+
+  const routesArray = Object.values(motoristasRotasList) as RouteDriverInfo[];
+  const filteredRoutes = routesArray.filter(r => {
+    if (!searchRoute) return true;
+    const q = searchRoute.toLowerCase();
+    return r.rota.toLowerCase().includes(q) || r.nome.toLowerCase().includes(q) || r.veiculo.toLowerCase().includes(q);
   });
 
   // PDV filtered list Memo
@@ -1147,116 +1276,863 @@ export default function ManagersTab() {
   const handlePdvImportFile = (file: File) => {
     setError(null);
     setSuccess(null);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      if (!text) return;
-      
-      try {
-        const lines = text.split(/\r?\n/);
-        if (lines.length < 2) {
-          setError("O arquivo está vazio ou não possui registros suficientes.");
-          return;
+    const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.type.includes("sheet") || file.type.includes("excel");
+
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: "array" });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ";" });
+          processPdvImportText(csvText);
+        } catch (err: any) {
+          console.error(err);
+          setError("Erro ao ler arquivo Excel: " + err.message);
         }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        if (!text) return;
         
-        // Find separator (semicolon or comma or tab)
-        const firstLine = lines[0];
-        let separator = ";";
-        if (firstLine.includes(";")) {
-          separator = ";";
-        } else if (firstLine.includes(",")) {
-          separator = ",";
-        } else if (firstLine.includes("\t")) {
-          separator = "\t";
-        }
-        
-        const headers = firstLine.split(separator).map(h => h.trim().toLowerCase());
-        
-        const getColIndex = (names: string[]) => {
-          return headers.findIndex(h => names.some(n => {
-            const cleanH = h.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-            const cleanN = n.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-            return cleanH === cleanN || cleanH.includes(cleanN);
-          }));
-        };
-        
-        const idxCdPdv = getColIndex(["cdpdv", "codigo", "id", "nb"]);
-        const idxDocumento = getColIndex(["documento", "cpf", "cnpj"]);
-        const idxNomeFantasia = getColIndex(["nomefantasia", "fantasia", "nome_fantasia"]);
-        const idxRazoSocial = getColIndex(["razosocial", "razaosocial", "razao_social", "cliente", "razao"]);
-        const idxEndereco = getColIndex(["endereco", "rua", "logradouro"]);
-        const idxComplemento = getColIndex(["complemento"]);
-        const idxBairro = getColIndex(["bairro"]);
-        const idxCidade = getColIndex(["cidade", "municipio"]);
-        const idxUf = getColIndex(["uf", "estado"]);
-        const idxCep = getColIndex(["cep"]);
-        
-        if (idxCdPdv === -1) {
-          setError("Coluna de identificação do PDV (ex: CdPDV ou Código) não foi localizada no cabeçalho.");
-          return;
-        }
-        
-        const importedPdvs: any[] = [];
-        for (let i = 1; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-          
-          const parts = line.split(separator).map(p => p.trim().replace(/^["']|["']$/g, ""));
-          if (parts.length > idxCdPdv) {
-            const codigo = parts[idxCdPdv];
-            if (!codigo) continue;
-            
-            const getField = (idx: number) => {
-              if (idx !== -1 && idx < parts.length) {
-                return parts[idx];
-              }
-              return "";
-            };
-            
-            const razaoSocial = getField(idxRazoSocial) || `PDV #${codigo}`;
-            const nomeFantasia = getField(idxNomeFantasia) || razaoSocial;
-            const municipio = getField(idxCidade) || "GUARABIRA";
-            const documento = getField(idxDocumento);
-            const endereco = getField(idxEndereco);
-            const complemento = getField(idxComplemento);
-            const bairro = getField(idxBairro);
-            const uf = getField(idxUf) || "PB";
-            const cep = getField(idxCep);
-            
-            importedPdvs.push({
-              codigo,
-              razaoSocial,
-              nomeFantasia,
-              municipio,
-              documento,
-              endereco,
-              complemento,
-              bairro,
-              uf,
-              cep
-            });
-          }
-        }
-        
-        if (importedPdvs.length === 0) {
-          setError("Nenhum PDV válido foi extraído do arquivo.");
-          return;
-        }
-        
-        const res = registerMultiplePdvs(importedPdvs);
-        if (res.success) {
-          setSuccess(`${res.count} PDVs cadastrados/atualizados com sucesso a partir do arquivo!`);
-          clearPdvCache();
-          loadPdvDatabase();
-          setTimeout(() => setSuccess(null), 5000);
+        const hasReplacementChar = text.includes("\uFFFD");
+        if (hasReplacementChar) {
+          const isoReader = new FileReader();
+          isoReader.onload = (isoEvent) => {
+            const isoText = isoEvent.target?.result as string;
+            if (isoText) {
+              processPdvImportText(isoText);
+            }
+          };
+          isoReader.readAsText(file, "ISO-8859-1");
         } else {
-          setError(res.error || "Ocorreu um erro ao importar os PDVs.");
+          processPdvImportText(text);
         }
-      } catch (err: any) {
-        setError("Falha ao analisar o arquivo: " + err.message);
+      };
+      reader.readAsText(file, "UTF-8");
+    }
+  };
+
+  const processPdvImportText = (text: string) => {
+    try {
+      const lines = text.split(/\r?\n/);
+      if (lines.length < 2) {
+        setError("O arquivo está vazio ou não possui registros suficientes.");
+        return;
       }
-    };
-    reader.readAsText(file, "UTF-8");
+      
+      // Find separator (semicolon or comma or tab)
+      const firstLine = lines[0];
+      let separator = ";";
+      if (firstLine.includes(";")) {
+        separator = ";";
+      } else if (firstLine.includes(",")) {
+        separator = ",";
+      } else if (firstLine.includes("\t")) {
+        separator = "\t";
+      }
+      
+      const headers = firstLine.split(separator).map(h => h.trim());
+      
+      const cleanStr = (s: string) => {
+        return s
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-zA-Z0-9]/g, "")
+          .toLowerCase();
+      };
+      
+      const getColIndex = (names: string[]) => {
+        return headers.findIndex(h => {
+          const cleanH = cleanStr(h);
+          return names.some(n => {
+            const cleanN = cleanStr(n);
+            return cleanH === cleanN || cleanH.includes(cleanN) || cleanN.includes(cleanH);
+          });
+        });
+      };
+      
+      const idxCdPdv = getColIndex(["cdpdv", "codpdv", "codigo", "id", "nb", "pdv", "cod"]);
+      const idxDocumento = getColIndex(["documento", "cpf", "cnpj"]);
+      const idxNomeFantasia = getColIndex(["nomefantasia", "fantasia", "nome_fantasia"]);
+      const idxRazoSocial = getColIndex(["razosocial", "razaosocial", "razao_social", "cliente", "razao", "social"]);
+      const idxEndereco = getColIndex(["endereco", "rua", "logradouro"]);
+      const idxComplemento = getColIndex(["complemento"]);
+      const idxBairro = getColIndex(["bairro"]);
+      const idxCidade = getColIndex(["cidade", "municipio", "municpio", "muncipio"]);
+      const idxUf = getColIndex(["uf", "estado"]);
+      const idxCep = getColIndex(["cep"]);
+      
+      if (idxCdPdv === -1) {
+        setError("Coluna de identificação do PDV (ex: CdPDV ou Código) não foi localizada no cabeçalho.");
+        return;
+      }
+      
+      const importedPdvs: any[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        const parts = line.split(separator).map(p => p.trim().replace(/^["']|["']$/g, ""));
+        if (parts.length > idxCdPdv) {
+          const codigo = parts[idxCdPdv];
+          if (!codigo) continue;
+          
+          const getField = (idx: number) => {
+            if (idx !== -1 && idx < parts.length) {
+              return parts[idx];
+            }
+            return "";
+          };
+          
+          const razaoSocial = getField(idxRazoSocial) || `PDV #${codigo}`;
+          const nomeFantasia = getField(idxNomeFantasia) || razaoSocial;
+          const municipio = getField(idxCidade) || "GUARABIRA";
+          const documento = getField(idxDocumento);
+          const endereco = getField(idxEndereco);
+          const complemento = getField(idxComplemento);
+          const bairro = getField(idxBairro);
+          const uf = getField(idxUf) || "PB";
+          const cep = getField(idxCep);
+          
+          importedPdvs.push({
+            codigo,
+            razaoSocial,
+            nomeFantasia,
+            municipio,
+            documento,
+            endereco,
+            complemento,
+            bairro,
+            uf,
+            cep
+          });
+        }
+      }
+      
+      if (importedPdvs.length === 0) {
+        setError("Nenhum PDV válido foi extraído do arquivo.");
+        return;
+      }
+      
+      const res = registerMultiplePdvs(importedPdvs);
+      if (res.success) {
+        setSuccess(`${res.count} PDVs cadastrados/atualizados com sucesso a partir do arquivo!`);
+        clearPdvCache();
+        loadPdvDatabase();
+        setTimeout(() => setSuccess(null), 5000);
+      } else {
+        setError(res.error || "Ocorreu um erro ao importar os PDVs.");
+      }
+    } catch (err: any) {
+      setError("Falha ao analisar o arquivo: " + err.message);
+    }
+  };
+
+  const handleRnImportFile = (file: File) => {
+    setError(null);
+    setSuccess(null);
+    const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.type.includes("sheet") || file.type.includes("excel");
+
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: "array" });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ";" });
+          handleRnImportText(csvText);
+        } catch (err: any) {
+          console.error(err);
+          setError("Erro ao ler arquivo Excel: " + err.message);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        if (!text) return;
+        
+        const hasReplacementChar = text.includes("\uFFFD");
+        if (hasReplacementChar) {
+          const isoReader = new FileReader();
+          isoReader.onload = (isoEvent) => {
+            const isoText = isoEvent.target?.result as string;
+            if (isoText) {
+              handleRnImportText(isoText);
+            }
+          };
+          isoReader.readAsText(file, "ISO-8859-1");
+        } else {
+          handleRnImportText(text);
+        }
+      };
+      reader.readAsText(file, "UTF-8");
+    }
+  };
+
+  const handleRnImportText = (text: string) => {
+    setError(null);
+    setSuccess(null);
+    if (!text.trim()) {
+      setError("Por favor, cole as informações dos representantes ou selecione um arquivo.");
+      return;
+    }
+    
+    try {
+      const lines = text.split(/\r?\n/);
+      let separator = ";";
+      
+      let headerLineIndex = 0;
+      while (headerLineIndex < lines.length && !lines[headerLineIndex].trim()) {
+        headerLineIndex++;
+      }
+      
+      if (headerLineIndex >= lines.length) {
+        setError("Nenhuma linha de dados encontrada.");
+        return;
+      }
+      
+      const firstLine = lines[headerLineIndex];
+      if (firstLine.includes(";")) {
+        separator = ";";
+      } else if (firstLine.includes(",")) {
+        separator = ",";
+      } else if (firstLine.includes("\t")) {
+        separator = "\t";
+      } else if (firstLine.includes("|")) {
+        separator = "|";
+      }
+      
+      const firstLineClean = firstLine.toLowerCase();
+      const isHeader = firstLineClean.includes("setor") || firstLineClean.includes("nome") || firstLineClean.includes("gv") || firstLineClean.includes("gerente") || firstLineClean.includes("rn");
+      
+      const startIndex = isHeader ? headerLineIndex + 1 : headerLineIndex;
+      
+      const newReps: Record<string, RepresentativeInfo> = { ...repsList };
+      let count = 0;
+      let skipped = 0;
+      
+      for (let i = startIndex; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        const parts = line.split(separator).map(p => p.trim().replace(/^["']|["']$/g, ""));
+        if (parts.length >= 2) {
+          const setor = parts[0].trim();
+          const nome = parts[1].trim().toUpperCase();
+          let gv = parts[2] ? parts[2].trim().toUpperCase() : "OUTRO";
+          
+          if (!setor || !/^\d+$/.test(setor) || !nome) {
+            skipped++;
+            continue;
+          }
+          
+          if (gv.includes("DIEGO") || gv.includes("GUERRA")) {
+            gv = "DIEGO";
+          } else if (gv.includes("ERIVAN")) {
+            gv = "ERIVAN";
+          }
+          
+          newReps[setor] = { setor, nome, gv };
+          count++;
+        } else {
+          skipped++;
+        }
+      }
+      
+      if (count === 0) {
+        setError("Nenhum representante de vendas válido foi extraído. Verifique o formato.");
+        return;
+      }
+      
+      setRepsList(newReps);
+      localStorage.setItem("sstr_reps_setor", JSON.stringify(newReps));
+      clearRepresentativosCache();
+      window.dispatchEvent(new Event("storage"));
+      
+      setSuccess(`${count} representantes cadastrados/atualizados com sucesso!${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""}`);
+      setTimeout(() => setSuccess(null), 5000);
+      setRnPasteText("");
+    } catch (err: any) {
+      setError("Erro ao analisar dados dos representantes: " + err.message);
+    }
+  };
+
+  // Rotas batch import handlers
+  const handleRouteImportText = (text: string) => {
+    setError(null);
+    setSuccess(null);
+    if (!text.trim()) {
+      setError("Por favor, cole as informações das rotas ou selecione um arquivo.");
+      return;
+    }
+    
+    try {
+      const lines = text.split(/\r?\n/);
+      let separator = ";";
+      
+      let headerLineIndex = 0;
+      while (headerLineIndex < lines.length && !lines[headerLineIndex].trim()) {
+        headerLineIndex++;
+      }
+      
+      if (headerLineIndex >= lines.length) {
+        setError("Nenhuma linha de dados encontrada.");
+        return;
+      }
+      
+      const firstLine = lines[headerLineIndex];
+      if (firstLine.includes(";")) {
+        separator = ";";
+      } else if (firstLine.includes(",")) {
+        separator = ",";
+      } else if (firstLine.includes("\t")) {
+        separator = "\t";
+      } else if (firstLine.includes("|")) {
+        separator = "|";
+      }
+      
+      const firstLineClean = firstLine.toLowerCase();
+      const isHeader = firstLineClean.includes("rota") || firstLineClean.includes("condutor") || firstLineClean.includes("motorista") || firstLineClean.includes("veiculo") || firstLineClean.includes("cargo");
+      
+      const startIndex = isHeader ? headerLineIndex + 1 : headerLineIndex;
+      
+      const updated = { ...motoristasRotasList };
+      let count = 0;
+      let skipped = 0;
+      
+      for (let i = startIndex; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        const parts = line.split(separator).map(p => p.trim().replace(/^["']|["']$/g, ""));
+        if (parts.length >= 2) {
+          const rota = parts[0].trim().toUpperCase();
+          const nome = parts[1].trim().toUpperCase();
+          let veiculo = parts[2] ? parts[2].trim() : "Motorista de Distribuição";
+          
+          if (!veiculo) {
+            veiculo = "Motorista de Distribuição";
+          }
+          
+          if (!rota || !nome) {
+            skipped++;
+            continue;
+          }
+          
+          updated[rota] = { rota, nome, veiculo };
+          count++;
+        } else {
+          skipped++;
+        }
+      }
+      
+      if (count === 0) {
+        setError("Nenhuma rota válida foi extraído. Verifique o formato.");
+        return;
+      }
+      
+      setMotoristasRotasList(updated);
+      localStorage.setItem("sstr_motoristas_rotas", JSON.stringify(updated));
+      clearMotoristasRotasCache();
+      window.dispatchEvent(new Event("storage"));
+      
+      setSuccess(`${count} rotas processadas e importadas com sucesso!${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""}`);
+      setRoutePasteText("");
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (err: any) {
+      console.error(err);
+      setError("Erro ao processar lote de rotas: " + err.message);
+    }
+  };
+
+  const handleRouteImportFile = (file: File) => {
+    setError(null);
+    setSuccess(null);
+    const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.type.includes("sheet") || file.type.includes("excel");
+
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: "array" });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ";" });
+          handleRouteImportText(csvText);
+        } catch (err: any) {
+          console.error(err);
+          setError("Erro ao ler arquivo Excel: " + err.message);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        if (!text) return;
+        
+        const hasReplacementChar = text.includes("\uFFFD");
+        if (hasReplacementChar) {
+          const isoReader = new FileReader();
+          isoReader.onload = (isoEvent) => {
+            const isoText = isoEvent.target?.result as string;
+            if (isoText) {
+              handleRouteImportText(isoText);
+            }
+          };
+          isoReader.readAsText(file, "ISO-8859-1");
+        } else {
+          handleRouteImportText(text);
+        }
+      };
+      reader.readAsText(file, "UTF-8");
+    }
+  };
+
+  // Crew (Drivers/Helpers) batch import handlers
+  const handleCrewImportText = (text: string) => {
+    setError(null);
+    setSuccess(null);
+    if (!text.trim()) {
+      setError("Por favor, cole as informações dos colaboradores ou selecione um arquivo.");
+      return;
+    }
+    
+    try {
+      const lines = text.split(/\r?\n/);
+      let separator = ";";
+      
+      let headerLineIndex = 0;
+      while (headerLineIndex < lines.length && !lines[headerLineIndex].trim()) {
+        headerLineIndex++;
+      }
+      
+      if (headerLineIndex >= lines.length) {
+        setError("Nenhuma linha de dados encontrada.");
+        return;
+      }
+      
+      const firstLine = lines[headerLineIndex];
+      if (firstLine.includes(";")) {
+        separator = ";";
+      } else if (firstLine.includes(",")) {
+        separator = ",";
+      } else if (firstLine.includes("\t")) {
+        separator = "\t";
+      } else if (firstLine.includes("|")) {
+        separator = "|";
+      }
+      
+      const firstLineClean = firstLine.toLowerCase();
+      const isHeader = firstLineClean.includes("chapa") || firstLineClean.includes("nome") || firstLineClean.includes("cargo") || firstLineClean.includes("cpf") || firstLineClean.includes("descri") || firstLineClean.includes("cod");
+      
+      const startIndex = isHeader ? headerLineIndex + 1 : headerLineIndex;
+      
+      const crewMap = new Map<string, CrewMember>();
+      for (const item of crewList) {
+        if (item.cpf) {
+          crewMap.set(item.cpf.trim(), item);
+        }
+      }
+      
+      let count = 0;
+      let skipped = 0;
+      
+      for (let i = startIndex; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        const parts = line.split(separator).map(p => p.trim().replace(/^["']|["']$/g, ""));
+        
+        let nome = "";
+        let cargo = "MOTORISTA DE DISTRIBUICAO";
+        let cpf = "";
+        
+        if (parts.length >= 4) {
+          nome = parts[1].trim().toUpperCase();
+          cargo = parts[2].trim().toUpperCase();
+          cpf = parts[3].trim();
+        } else if (parts.length === 3) {
+          nome = parts[0].trim().toUpperCase();
+          cargo = parts[1].trim().toUpperCase();
+          cpf = parts[2].trim();
+        } else {
+          skipped++;
+          continue;
+        }
+        
+        if (!nome || !cpf) {
+          skipped++;
+          continue;
+        }
+        
+        let formattedCpf = cpf;
+        if (/^\d{11}$/.test(cpf)) {
+          formattedCpf = `${cpf.substring(0, 3)}.${cpf.substring(3, 6)}.${cpf.substring(6, 9)}-${cpf.substring(9, 11)}`;
+        }
+        
+        crewMap.set(formattedCpf, { nome, cargo, cpf: formattedCpf });
+        count++;
+      }
+      
+      if (count === 0) {
+        setError("Nenhum colaborador válido foi extraído. Verifique o formato.");
+        return;
+      }
+      
+      const updatedList = Array.from(crewMap.values());
+      setCrewList(updatedList);
+      localStorage.setItem("sstr_lista_crew", JSON.stringify(updatedList));
+      window.dispatchEvent(new Event("storage"));
+      
+      setSuccess(`${count} colaboradores processados e cadastrados com sucesso!${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""}`);
+      setCrewPasteText("");
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (err: any) {
+      console.error(err);
+      setError("Erro ao processar lote de colaboradores: " + err.message);
+    }
+  };
+
+  const handleCrewImportFile = (file: File) => {
+    setError(null);
+    setSuccess(null);
+    const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.type.includes("sheet") || file.type.includes("excel");
+
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: "array" });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ";" });
+          handleCrewImportText(csvText);
+        } catch (err: any) {
+          console.error(err);
+          setError("Erro ao ler arquivo Excel: " + err.message);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        if (!text) return;
+        
+        const hasReplacementChar = text.includes("\uFFFD");
+        if (hasReplacementChar) {
+          const isoReader = new FileReader();
+          isoReader.onload = (isoEvent) => {
+            const isoText = isoEvent.target?.result as string;
+            if (isoText) {
+              handleCrewImportText(isoText);
+            }
+          };
+          isoReader.readAsText(file, "ISO-8859-1");
+        } else {
+          handleCrewImportText(text);
+        }
+      };
+      reader.readAsText(file, "UTF-8");
+    }
+  };
+
+  // Products handlers
+  const handleProductImportText = (text: string) => {
+    setError(null);
+    setSuccess(null);
+    if (!text.trim()) {
+      setError("Por favor, cole as informações dos produtos ou selecione um arquivo.");
+      return;
+    }
+    
+    try {
+      const lines = text.split(/\r?\n/);
+      let separator = ";";
+      
+      let headerLineIndex = 0;
+      while (headerLineIndex < lines.length && !lines[headerLineIndex].trim()) {
+        headerLineIndex++;
+      }
+      
+      if (headerLineIndex >= lines.length) {
+        setError("Nenhuma linha de dados encontrada.");
+        return;
+      }
+      
+      const firstLine = lines[headerLineIndex];
+      if (firstLine.includes(";")) {
+        separator = ";";
+      } else if (firstLine.includes(",")) {
+        separator = ",";
+      } else if (firstLine.includes("\t")) {
+        separator = "\t";
+      } else if (firstLine.includes("|")) {
+        separator = "|";
+      }
+      
+      const firstLineClean = firstLine.toLowerCase();
+      const isHeader = firstLineClean.includes("cod") || firstLineClean.includes("descri") || firstLineClean.includes("produto");
+      
+      const startIndex = isHeader ? headerLineIndex + 1 : headerLineIndex;
+      
+      const currentProducts = getProductsDatabase();
+      const productMap = new Map<string, ProductInfo>();
+      for (const item of currentProducts) {
+        if (item.codigo) {
+          productMap.set(item.codigo.trim(), item);
+        }
+      }
+      
+      let count = 0;
+      let skipped = 0;
+      
+      for (let i = startIndex; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        const parts = line.split(separator).map(p => p.trim().replace(/^["']|["']$/g, ""));
+        if (parts.length >= 2) {
+          const codigo = parts[0].trim();
+          const descricao = parts[1].trim().toUpperCase();
+          
+          if (!codigo || !/^\d+$/.test(codigo) || !descricao) {
+            skipped++;
+            continue;
+          }
+          
+          let fator = 12;
+          let valor = 98.50;
+          let fatorHecto = 0.05;
+          
+          const existing = productMap.get(codigo);
+          if (existing) {
+            fator = existing.fator !== undefined ? existing.fator : 12;
+            valor = existing.valor !== undefined ? existing.valor : 98.50;
+            fatorHecto = existing.fatorHecto;
+          } else {
+            const descLower = descricao.toLowerCase();
+            if (descLower.includes("pet 2l") || descLower.includes("pet 2.0l") || descLower.includes("pet 2,0l")) {
+              fatorHecto = 0.12;
+            } else if (descLower.includes("pet 1l") || descLower.includes("pet 1.0l") || descLower.includes("pet 1,0l")) {
+              fatorHecto = 0.12;
+            } else if (descLower.includes("pet 2,5l") || descLower.includes("pet 2.5l")) {
+              fatorHecto = 0.15;
+            } else if (descLower.includes("pet 500ml")) {
+              fatorHecto = 0.06;
+            } else if (descLower.includes("pet 200ml") || descLower.includes("pet 330ml")) {
+              fatorHecto = 0.02;
+            } else if (descLower.includes("lata 350ml") || descLower.includes("lt 350ml")) {
+              fatorHecto = 0.04;
+            } else if (descLower.includes("lata 473ml") || descLower.includes("lt 473ml")) {
+              fatorHecto = 0.06;
+            } else if (descLower.includes("lata 269ml") || descLower.includes("lt 269ml")) {
+              fatorHecto = 0.04;
+            } else if (descLower.includes("600ml") || descLower.includes("600 ml")) {
+              fatorHecto = 0.07;
+            } else if (descLower.includes("1l") || descLower.includes("1 l") || descLower.includes("litrao")) {
+              fatorHecto = 0.12;
+            } else if (descLower.includes("300ml") || descLower.includes("300 ml")) {
+              fatorHecto = 0.07;
+            } else if (descLower.includes("330ml") || descLower.includes("330 ml")) {
+              fatorHecto = 0.08;
+            } else if (descLower.includes("750 ml") || descLower.includes("750ml") || descLower.includes("965ml") || descLower.includes("998ml") || descLower.includes("900ml") || descLower.includes("740ml")) {
+              fatorHecto = 0.01;
+            } else if (descLower.includes("cervegela") || descLower.includes("garrafeira") || descLower.includes("pote") || descLower.includes("halls") || descLower.includes("trident") || descLower.includes("bubbaloo")) {
+              fatorHecto = 0.01;
+            }
+          }
+          
+          if (parts.length >= 3 && parts[2]) {
+            const parsedFator = parseInt(parts[2], 10);
+            if (!isNaN(parsedFator)) {
+              fator = parsedFator;
+            }
+          }
+          if (parts.length >= 4 && parts[3]) {
+            const parsedValor = parseFloat(parts[3].replace(",", "."));
+            if (!isNaN(parsedValor)) {
+              valor = parsedValor;
+            }
+          }
+          if (parts.length >= 5 && parts[4]) {
+            const parsedFatorHecto = parseFloat(parts[4].replace(",", "."));
+            if (!isNaN(parsedFatorHecto)) {
+              fatorHecto = parsedFatorHecto;
+            }
+          }
+          
+          productMap.set(codigo, { codigo, descricao, fator, valor, fatorHecto });
+          count++;
+        } else {
+          skipped++;
+        }
+      }
+      
+      if (count === 0) {
+        setError("Nenhum produto válido foi extraído. Verifique o formato.");
+        return;
+      }
+      
+      const updatedList = Array.from(productMap.values());
+      setProductsList(updatedList);
+      localStorage.setItem("sstr_products_database", JSON.stringify(updatedList));
+      clearProductsCache();
+      window.dispatchEvent(new Event("storage"));
+      
+      setSuccess(`${count} produtos processados e atualizados na base com sucesso!${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""}`);
+      setProductPasteText("");
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (err: any) {
+      console.error(err);
+      setError("Erro ao processar lote de produtos: " + err.message);
+    }
+  };
+
+  const handleProductImportFile = (file: File) => {
+    setError(null);
+    setSuccess(null);
+    const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.type.includes("sheet") || file.type.includes("excel");
+
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: "array" });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ";" });
+          handleProductImportText(csvText);
+        } catch (err: any) {
+          console.error(err);
+          setError("Erro ao ler arquivo Excel: " + err.message);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        if (!text) return;
+        
+        const hasReplacementChar = text.includes("\uFFFD");
+        if (hasReplacementChar) {
+          const isoReader = new FileReader();
+          isoReader.onload = (isoEvent) => {
+            const isoText = isoEvent.target?.result as string;
+            if (isoText) {
+              handleProductImportText(isoText);
+            }
+          };
+          isoReader.readAsText(file, "ISO-8859-1");
+        } else {
+          handleProductImportText(text);
+        }
+      };
+      reader.readAsText(file, "UTF-8");
+    }
+  };
+
+  const handleAddProduct = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+
+    const codigo = newProductCodigo.trim();
+    const descricao = newProductDescricao.trim().toUpperCase();
+    const fatorHecto = parseFloat(newProductFatorHecto.trim());
+    const fator = parseInt(newProductFator.trim(), 10);
+    const valor = parseFloat(newProductValor.trim());
+
+    if (!codigo || !/^\d+$/.test(codigo) || !descricao || isNaN(fatorHecto) || isNaN(fator) || isNaN(valor)) {
+      setError("Favor preencher todos os campos corretamente (Fator, Valor e Fator HL válidos).");
+      return;
+    }
+
+    const currentList = getProductsDatabase();
+
+    if (editingProductCodigo) {
+      if (codigo !== editingProductCodigo && currentList.some(p => p.codigo === codigo)) {
+        setError("Este código de produto já está cadastrado.");
+        return;
+      }
+
+      const updated = currentList.map(p =>
+        p.codigo === editingProductCodigo
+          ? { codigo, descricao, fator, valor, fatorHecto }
+          : p
+      );
+      setProductsList(updated);
+      localStorage.setItem("sstr_products_database", JSON.stringify(updated));
+      clearProductsCache();
+      window.dispatchEvent(new Event("storage"));
+
+      setNewProductCodigo("");
+      setNewProductDescricao("");
+      setNewProductFator("12");
+      setNewProductValor("98.50");
+      setNewProductFatorHecto("0.05");
+      setEditingProductCodigo(null);
+      setSuccess(`Produto "${descricao}" atualizado com sucesso!`);
+    } else {
+      if (currentList.some(p => p.codigo === codigo)) {
+        setError("Este código de produto já está cadastrado.");
+        return;
+      }
+
+      const updated = [...currentList, { codigo, descricao, fator, valor, fatorHecto }];
+      setProductsList(updated);
+      localStorage.setItem("sstr_products_database", JSON.stringify(updated));
+      clearProductsCache();
+      window.dispatchEvent(new Event("storage"));
+
+      setNewProductCodigo("");
+      setNewProductDescricao("");
+      setNewProductFator("12");
+      setNewProductValor("98.50");
+      setNewProductFatorHecto("0.05");
+      setSuccess(`Produto "${descricao}" cadastrado com sucesso!`);
+    }
+
+    setTimeout(() => setSuccess(null), 3000);
+  };
+
+  const handleDeleteProduct = (codigo: string) => {
+    setError(null);
+    setSuccess(null);
+    
+    const currentList = getProductsDatabase();
+    const target = currentList.find(p => p.codigo === codigo);
+    if (!target) return;
+
+    if (confirmDeleteProduct !== codigo) {
+      setConfirmDeleteProduct(codigo);
+      return;
+    }
+
+    const updated = currentList.filter(p => p.codigo !== codigo);
+    setProductsList(updated);
+    localStorage.setItem("sstr_products_database", JSON.stringify(updated));
+    clearProductsCache();
+    window.dispatchEvent(new Event("storage"));
+
+    setSuccess(`Produto "${target.descricao}" excluído com sucesso.`);
+    setConfirmDeleteProduct(null);
+    setTimeout(() => setSuccess(null), 3000);
   };
 
   const handlePrintEspelho = () => {
@@ -1493,6 +2369,18 @@ export default function ManagersTab() {
         </button>
 
         <button
+          onClick={() => { setActiveSubTab("rotas"); setError(null); }}
+          className={`px-4 py-2 border-b-2 font-bold text-xs font-mono transition-all flex items-center gap-2 cursor-pointer ${
+            activeSubTab === "rotas"
+              ? "border-indigo-500 text-white bg-slate-900/40 rounded-t-lg"
+              : "border-transparent text-slate-400 hover:text-white"
+          }`}
+        >
+          <MapPin className="w-3.5 h-3.5 text-amber-400" />
+          <span>Rotas & Condutores ({routesArray.length})</span>
+        </button>
+
+        <button
           onClick={() => { setActiveSubTab("otimizacao"); setError(null); }}
           className={`px-4 py-2 border-b-2 font-bold text-xs font-mono transition-all flex items-center gap-2 cursor-pointer ${
             activeSubTab === "otimizacao"
@@ -1514,6 +2402,18 @@ export default function ManagersTab() {
         >
           <Database className="w-3.5 h-3.5 text-indigo-400" />
           <span>Cadastrar PDVs (NB) 🏪</span>
+        </button>
+
+        <button
+          onClick={() => { setActiveSubTab("produtos"); setError(null); }}
+          className={`px-4 py-2 border-b-2 font-bold text-xs font-mono transition-all flex items-center gap-2 cursor-pointer ${
+            activeSubTab === "produtos"
+              ? "border-indigo-500 text-white bg-slate-900/40 rounded-t-lg"
+              : "border-transparent text-slate-400 hover:text-white"
+          }`}
+        >
+          <Database className="w-3.5 h-3.5 text-emerald-400" />
+          <span>Base de Produtos 📦 ({productsList.length})</span>
         </button>
       </div>
 
@@ -1696,83 +2596,181 @@ export default function ManagersTab() {
       {activeSubTab === "crew" && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start text-left bg-slate-950/10" id="gestor-equipe-sub-con">
           
-          {/* Add a driver or helper */}
-          <div className="lg:col-span-5 bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
-            <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
-              <PlusCircle className="w-4 h-4 text-emerald-400" />
-              <h3 className="font-bold text-xs font-mono uppercase tracking-wider">
-                {editingCrewCpf ? "Editar Colaborador (Rota SSTR)" : "Novo Colaborador (Rota SSTR)"}
-              </h3>
-            </div>
-
-            <form onSubmit={handleAddCrew} className="space-y-3.5">
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Nome Completo</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Nome sem abreviações"
-                  value={newCrewNome}
-                  onChange={(e) => setNewCrewNome(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-sans uppercase"
-                />
+          <div className="lg:col-span-5 space-y-5">
+            {/* Add a driver or helper */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
+                <PlusCircle className="w-4 h-4 text-emerald-400" />
+                <h3 className="font-bold text-xs font-mono uppercase tracking-wider">
+                  {editingCrewCpf ? "Editar Colaborador (Rota SSTR)" : "Novo Colaborador (Rota SSTR)"}
+                </h3>
               </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Cargo / Atividade</label>
-                <select
-                  value={newCrewCargo}
-                  onChange={(e) => setNewCrewCargo(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
-                >
-                  <option value="MOTORISTA DE DISTRIBUICAO">MOTORISTA DE DISTRIBUIÇÃO</option>
-                  <option value="AJUDANTE DE DISTRIBUICAO">AJUDANTE DE DISTRIBUIÇÃO</option>
-                  <option value="COBRADOR DE DISTRIBUICAO">COBRADOR / OUTRO</option>
-                </select>
-              </div>
+              <form onSubmit={handleAddCrew} className="space-y-3.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Nome Completo</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Nome sem abreviações"
+                    value={newCrewNome}
+                    onChange={(e) => setNewCrewNome(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-sans uppercase"
+                  />
+                </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Nº de CPF</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ex: 000.000.000-00"
-                  value={newCrewCpf}
-                  onChange={(e) => setNewCrewCpf(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
-                />
-                <span className="text-[8px] text-slate-500 leading-tight block">Obrigatório para emissão timbrada Ambev nos vales de faturamento.</span>
-              </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Cargo / Atividade</label>
+                  <select
+                    value={newCrewCargo}
+                    onChange={(e) => setNewCrewCargo(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                  >
+                    <option value="MOTORISTA DE DISTRIBUICAO">MOTORISTA DE DISTRIBUIÇÃO</option>
+                    <option value="AJUDANTE DE DISTRIBUICAO">AJUDANTE DE DISTRIBUIÇÃO</option>
+                    <option value="COBRADOR DE DISTRIBUICAO">COBRADOR / OUTRO</option>
+                  </select>
+                </div>
 
-              {editingCrewCpf ? (
-                <div className="flex gap-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Nº de CPF</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: 000.000.000-00"
+                    value={newCrewCpf}
+                    onChange={(e) => setNewCrewCpf(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                  />
+                  <span className="text-[8px] text-slate-500 leading-tight block">Obrigatório para emissão timbrada Ambev nos vales de faturamento.</span>
+                </div>
+
+                {editingCrewCpf ? (
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-emerald-950/40"
+                    >
+                      Salvar Alterações
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewCrewNome("");
+                        setNewCrewCpf("");
+                        setEditingCrewCpf(null);
+                      }}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-350 hover:text-white font-sans font-semibold text-xs rounded-lg transition-colors cursor-pointer text-center block"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
                   <button
                     type="submit"
-                    className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-emerald-950/40"
+                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-emerald-950/40"
                   >
-                    Salvar Alterações
+                    Contratar / Adicionar Integrante
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewCrewNome("");
-                      setNewCrewCpf("");
-                      setEditingCrewCpf(null);
-                    }}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-350 hover:text-white font-sans font-semibold text-xs rounded-lg transition-colors cursor-pointer text-center block"
-                  >
-                    Cancelar
-                  </button>
+                )}
+              </form>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
+                <Upload className="w-4 h-4 text-indigo-400" />
+                <h3 className="font-bold text-xs font-mono uppercase tracking-wider">Importar em Lote (Motoristas/Ajudantes)</h3>
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-[9.5px] text-slate-450 leading-relaxed font-sans">
+                  Cole as informações de motoristas e ajudantes diretamente. O sistema processará e atualizará a base de colaboradores.
+                </p>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Colar Texto (CSV / TXT)</label>
+                  <textarea
+                    value={crewPasteText}
+                    onChange={(e) => setCrewPasteText(e.target.value)}
+                    placeholder="G1001;JOAO SILVA;MOTORISTA DE DISTRIBUICAO;123.456.789-00&#10;G1002;PEDRO ALVES;AJUDANTE DE DISTRIBUICAO;987.654.321-11"
+                    rows={4}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[11px] text-slate-200 focus:border-indigo-500 focus:outline-none font-mono"
+                  />
                 </div>
-              ) : (
-                <button
-                  type="submit"
-                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-emerald-950/40"
+
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-slate-800/60"></div>
+                  <span className="flex-shrink mx-2 text-slate-600 font-mono text-[8px] uppercase tracking-wider">Ou Arrastar Arquivo</span>
+                  <div className="flex-grow border-t border-slate-800/60"></div>
+                </div>
+
+                {/* Drag and Drop File area */}
+                <div
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setCrewDragActive(true);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setCrewDragActive(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setCrewDragActive(false);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setCrewDragActive(false);
+                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                      handleCrewImportFile(e.dataTransfer.files[0]);
+                    }
+                  }}
+                  onClick={() => {
+                    const fileInput = document.getElementById("crew-csv-file-input");
+                    if (fileInput) fileInput.click();
+                  }}
+                  className={`border border-dashed rounded-xl p-4 text-center transition-all duration-150 cursor-pointer ${
+                    crewDragActive 
+                      ? "border-indigo-500 bg-indigo-950/10" 
+                      : "border-slate-800 bg-slate-950/20 hover:bg-slate-950/40 hover:border-slate-700"
+                  }`}
                 >
-                  Contratar / Adicionar Integrante
+                  <input
+                    id="crew-csv-file-input"
+                    type="file"
+                    accept=".csv,.txt,.xlsx,.xls"
+                    className="hidden"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleCrewImportFile(e.target.files[0]);
+                      }
+                    }}
+                  />
+                  <div className="flex flex-col items-center justify-center space-y-1">
+                    <Upload className="w-4 h-4 text-slate-500" />
+                    <p className="text-[10px] font-bold text-slate-350">Arraste ou clique para selecionar CSV ou Planilha Excel</p>
+                    <p className="text-[8px] text-slate-500 font-mono">Formato: Chapa;Nome;Cargo;CPF ou colunas correspondentes</p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleCrewImportText(crewPasteText)}
+                  disabled={!crewPasteText.trim()}
+                  className={`w-full py-2 rounded-xl font-mono text-xs font-bold transition-all uppercase tracking-wider ${
+                    !crewPasteText.trim()
+                      ? "bg-slate-850 text-slate-600 border border-slate-800/40 cursor-not-allowed"
+                      : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-950/20 cursor-pointer hover:scale-[1.01]"
+                  }`}
+                >
+                  Processar e Cadastrar Colaboradores
                 </button>
-              )}
-            </form>
+              </div>
+            </div>
           </div>
 
           {/* Collapsible Crew List table & search */}
@@ -1880,83 +2878,185 @@ export default function ManagersTab() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start text-left bg-slate-950/10" id="gestor-rns-container">
           
           {/* Add a field representative */}
-          <div className="lg:col-span-5 bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
-            <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
-              <PlusCircle className="w-4 h-4 text-blue-400" />
-              <h3 className="font-bold text-xs font-mono uppercase tracking-wider">
-                {editingRepId ? "Editar Setor / Representante" : "Novo Setor / Representante"}
-              </h3>
-            </div>
-
-            <form onSubmit={handleAddRep} className="space-y-3.5">
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Código do Setor</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ex: 609"
-                  maxLength={4}
-                  value={newRepSetor}
-                  onChange={(e) => setNewRepSetor(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
-                />
-                <span className="text-[8px] text-slate-550 leading-none block">Código numérico correspondente à divisão do Promax PW.</span>
+          <div className="lg:col-span-5 space-y-5">
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
+                <PlusCircle className="w-4 h-4 text-blue-400" />
+                <h3 className="font-bold text-xs font-mono uppercase tracking-wider">
+                  {editingRepId ? "Editar Setor / Representante" : "Novo Setor / Representante"}
+                </h3>
               </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Nome do Representante (RN)</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Nome do representante de vendas"
-                  value={newRepNome}
-                  onChange={(e) => setNewRepNome(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-sans uppercase"
-                />
-              </div>
+              <form onSubmit={handleAddRep} className="space-y-3.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Código do Setor</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: 609"
+                    maxLength={4}
+                    value={newRepSetor}
+                    onChange={(e) => setNewRepSetor(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                  />
+                  <span className="text-[8px] text-slate-550 leading-none block">Código numérico correspondente à divisão do Promax PW.</span>
+                </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Gerente de Vendas (GV)</label>
-                <select
-                  value={newRepGv}
-                  onChange={(e) => setNewRepGv(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
-                >
-                  <option value="DIEGO">DIEGO (GUERRA)</option>
-                  <option value="ERIVAN">ERIVAN (ERIVAN)</option>
-                  <option value="OUTRO">OUTRO / GERAL</option>
-                </select>
-              </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Nome do Representante (RN)</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Nome do representante de vendas"
+                    value={newRepNome}
+                    onChange={(e) => setNewRepNome(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-sans uppercase"
+                  />
+                </div>
 
-              {editingRepId ? (
-                <div className="flex gap-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Gerente de Vendas (GV)</label>
+                  <select
+                    value={newRepGv}
+                    onChange={(e) => setNewRepGv(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                  >
+                    <option value="DIEGO">DIEGO (GUERRA)</option>
+                    <option value="ERIVAN">ERIVAN (ERIVAN)</option>
+                    <option value="OUTRO">OUTRO / GERAL</option>
+                  </select>
+                </div>
+
+                {editingRepId ? (
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-indigo-950/40"
+                    >
+                      Salvar Alterações
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewRepSetor("");
+                        setNewRepNome("");
+                        setEditingRepId(null);
+                      }}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-350 hover:text-white font-sans font-semibold text-xs rounded-lg transition-colors cursor-pointer text-center block"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
                   <button
                     type="submit"
-                    className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-indigo-950/40"
+                    className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-indigo-950/40"
                   >
-                    Salvar Alterações
+                    Cadastrar Novo Setor
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewRepSetor("");
-                      setNewRepNome("");
-                      setEditingRepId(null);
-                    }}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-350 hover:text-white font-sans font-semibold text-xs rounded-lg transition-colors cursor-pointer text-center block"
-                  >
-                    Cancelar
-                  </button>
+                )}
+              </form>
+            </div>
+
+            {/* Importação em Lote de RNs */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
+                <Upload className="w-4 h-4 text-indigo-400" />
+                <h3 className="font-bold text-xs font-mono uppercase tracking-wider">
+                  Atualizar Base de RNs (Planilha / Lote)
+                </h3>
+              </div>
+
+              <p className="text-[10.5px] text-slate-400 font-sans leading-relaxed">
+                Atualize ou adicione múltiplos representantes ao mesmo tempo. Cole os dados ou arraste uma planilha (.csv, .txt).
+              </p>
+
+              <div className="space-y-3">
+                {/* Text Area for copy paste */}
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-slate-400 uppercase font-mono block">Colar Dados (Setor;Nome;GV)</label>
+                  <textarea
+                    value={rnPasteText}
+                    onChange={(e) => setRnPasteText(e.target.value)}
+                    placeholder="601;JEAN ANDERSON;DIEGO&#10;602;CARLOS ANDRE;ERIVAN&#10;603;FABIO SILVA;OUTRO"
+                    rows={4}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[11px] text-slate-200 focus:border-indigo-500 focus:outline-none font-mono"
+                  />
                 </div>
-              ) : (
-                <button
-                  type="submit"
-                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-indigo-950/40"
+
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-slate-800/60"></div>
+                  <span className="flex-shrink mx-2 text-slate-600 font-mono text-[8px] uppercase tracking-wider">Ou Arrastar Planilha</span>
+                  <div className="flex-grow border-t border-slate-800/60"></div>
+                </div>
+
+                {/* Drag and Drop File area */}
+                <div
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRnDragActive(true);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRnDragActive(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRnDragActive(false);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRnDragActive(false);
+                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                      handleRnImportFile(e.dataTransfer.files[0]);
+                    }
+                  }}
+                  onClick={() => {
+                    const fileInput = document.getElementById("rn-csv-file-input");
+                    if (fileInput) fileInput.click();
+                  }}
+                  className={`border border-dashed rounded-xl p-4 text-center transition-all duration-150 cursor-pointer ${
+                    rnDragActive 
+                      ? "border-indigo-500 bg-indigo-950/10" 
+                      : "border-slate-800 bg-slate-950/20 hover:bg-slate-950/40 hover:border-slate-700"
+                  }`}
                 >
-                  Cadastrar Novo Setor
+                  <input
+                    id="rn-csv-file-input"
+                    type="file"
+                    accept=".csv,.txt,.xlsx,.xls"
+                    className="hidden"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleRnImportFile(e.target.files[0]);
+                      }
+                    }}
+                  />
+                  <div className="flex flex-col items-center justify-center space-y-1">
+                    <Upload className="w-4 h-4 text-slate-500" />
+                    <p className="text-[10px] font-bold text-slate-350">Arraste ou clique para selecionar CSV ou Planilha Excel</p>
+                    <p className="text-[8px] text-slate-500 font-mono">Formato: Setor;Nome;GV ou colunas correspondentes</p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleRnImportText(rnPasteText)}
+                  disabled={!rnPasteText.trim()}
+                  className={`w-full py-2 rounded-xl font-mono text-xs font-bold transition-all uppercase tracking-wider ${
+                    !rnPasteText.trim()
+                      ? "bg-slate-850 text-slate-600 border border-slate-800/40 cursor-not-allowed"
+                      : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-950/20 cursor-pointer hover:scale-[1.01]"
+                  }`}
+                >
+                  Processar e Atualizar RNs
                 </button>
-              )}
-            </form>
+              </div>
+            </div>
           </div>
 
           {/* List layout of representatives */}
@@ -2036,6 +3136,282 @@ export default function ManagersTab() {
                                 onClick={() => setConfirmDeleteRep(r.setor)}
                                 className="p-1 w-7 h-7 inline-flex items-center justify-center rounded-lg border border-slate-800 bg-slate-950 hover:bg-slate-850 text-slate-400 hover:text-red-400 cursor-pointer transition-colors"
                                 title="Remover setor do banco de dados"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeSubTab === "rotas" && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start text-left bg-slate-950/10" id="gestor-rotas-container">
+          
+          <div className="lg:col-span-5 space-y-5">
+            {/* Add a route driver mapping */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
+                <PlusCircle className="w-4 h-4 text-amber-400" />
+                <h3 className="font-bold text-xs font-mono uppercase tracking-wider">
+                  {editingRouteCode ? "Editar Rota / Condutor" : "Nova Rota / Condutor"}
+                </h3>
+              </div>
+
+              <form onSubmit={handleAddRoute} className="space-y-3.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Código da Rota</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: R124"
+                    maxLength={6}
+                    value={newRouteCode}
+                    onChange={(e) => setNewRouteCode(e.target.value)}
+                    disabled={!!editingRouteCode}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono uppercase"
+                  />
+                  <span className="text-[8px] text-slate-550 leading-none block">Código de rota operacional (Ex: R101, R124).</span>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Nome do Condutor (Motorista)</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Nome completo do motorista"
+                    value={newRouteDriverName}
+                    onChange={(e) => setNewRouteDriverName(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-sans uppercase"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Veículo / Tipo</label>
+                  <select
+                    value={newRouteVehicle}
+                    onChange={(e) => setNewRouteVehicle(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                  >
+                    <option value="Motorista de Distribuição">Motorista de Distribuição</option>
+                    <option value="Ajudante de Distribuição">Ajudante de Distribuição</option>
+                    <option value="Ajudante de Distribuição II">Ajudante de Distribuição II</option>
+                  </select>
+                </div>
+
+                {editingRouteCode ? (
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 py-2 bg-amber-600 hover:bg-amber-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-amber-950/40"
+                    >
+                      Salvar Alterações
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewRouteCode("");
+                        setNewRouteDriverName("");
+                        setEditingRouteCode(null);
+                      }}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-350 hover:text-white font-sans font-semibold text-xs rounded-lg transition-colors cursor-pointer text-center block"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="submit"
+                    className="w-full py-2 bg-amber-600 hover:bg-amber-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-amber-950/40"
+                  >
+                    Cadastrar Nova Rota
+                  </button>
+                )}
+              </form>
+            </div>
+
+            {/* Importar em Lote (Rotas) */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
+                <Upload className="w-4 h-4 text-indigo-400" />
+                <h3 className="font-bold text-xs font-mono uppercase tracking-wider">Importar em Lote (Rotas)</h3>
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-[9.5px] text-slate-450 leading-relaxed font-sans">
+                  Cole as informações de rotas diretamente. O sistema processará e atualizará a base de rotas.
+                </p>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Colar Texto (CSV / TXT)</label>
+                  <textarea
+                    value={routePasteText}
+                    onChange={(e) => setRoutePasteText(e.target.value)}
+                    placeholder="R101;EDENILSON DE SOUSA SILVA;Motorista de Distribuição&#10;R102;VITOR MACENA GOMES;Ajudante de Distribuição"
+                    rows={4}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[11px] text-slate-200 focus:border-indigo-500 focus:outline-none font-mono"
+                  />
+                </div>
+
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-slate-800/60"></div>
+                  <span className="flex-shrink mx-2 text-slate-600 font-mono text-[8px] uppercase tracking-wider">Ou Arrastar Arquivo</span>
+                  <div className="flex-grow border-t border-slate-800/60"></div>
+                </div>
+
+                {/* Drag and Drop File area */}
+                <div
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRouteDragActive(true);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRouteDragActive(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRouteDragActive(false);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRouteDragActive(false);
+                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                      handleRouteImportFile(e.dataTransfer.files[0]);
+                    }
+                  }}
+                  onClick={() => {
+                    const fileInput = document.getElementById("route-csv-file-input");
+                    if (fileInput) fileInput.click();
+                  }}
+                  className={`border border-dashed rounded-xl p-4 text-center transition-all duration-150 cursor-pointer ${
+                    routeDragActive 
+                      ? "border-indigo-500 bg-indigo-950/10" 
+                      : "border-slate-800 bg-slate-950/20 hover:bg-slate-950/40 hover:border-slate-700"
+                  }`}
+                >
+                  <input
+                    id="route-csv-file-input"
+                    type="file"
+                    accept=".csv,.txt,.xlsx,.xls"
+                    className="hidden"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleRouteImportFile(e.target.files[0]);
+                      }
+                    }}
+                  />
+                  <div className="flex flex-col items-center justify-center space-y-1">
+                    <Upload className="w-4 h-4 text-slate-500" />
+                    <p className="text-[10px] font-bold text-slate-350">Arraste ou clique para selecionar CSV ou Planilha Excel</p>
+                    <p className="text-[8px] text-slate-500 font-mono">Formato: Rota;Nome;Cargo ou colunas correspondentes</p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleRouteImportText(routePasteText)}
+                  disabled={!routePasteText.trim()}
+                  className={`w-full py-2 rounded-xl font-mono text-xs font-bold transition-all uppercase tracking-wider ${
+                    !routePasteText.trim()
+                      ? "bg-slate-850 text-slate-600 border border-slate-800/40 cursor-not-allowed"
+                      : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-950/20 cursor-pointer hover:scale-[1.01]"
+                  }`}
+                >
+                  Processar e Cadastrar Rotas
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* List layout of routes */}
+          <div className="lg:col-span-7 bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 gap-2">
+              <h3 className="font-bold text-xs text-white font-mono uppercase flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 text-amber-400" />
+                <span>Relação de Rotas Operacionais (SSTR)</span>
+              </h3>
+              
+              <div className="relative shrink-0">
+                <Search className="w-3 h-3 text-slate-500 absolute left-2.5 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Buscar rota..."
+                  value={searchRoute}
+                  onChange={(e) => setSearchRoute(e.target.value)}
+                  className="w-full sm:w-[150px] bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-2 py-1 text-[11px] text-white focus:outline-none focus:border-indigo-500 font-sans"
+                />
+              </div>
+            </div>
+
+            <div className="overflow-y-auto rounded-xl max-h-[360px] border border-slate-850/40 animate-fade-in">
+              <table className="w-full text-xs text-left">
+                <thead>
+                  <tr className="bg-slate-950/80 sticky top-0 text-slate-450 font-mono text-[9px] uppercase font-bold border-b border-slate-800">
+                    <th className="p-3">Rota</th>
+                    <th className="p-3">Condutor (Motorista)</th>
+                    <th className="p-3">Veículo / Cargo</th>
+                    <th className="p-3 text-center">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-850">
+                  {filteredRoutes.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="p-8 text-center text-slate-500 font-mono">Nenhuma rota encontrada.</td>
+                    </tr>
+                  ) : (
+                    filteredRoutes.sort((a,b) => a.rota.localeCompare(b.rota, undefined, {numeric: true})).map(r => (
+                      <tr key={r.rota} className="hover:bg-slate-950/20">
+                        <td className="p-3 font-mono text-amber-400 font-bold">{r.rota}</td>
+                        <td className="p-3 font-semibold text-slate-200 uppercase text-[11px]">{r.nome}</td>
+                        <td className="p-3 font-mono text-slate-400 text-[10.5px]">{r.veiculo}</td>
+                        <td className="p-3 text-center">
+                          {confirmDeleteRoute === r.rota ? (
+                            <div className="inline-flex items-center gap-1.5 p-1 bg-slate-950 rounded-lg border border-red-900/60 animate-fade-in whitespace-nowrap">
+                              <span className="text-[9px] text-red-400 font-mono font-bold uppercase pl-1">Excluir?</span>
+                              <button
+                                onClick={() => executeDeleteRoute(r.rota)}
+                                className="px-2 py-0.5 bg-rose-600 text-white font-sans font-bold rounded text-[9.5px] cursor-pointer"
+                              >
+                                Sim
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteRoute(null)}
+                                className="px-2 py-0.5 bg-slate-800 text-slate-300 font-sans rounded text-[9.5px] cursor-pointer"
+                              >
+                                Não
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="inline-flex items-center gap-1.5 justify-center">
+                              <button
+                                onClick={() => {
+                                  setEditingRouteCode(r.rota);
+                                  setNewRouteCode(r.rota);
+                                  setNewRouteDriverName(r.nome);
+                                  setNewRouteVehicle(r.veiculo || "Motorista de Distribuição");
+                                  document.getElementById("gestor-rotas-container")?.scrollIntoView({ behavior: "smooth" });
+                                }}
+                                className="p-1 w-7 h-7 inline-flex items-center justify-center rounded-lg border border-slate-800 bg-slate-950 hover:bg-slate-850 text-slate-400 hover:text-amber-400 cursor-pointer transition-colors"
+                                title="Editar rota / condutor"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteRoute(r.rota)}
+                                className="p-1 w-7 h-7 inline-flex items-center justify-center rounded-lg border border-slate-800 bg-slate-950 hover:bg-slate-850 text-slate-400 hover:text-red-400 cursor-pointer transition-colors"
+                                title="Remover rota do banco de dados"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -2903,7 +4279,7 @@ export default function ManagersTab() {
               <input
                 id="pdv-csv-file-input"
                 type="file"
-                accept=".csv,.txt"
+                accept=".csv,.txt,.xlsx,.xls"
                 className="hidden"
                 onChange={(e) => {
                   if (e.target.files && e.target.files[0]) {
@@ -2917,7 +4293,7 @@ export default function ManagersTab() {
                 </div>
                 <div className="space-y-0.5">
                   <p className="text-xs font-bold text-slate-200">
-                    Arrastar e Soltar Arquivo (CSV/TXT)
+                    Arrastar e Soltar Arquivo (CSV, TXT ou Excel)
                   </p>
                   <p className="text-[10px] text-slate-400">
                     ou clique aqui para selecionar o documento
@@ -3023,6 +4399,326 @@ export default function ManagersTab() {
             {filteredPdvs.length > 100 && (
               <p className="text-[10px] text-slate-500 italic text-center">Mostrando apenas os primeiros 100 resultados de {filteredPdvs.length}. Utilize a busca para refinar.</p>
             )}
+          </div>
+        </div>
+      )}
+
+      {activeSubTab === "produtos" && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start text-left bg-slate-950/10" id="gestor-produtos-sub-con">
+          
+          {/* Add a product */}
+          <div className="lg:col-span-5 space-y-4">
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
+                <PlusCircle className="w-4 h-4 text-emerald-400" />
+                <h3 className="font-bold text-xs font-mono uppercase tracking-wider">
+                  {editingProductCodigo ? "Editar Produto" : "Novo Produto / SKU"}
+                </h3>
+              </div>
+
+              <form onSubmit={handleAddProduct} className="space-y-3.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Código do Produto (SKU)</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Apenas números. Ex: 29508"
+                    value={newProductCodigo}
+                    onChange={(e) => setNewProductCodigo(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                    disabled={!!editingProductCodigo}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Descrição do Produto</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: SUKITA PET 2L CAIXA C/6"
+                    value={newProductDescricao}
+                    onChange={(e) => setNewProductDescricao(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-sans uppercase"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Fator (Uds/SKU)</label>
+                    <input
+                      type="number"
+                      required
+                      placeholder="Ex: 12"
+                      value={newProductFator}
+                      onChange={(e) => setNewProductFator(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Valor (R$)</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: 98.50"
+                      value={newProductValor}
+                      onChange={(e) => setNewProductValor(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Fator Hectolitro (HL)</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: 0.12"
+                    value={newProductFatorHecto}
+                    onChange={(e) => setNewProductFatorHecto(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                  />
+                  <span className="text-[8px] text-slate-500 leading-tight block">Fator multiplicador para converter quantidade física em hectolitros.</span>
+                </div>
+
+                {editingProductCodigo ? (
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-emerald-950/40"
+                    >
+                      Salvar Alterações
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewProductCodigo("");
+                        setNewProductDescricao("");
+                        setNewProductFator("12");
+                        setNewProductValor("98.50");
+                        setNewProductFatorHecto("0.05");
+                        setEditingProductCodigo(null);
+                      }}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-350 hover:text-white font-sans font-semibold text-xs rounded-lg transition-colors cursor-pointer text-center block"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="submit"
+                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 font-sans font-bold text-xs text-white rounded-lg transition-colors cursor-pointer text-center block shadow-lg shadow-emerald-950/40"
+                  >
+                    Adicionar Produto / SKU
+                  </button>
+                )}
+              </form>
+            </div>
+
+            {/* Batch product import */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+              <div className="flex items-center space-x-2 text-white border-b border-slate-800 pb-3">
+                <Upload className="w-4 h-4 text-indigo-400" />
+                <h3 className="font-bold text-xs font-mono uppercase tracking-wider">Importar em Lote (Produtos)</h3>
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-[9.5px] text-slate-450 leading-relaxed font-sans">
+                  Cole uma lista de produtos na ordem do Excel: <strong>CÓDIGO; DESCRIÇÃO; FATOR(UNIDADES NO SKU); VALOR; FATOR HECTO</strong>. O sistema processará e salvará na base local.
+                </p>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Colar Texto (CSV / TXT)</label>
+                  <textarea
+                    value={productPasteText}
+                    onChange={(e) => setProductPasteText(e.target.value)}
+                    placeholder="347;SUKITA PET 1L CAIXA C/12;12;112.50;0.12&#10;503;SUKITA PET 2L CAIXA C/6;6;95.00;0.12"
+                    rows={4}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[11px] text-slate-200 focus:border-indigo-500 focus:outline-none font-mono"
+                  />
+                </div>
+
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-slate-800/60"></div>
+                  <span className="flex-shrink mx-2 text-slate-600 font-mono text-[8px] uppercase tracking-wider">Ou Arrastar Planilha</span>
+                  <div className="flex-grow border-t border-slate-800/60"></div>
+                </div>
+
+                {/* Drag and Drop File area */}
+                <div
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setProductDragActive(true);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setProductDragActive(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setProductDragActive(false);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setProductDragActive(false);
+                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                      handleProductImportFile(e.dataTransfer.files[0]);
+                    }
+                  }}
+                  onClick={() => {
+                    const fileInput = document.getElementById("product-csv-file-input");
+                    if (fileInput) fileInput.click();
+                  }}
+                  className={`border border-dashed rounded-xl p-4 text-center transition-all duration-150 cursor-pointer ${
+                    productDragActive 
+                      ? "border-indigo-500 bg-indigo-950/10" 
+                      : "border-slate-800 bg-slate-950/20 hover:bg-slate-950/40 hover:border-slate-700"
+                  }`}
+                >
+                  <input
+                    id="product-csv-file-input"
+                    type="file"
+                    accept=".csv,.txt,.xlsx,.xls"
+                    className="hidden"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleProductImportFile(e.target.files[0]);
+                      }
+                    }}
+                  />
+                  <div className="flex flex-col items-center justify-center space-y-1">
+                    <Upload className="w-4 h-4 text-slate-500" />
+                    <p className="text-[10px] font-bold text-slate-350">Arraste ou clique para selecionar CSV ou Planilha Excel</p>
+                    <p className="text-[8px] text-slate-500 font-mono">Formato: COD;DESCRIÇÃO;FATOR;VALOR;FATOR_HECTO na ordem do Excel</p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleProductImportText(productPasteText)}
+                  disabled={!productPasteText.trim()}
+                  className={`w-full py-2 rounded-xl font-mono text-xs font-bold transition-all uppercase tracking-wider ${
+                    !productPasteText.trim()
+                      ? "bg-slate-850 text-slate-600 border border-slate-800/40 cursor-not-allowed"
+                      : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-950/20 cursor-pointer hover:scale-[1.01]"
+                  }`}
+                >
+                  Processar e Atualizar Produtos
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* List layout of products */}
+          <div className="lg:col-span-7 bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 gap-2">
+              <h3 className="font-bold text-xs text-white font-mono uppercase flex items-center gap-1.5">
+                <Database className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Base de Produtos e Fatores de Conversão (HL)</span>
+              </h3>
+              
+              <div className="relative shrink-0">
+                <Search className="w-3 h-3 text-slate-500 absolute left-2.5 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Buscar produto ou SKU..."
+                  value={searchProduct}
+                  onChange={(e) => setSearchProduct(e.target.value)}
+                  className="w-full sm:w-[180px] bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-2 py-1 text-[11px] text-white focus:outline-none focus:border-indigo-500 font-sans"
+                />
+              </div>
+            </div>
+
+            <div className="overflow-y-auto rounded-xl max-h-[500px] border border-slate-850/40">
+              <table className="w-full text-xs text-left">
+                <thead>
+                  <tr className="bg-slate-950/80 sticky top-0 text-slate-450 font-mono text-[9px] uppercase font-bold border-b border-slate-800">
+                    <th className="p-3">SKU</th>
+                    <th className="p-3">Descrição Comercial</th>
+                    <th className="p-3 text-center">Fator (Uds/SKU)</th>
+                    <th className="p-3 text-center">Valor (R$)</th>
+                    <th className="p-3 text-center">Fator HL</th>
+                    <th className="p-3 text-center">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-850">
+                  {(() => {
+                    const q = searchProduct.trim().toLowerCase();
+                    const filtered = productsList.filter(
+                      p => p.codigo.includes(q) || p.descricao.toLowerCase().includes(q)
+                    );
+                    
+                    if (filtered.length === 0) {
+                      return (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-500 font-mono">Nenhum produto cadastrado na base.</td>
+                        </tr>
+                      );
+                    }
+                    
+                    // Show top 100 products for performance
+                    return filtered.slice(0, 100).map(p => (
+                      <tr key={p.codigo} className="hover:bg-slate-950/20">
+                        <td className="p-3 font-mono text-indigo-400 font-semibold text-[11px]">#{p.codigo}</td>
+                        <td className="p-3 font-sans font-medium text-slate-200 uppercase text-[11px]">{p.descricao}</td>
+                        <td className="p-3 font-mono text-center text-slate-350">{p.fator !== undefined ? p.fator : 12}</td>
+                        <td className="p-3 font-mono text-center text-emerald-400 font-semibold">R$ {(p.valor !== undefined ? p.valor : 98.50).toFixed(2)}</td>
+                        <td className="p-3 font-mono text-center text-slate-300 font-semibold">{p.fatorHecto.toFixed(4)} HL</td>
+                        <td className="p-3">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => {
+                                setNewProductCodigo(p.codigo);
+                                setNewProductDescricao(p.descricao);
+                                setNewProductFator(p.fator !== undefined ? p.fator.toString() : "12");
+                                setNewProductValor(p.valor !== undefined ? p.valor.toString() : "98.50");
+                                setNewProductFatorHecto(p.fatorHecto.toString());
+                                setEditingProductCodigo(p.codigo);
+                                document.getElementById("gestor-produtos-sub-con")?.scrollIntoView({ behavior: 'smooth' });
+                              }}
+                              className="p-1 rounded border border-slate-800 bg-slate-950 text-slate-450 hover:bg-slate-850 hover:text-white cursor-pointer transition-all"
+                              title="Editar Produto"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteProduct(p.codigo)}
+                              className={`p-1 rounded border transition-all ${
+                                confirmDeleteProduct === p.codigo
+                                  ? "border-red-900 bg-red-950 text-red-300 font-bold px-2 text-[9px] uppercase cursor-pointer"
+                                  : "border-slate-800 bg-slate-950 text-slate-450 hover:bg-slate-850 hover:text-red-400 cursor-pointer"
+                              }`}
+                              title="Remover Produto"
+                            >
+                              {confirmDeleteProduct === p.codigo ? "Confirmar" : <Trash2 className="w-3 h-3" />}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
+            </div>
+            
+            {(() => {
+              const q = searchProduct.trim().toLowerCase();
+              const filteredCount = productsList.filter(
+                p => p.codigo.includes(q) || p.descricao.toLowerCase().includes(q)
+              ).length;
+              if (filteredCount > 100) {
+                return (
+                  <p className="text-[10px] text-slate-500 italic text-center">
+                    Mostrando apenas os primeiros 100 resultados de {filteredCount}. Utilize o campo de busca acima para refinar.
+                  </p>
+                );
+              }
+              return null;
+            })()}
           </div>
         </div>
       )}

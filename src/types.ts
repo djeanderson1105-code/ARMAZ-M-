@@ -76,8 +76,8 @@ const DEFAULT_REPRESENTATIVOS_SETOR: Record<string, RepresentativeInfo> = {
   "602": { setor: "602", nome: "JEAN REGIS", gv: "DIEGO" },
   "603": { setor: "603", nome: "JOSÉ KLEBSON", gv: "DIEGO" },
   "604": { setor: "604", nome: "MARCOS ANTONIO", gv: "DIEGO" },
-  "605": { setor: "605", nome: "FERISTA", gv: "DIEGO" },
-  "606": { setor: "606", nome: "JOSUEL ALVES", gv: "DIEGO" },
+  "605": { setor: "605", nome: "LUCAS GABRIEL", gv: "DIEGO" },
+  "606": { setor: "606", nome: "MARCOS VINICIUS", gv: "DIEGO" },
   "607": { setor: "607", nome: "KAHLIL GIBRAN", gv: "DIEGO" },
   "608": { setor: "608", nome: "JHONATAN BOTOLO", gv: "DIEGO" },
   "700": { setor: "700", nome: "VALDEMIR VANDEREI", gv: "ERIVAN" },
@@ -153,7 +153,7 @@ export interface RouteDriverInfo {
   veiculo: string;
 }
 
-export const MOTORISTAS_ROTAS: Record<string, RouteDriverInfo> = {
+const DEFAULT_MOTORISTAS_ROTAS: Record<string, RouteDriverInfo> = {
   "R101": { rota: "R101", nome: "EDENILSON DE SOUSA SILVA", veiculo: "Motorista de Distribuição" },
   "R102": { rota: "R102", nome: "VITOR MACENA GOMES", veiculo: "Ajudante de Distribuição" },
   "R103": { rota: "R103", nome: "IDALMO FELIPE DOS SANTOS", veiculo: "Ajudante de Distribuição" },
@@ -178,6 +178,63 @@ export const MOTORISTAS_ROTAS: Record<string, RouteDriverInfo> = {
   "R122": { rota: "R122", nome: "JOSE MATUZALEM PONTES DE OLIVEIRA", veiculo: "Motorista de Distribuição" },
   "R123": { rota: "R123", nome: "JOSICLAUDIO DE OLIVEIRA RODRIGUES", veiculo: "Motorista de Distribuição" }
 };
+
+let cachedMotoristasRotas: Record<string, RouteDriverInfo> | null = null;
+
+export const clearMotoristasRotasCache = () => {
+  cachedMotoristasRotas = null;
+};
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", () => {
+    cachedMotoristasRotas = null;
+  });
+}
+
+export const getMotoristasRotas = (): Record<string, RouteDriverInfo> => {
+  if (cachedMotoristasRotas) return cachedMotoristasRotas;
+  if (typeof window === "undefined") return DEFAULT_MOTORISTAS_ROTAS;
+  const saved = localStorage.getItem("sstr_motoristas_rotas");
+  if (saved) {
+    try {
+      cachedMotoristasRotas = JSON.parse(saved);
+      return cachedMotoristasRotas!;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  cachedMotoristasRotas = DEFAULT_MOTORISTAS_ROTAS;
+  return DEFAULT_MOTORISTAS_ROTAS;
+};
+
+export const MOTORISTAS_ROTAS: Record<string, RouteDriverInfo> = new Proxy({}, {
+  get(target, prop: string | symbol) {
+    if (typeof prop === "symbol" || prop === "prototype") {
+      return (target as any)[prop];
+    }
+    const list = getMotoristasRotas();
+    return list[prop as string];
+  },
+  ownKeys() {
+    return Reflect.ownKeys(getMotoristasRotas());
+  },
+  getOwnPropertyDescriptor(target, prop) {
+    const list = getMotoristasRotas();
+    if (Object.prototype.hasOwnProperty.call(list, prop)) {
+      return {
+        enumerable: true,
+        configurable: true,
+        writable: true,
+        value: list[prop as string]
+      };
+    }
+    return undefined;
+  },
+  has(target, prop) {
+    if (typeof prop === "symbol") return false;
+    return prop in getMotoristasRotas();
+  }
+});
 
 export interface RequestItem {
   id: string;

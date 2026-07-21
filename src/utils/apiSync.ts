@@ -29,19 +29,12 @@ import { RAW_SAMPLE_DATA } from "../sampleData";
 const firebaseApp = initializeApp(firebaseConfig);
 const dbId = (firebaseConfig as any).firestoreDatabaseId || (firebaseConfig as any).databaseId;
 
+// Initialize Firestore with modern local cache persistence (handles offline capability and tab-sync natively)
 export const firestoreDb = initializeFirestore(firebaseApp, {
   localCache: persistentLocalCache({
     tabManager: persistentMultipleTabManager()
   })
 }, dbId && dbId !== "(default)" ? dbId : undefined);
-
-try {
-  enableIndexedDbPersistence(firestoreDb).catch((err) => {
-    console.warn("[FIREBASE] Could not enable offline persistence:", err.message);
-  });
-} catch (e) {
-  console.warn("[FIREBASE] Offline persistence error:", e);
-}
 
 const originalSetItem = localStorage.setItem;
 const originalGetItem = localStorage.getItem;
@@ -55,6 +48,7 @@ export const COLLECTION_MAP: Record<string, { name: string; isObject: boolean }>
   "sstr_vales_historico_reg": { name: "vales", isObject: false },
   "sstr_lista_crew": { name: "crewList", isObject: false },
   "sstr_reps_setor": { name: "repsSetor", isObject: true },
+  "sstr_motoristas_rotas": { name: "motoristasRotas", isObject: true },
   "sstr_custom_pdvs_v1": { name: "customPdvs", isObject: false }
 };
 
@@ -82,49 +76,63 @@ async function syncArrayToFirestore(collectionName: string, oldList: any[], newL
     if (id) newMap.set(id, item);
   });
 
-  const batch = writeBatch(firestoreDb);
-  let operationCount = 0;
+  const toSet: [string, any][] = [];
+  const toDelete: string[] = [];
 
   // Added or modified
   for (const [id, item] of newMap.entries()) {
     const oldItem = oldMap.get(id);
     if (!oldItem || JSON.stringify(oldItem) !== JSON.stringify(item)) {
-      const docRef = doc(firestoreDb, collectionName, id);
-      batch.set(docRef, item);
-      operationCount++;
+      toSet.push([id, item]);
     }
   }
 
   // Deleted
   for (const id of oldMap.keys()) {
     if (!newMap.has(id)) {
-      const docRef = doc(firestoreDb, collectionName, id);
-      batch.delete(docRef);
-      operationCount++;
+      toDelete.push(id);
     }
   }
 
-  if (operationCount > 0) {
+  const totalOps = toSet.length + toDelete.length;
+  if (totalOps === 0) return;
+
+  // We split operations into safe chunks of 400 (well below Firestore's 500 batch limit)
+  const chunkSize = 400;
+  const allOps: { type: "set" | "delete"; id: string; data?: any }[] = [
+    ...toSet.map(([id, data]) => ({ type: "set" as const, id, data })),
+    ...toDelete.map(id => ({ type: "delete" as const, id }))
+  ];
+
+  for (let i = 0; i < allOps.length; i += chunkSize) {
+    const chunk = allOps.slice(i, i + chunkSize);
+    const batch = writeBatch(firestoreDb);
+    for (const op of chunk) {
+      const docRef = doc(firestoreDb, collectionName, op.id);
+      if (op.type === "set") {
+        batch.set(docRef, op.data);
+      } else {
+        batch.delete(docRef);
+      }
+    }
     try {
       await batch.commit();
-      console.log(`[SYNC-WRITE] Committed ${operationCount} changes to Firestore collection "${collectionName}".`);
+      console.log(`[SYNC-WRITE] Committed batch of ${chunk.length} changes to Firestore collection "${collectionName}".`);
     } catch (err) {
-      console.error(`[SYNC-WRITE] Error committing batch to ${collectionName}:`, err);
+      console.error(`[SYNC-WRITE] Error committing batch chunk to ${collectionName}:`, err);
     }
   }
 }
 
 async function syncObjectToFirestore(collectionName: string, oldObj: Record<string, any>, newObj: Record<string, any>) {
-  const batch = writeBatch(firestoreDb);
-  let operationCount = 0;
+  const toSet: [string, any][] = [];
+  const toDelete: string[] = [];
 
   // Added or modified keys
   for (const [key, val] of Object.entries(newObj || {})) {
     const oldVal = oldObj ? oldObj[key] : undefined;
     if (!oldVal || JSON.stringify(oldVal) !== JSON.stringify(val)) {
-      const docRef = doc(firestoreDb, collectionName, key);
-      batch.set(docRef, val);
-      operationCount++;
+      toSet.push([key, val]);
     }
   }
 
@@ -132,19 +140,36 @@ async function syncObjectToFirestore(collectionName: string, oldObj: Record<stri
   if (oldObj) {
     for (const key of Object.keys(oldObj)) {
       if (!(key in (newObj || {}))) {
-        const docRef = doc(firestoreDb, collectionName, key);
-        batch.delete(docRef);
-        operationCount++;
+        toDelete.push(key);
       }
     }
   }
 
-  if (operationCount > 0) {
+  const totalOps = toSet.length + toDelete.length;
+  if (totalOps === 0) return;
+
+  const chunkSize = 400;
+  const allOps: { type: "set" | "delete"; id: string; data?: any }[] = [
+    ...toSet.map(([id, data]) => ({ type: "set" as const, id, data })),
+    ...toDelete.map(id => ({ type: "delete" as const, id }))
+  ];
+
+  for (let i = 0; i < allOps.length; i += chunkSize) {
+    const chunk = allOps.slice(i, i + chunkSize);
+    const batch = writeBatch(firestoreDb);
+    for (const op of chunk) {
+      const docRef = doc(firestoreDb, collectionName, op.id);
+      if (op.type === "set") {
+        batch.set(docRef, op.data);
+      } else {
+        batch.delete(docRef);
+      }
+    }
     try {
       await batch.commit();
-      console.log(`[SYNC-WRITE] Committed ${operationCount} key changes to Firestore collection "${collectionName}".`);
+      console.log(`[SYNC-WRITE] Committed object batch of ${chunk.length} key changes to Firestore collection "${collectionName}".`);
     } catch (err) {
-      console.error(`[SYNC-WRITE] Error committing object batch to ${collectionName}:`, err);
+      console.error(`[SYNC-WRITE] Error committing object batch chunk to ${collectionName}:`, err);
     }
   }
 }
@@ -346,19 +371,31 @@ async function logChange(key: string, oldList: any[], newList: any[]) {
       });
     };
     
-    for (const item of added) {
-      const name = item.nomeCliente || item.nome || item.razaoSocial || item.fileName || item.username || "Novo Item";
-      await createLogEntry("CRIACAO", `Lançamento criado: "${name}"`, item);
+    if (added.length > 10) {
+      await createLogEntry("CRIACAO", `Cadastro em lote: ${added.length} novos registros adicionados na tabela "${COLLECTION_MAP[key]?.name || key}".`, { count: added.length });
+    } else {
+      for (const item of added) {
+        const name = item.nomeCliente || item.nome || item.razaoSocial || item.fileName || item.username || "Novo Item";
+        await createLogEntry("CRIACAO", `Lançamento criado: "${name}"`, item);
+      }
     }
     
-    for (const change of modified) {
-      const name = change.new.nomeCliente || change.new.nome || change.new.razaoSocial || change.new.fileName || change.new.username || "Item Modificado";
-      await createLogEntry("EDICAO", `Lançamento atualizado: "${name}"`, change.new);
+    if (modified.length > 10) {
+      await createLogEntry("EDICAO", `Atualização em lote: ${modified.length} registros modificados na tabela "${COLLECTION_MAP[key]?.name || key}".`, { count: modified.length });
+    } else {
+      for (const change of modified) {
+        const name = change.new.nomeCliente || change.new.nome || change.new.razaoSocial || change.new.fileName || change.new.username || "Item Modificado";
+        await createLogEntry("EDICAO", `Lançamento atualizado: "${name}"`, change.new);
+      }
     }
     
-    for (const item of deleted) {
-      const name = item.nomeCliente || item.nome || item.razaoSocial || item.fileName || item.username || "Item Removido";
-      await createLogEntry("EXCLUSAO", `Lançamento removido: "${name}"`, item);
+    if (deleted.length > 10) {
+      await createLogEntry("EXCLUSAO", `Remoção em lote: ${deleted.length} registros excluídos na tabela "${COLLECTION_MAP[key]?.name || key}".`, { count: deleted.length });
+    } else {
+      for (const item of deleted) {
+        const name = item.nomeCliente || item.nome || item.razaoSocial || item.fileName || item.username || "Item Removido";
+        await createLogEntry("EXCLUSAO", `Lançamento removido: "${name}"`, item);
+      }
     }
   } catch (err) {
     console.error("Error writing audit logs to Firestore:", err);
@@ -446,6 +483,7 @@ export function initializeSync() {
     "sstr_registered_managers",
     "sstr_lista_crew",
     "sstr_reps_setor",
+    "sstr_motoristas_rotas",
     "sstr_custom_pdvs_v1",
     "sstr_representative_pending_requests",
     "sstr_cached_batches_v1"
@@ -465,15 +503,11 @@ export function initializeSync() {
       const managersSnap = await withTimeout(getDocs(query(managersCol, limit(1))), 4000);
 
       if (!managersSnap) {
-        console.warn("[FAST-SYNC] Não foi possível contactar o Firestore diretamente (timeout/offline). Mantendo cache local.");
+        console.warn("[FAST-SYNC] Não foi possível contactar o Firestore diretamente (timeout/offline). Continuando com inscrições em segundo plano usando cache local.");
         if (!originalGetItem.call(localStorage, "sstr_cached_records_v1")) {
           seedLocalStorageDefaults();
         }
-        window.dispatchEvent(new Event("storage"));
-        return;
-      }
-
-      if (managersSnap.empty) {
+      } else if (managersSnap.empty) {
         console.log("[FAST-SYNC] No remote state found. Seeding remote database baseline...");
         await seedFirestoreBaselines();
       }

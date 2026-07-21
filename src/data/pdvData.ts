@@ -18,7 +18,7 @@ export const getPdvDatabase = (): Record<string, PdvInfo> => {
     const parts = line.split(";");
     if (parts.length >= 10) {
       const codigo = parts[0].trim();
-      if (codigo && codigo !== "CdPDV" && codigo !== "CódPDV" && codigo !== "Codigo PDV") {
+      if (codigo && codigo !== "CdPDV" && codigo !== "CódPDV" && codigo !== "Cód PDV" && codigo !== "Codigo PDV" && !codigo.startsWith("Cód") && !codigo.startsWith("Cd")) {
         db[codigo] = {
           codigo,
           documento: parts[1]?.trim() || "",
@@ -119,6 +119,14 @@ export const registerMultiplePdvs = (pdvs: PdvInfo[]): { success: boolean; count
     }
   }
 
+  // Create a map of existing items for O(1) lookups and updates
+  const customMap = new Map<string, PdvInfo>();
+  for (const item of customList) {
+    if (item && item.codigo) {
+      customMap.set(item.codigo.trim(), item);
+    }
+  }
+
   let count = 0;
   for (const pdv of pdvs) {
     const formattedCode = pdv.codigo.trim();
@@ -126,16 +134,19 @@ export const registerMultiplePdvs = (pdvs: PdvInfo[]): { success: boolean; count
       continue;
     }
     
-    const existsIndex = customList.findIndex(p => p.codigo === formattedCode);
-    if (existsIndex >= 0) {
-      customList[existsIndex] = pdv;
-    } else {
-      customList.push(pdv);
-    }
+    customMap.set(formattedCode, pdv);
     count++;
   }
 
-  localStorage.setItem("sstr_custom_pdvs_v1", JSON.stringify(customList));
+  const updatedList = Array.from(customMap.values());
+
+  try {
+    localStorage.setItem("sstr_custom_pdvs_v1", JSON.stringify(updatedList));
+  } catch (err: any) {
+    console.error("Quota exceeded or error writing to localStorage:", err);
+    return { success: false, count, error: "Limite de armazenamento do navegador excedido. Tente enviar uma lista menor." };
+  }
+
   clearPdvCache();
   return { success: true, count };
 };

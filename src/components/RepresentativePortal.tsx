@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { ExchangeRecord, REPRESENTATIVOS_SETOR, PendingRequest, MOTORISTAS_ROTAS, getRepresentativosSetor, clearRepresentativosCache } from "../types";
+import { ExchangeRecord, REPRESENTATIVOS_SETOR, PendingRequest, MOTORISTAS_ROTAS, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, RouteDriverInfo } from "../types";
+import { getApiUrl } from "../utils/apiUrl";
 import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
 import { 
@@ -190,6 +191,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
   const [selectedSector, setSelectedSector] = useState<string | null>(null);
   const [roleContext, setRoleContext] = useState<"rn" | "rota">("rn");
   const [repsList, setRepsList] = useState(() => getRepresentativosSetor());
+  const [motoristasList, setMotoristasList] = useState(() => getMotoristasRotas());
   
   // Tabs within a selected sector: "historico" | "novo" | "pendentes" | "aprovadas"
   const [sectorTab, setSectorTab] = useState<"historico" | "novo" | "pendentes" | "aprovadas">("historico");
@@ -339,7 +341,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
 
     const isRouteValue = req.setor.toUpperCase().startsWith("R");
     const representativeInfo = repsList[req.setor];
-    const driverTuple = MOTORISTAS_ROTAS[req.setor as keyof typeof MOTORISTAS_ROTAS];
+    const driverTuple = motoristasList[req.setor as keyof typeof motoristasList];
     const driveName = isRouteValue && driverTuple ? driverTuple.nome : (representativeInfo ? representativeInfo.nome : "Motorista de Rota SSTR");
 
     let finalRecordsToSubmit: ExchangeRecord[] = [];
@@ -350,7 +352,9 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       const matchedProdDesc = productMatch ? productMatch.descricao : "Produto SSTR Reposição";
       
       const matchingProductRecord = records.find(r => r.produto === req.item);
-      const unitPrice = matchingProductRecord && matchingProductRecord.valorUnitario > 0 ? matchingProductRecord.valorUnitario : 98.50;
+      const unitPrice = productMatch && productMatch.valor !== undefined && productMatch.valor > 0
+        ? productMatch.valor
+        : (matchingProductRecord && matchingProductRecord.valorUnitario > 0 ? matchingProductRecord.valorUnitario : 98.50);
       const totalPrice = Number((unitPrice * (req.quantidade || 1)).toFixed(2));
 
       const newExchange: ExchangeRecord = {
@@ -404,7 +408,9 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
         const matchedProdDesc = productMatch ? productMatch.descricao : (subItem.descricao || "Produto SSTR Reposição");
         
         const matchingProductRecord = records.find(r => r.produto === subItem.item);
-        const unitPrice = matchingProductRecord && matchingProductRecord.valorUnitario > 0 ? matchingProductRecord.valorUnitario : 98.50;
+        const unitPrice = productMatch && productMatch.valor !== undefined && productMatch.valor > 0
+          ? productMatch.valor
+          : (matchingProductRecord && matchingProductRecord.valorUnitario > 0 ? matchingProductRecord.valorUnitario : 98.50);
         const totalPrice = Number((unitPrice * subItem.quantidade).toFixed(2));
 
         let finalJust = subItem.motivo || "Produto Avariado";
@@ -832,7 +838,9 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       loadPendingRequests();
       loadOfflineQueue();
       clearRepresentativosCache();
+      clearMotoristasRotasCache();
       setRepsList(getRepresentativosSetor());
+      setMotoristasList(getMotoristasRotas());
     };
 
     const handleOnline = () => {
@@ -1535,7 +1543,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     if (formFotoUrl && formFotoUrl.startsWith("data:image/")) {
       setFormError("Enviando foto da avaria para a nuvem de forma segura... Aguarde.");
       try {
-        const upRes = await fetch("/api/upload", {
+        const upRes = await fetch(getApiUrl("/api/upload"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ image: formFotoUrl })
@@ -1757,7 +1765,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
             ) : (
               <>
                 <p className="text-[8.5px] font-bold text-slate-500 uppercase tracking-widest font-mono text-center mb-1">Selecione sua Rota de Entrega</p>
-                {Object.values(MOTORISTAS_ROTAS).map(rot => {
+                {(Object.values(motoristasList) as RouteDriverInfo[]).map(rot => {
                   return (
                     <button
                       key={rot.rota}
@@ -1848,7 +1856,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                       Rota {selectedSector} • Motorista
                     </span>
                     <strong className="text-[11px] text-white block leading-tight truncate">
-                      {MOTORISTAS_ROTAS[selectedSector]?.nome || `Rota ${selectedSector}`}
+                      {motoristasList[selectedSector]?.nome || `Rota ${selectedSector}`}
                     </strong>
                   </>
                 ) : (

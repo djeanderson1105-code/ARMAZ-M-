@@ -151,29 +151,11 @@ export default function App() {
     localStorage.removeItem("sstr_current_manager_name");
 
     const hasCache = localStorage.getItem(STORAGE_RECORDS_KEY);
-    if (!hasCache) {
-      // First boot: seed local database baseline synchronously so the app works instantly
-      const defaultRecords = parseCSVToRecords(RAW_SAMPLE_DATA, "Planilha Base Pau Brasil");
-      const initialBatch: ImportBatch = {
-        id: "batch_default",
-        timestamp: Date.now(),
-        fileName: "Planilha Base Pau Brasil.csv",
-        recordCount: defaultRecords.length,
-        totalValue: defaultRecords.reduce((acc, r) => acc + r.valorTotal, 0)
-      };
-
-      localStorage.setItem(STORAGE_RECORDS_KEY, JSON.stringify(defaultRecords));
-      localStorage.setItem(STORAGE_BATCHES_KEY, JSON.stringify([initialBatch]));
-
-      setRecords(defaultRecords);
-      setBatches([initialBatch]);
-    } else {
-      // Cache exists: load synchronously on mount
+    if (hasCache) {
       loadRecordsFromLocal();
+    } else {
+      setIsSyncingInitial(true);
     }
-
-    // Never block the screen with isSyncingInitial
-    setIsSyncingInitial(false);
 
     // Sync with other devices on booting and schedule polling in background
     const { fastSyncPromise, heavySyncPromise } = initializeSync();
@@ -194,13 +176,41 @@ export default function App() {
           console.error("Erro ao analisar registros salvos localmente:", e);
         }
       }
+      setIsSyncingInitial(false);
     }).catch((err) => {
       console.error("Erro na sincronização inicial rápida, usando cache local:", err);
       loadRecordsFromLocal();
+      setIsSyncingInitial(false);
     });
 
     heavySyncPromise.then(() => {
       setIsSyncingHeavy(false);
+      
+      const cachedRecs = localStorage.getItem(STORAGE_RECORDS_KEY);
+      if (!cachedRecs) {
+        // First boot with empty Firestore/offline: seed default dataset
+        const defaultRecords = parseCSVToRecords(RAW_SAMPLE_DATA, "Planilha Base Pau Brasil");
+        const initialBatch: ImportBatch = {
+          id: "batch_default",
+          timestamp: Date.now(),
+          fileName: "Planilha Base Pau Brasil.csv",
+          recordCount: defaultRecords.length,
+          totalValue: defaultRecords.reduce((acc, r) => acc + r.valorTotal, 0)
+        };
+
+        // This will write to local storage and sync to Firestore if online & empty
+        saveStateToStorage(defaultRecords, [initialBatch]);
+      } else {
+        try {
+          setRecords(JSON.parse(cachedRecs));
+          const cachedBatches = localStorage.getItem(STORAGE_BATCHES_KEY);
+          if (cachedBatches) {
+            setBatches(JSON.parse(cachedBatches));
+          }
+        } catch (e) {
+          console.error("Erro ao analisar registros salvos localmente:", e);
+        }
+      }
     }).catch((err) => {
       console.error("Erro na sincronização de dados históricos:", err);
       setIsSyncingHeavy(false);

@@ -15,7 +15,7 @@ export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginP
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -30,8 +30,7 @@ export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginP
 
     setIsLoading(true);
 
-    // Dynamic checking of users from localStorage
-    setTimeout(() => {
+    try {
       let registeredList: any[] = [];
       const listJson = localStorage.getItem("sstr_registered_managers");
       if (listJson) {
@@ -53,6 +52,31 @@ export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginP
         );
       }
 
+      // Fallback: If not found in local storage cache, fetch directly from Firestore (handles newly registered users on slow/lagging connections)
+      if (!matched) {
+        try {
+          const { doc, getDoc } = await import("firebase/firestore");
+          const { firestoreDb } = await import("../utils/apiSync");
+          
+          const docRef = doc(firestoreDb, "managers", checkUser);
+          const docSnap = await getDoc(docRef);
+          
+          if (docSnap.exists()) {
+            const remoteManager = docSnap.data();
+            if (remoteManager && remoteManager.password === checkPass) {
+              matched = remoteManager;
+              
+              // Insert/update local storage to avoid redundant network roundtrips in the future
+              const filteredList = registeredList.filter((m: any) => m && m.username && m.username.toLowerCase().replace(/^@+/, "") !== checkUser);
+              const updatedList = [...filteredList, remoteManager];
+              localStorage.setItem("sstr_registered_managers", JSON.stringify(updatedList));
+            }
+          }
+        } catch (err) {
+          console.warn("[LOGIN-FIREBASE-FALLBACK] Direct query to Firestore failed:", err);
+        }
+      }
+
       if (matched) {
         isValid = true;
         matchedManagerName = matched.name;
@@ -63,8 +87,14 @@ export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginP
         } else if (checkUser === "admin" && checkPass === "admin") {
           isValid = true;
           matchedManagerName = "Administrador";
+        } else if (checkUser === "g1002" && checkPass === "!Liz1105;") {
+          isValid = true;
+          matchedManagerName = "Administrador - G1002";
         }
       }
+
+      // Small artificial delay for natural UX visual feedback
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       if (isValid) {
         onLoginSuccess(matchedManagerName || username.trim().replace(/^@+/, ""));
@@ -72,7 +102,11 @@ export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginP
         setError("Usuário ou senha incorretos.");
         setIsLoading(false);
       }
-    }, 600);
+    } catch (err: any) {
+      console.error(err);
+      setError("Erro ao autenticar: " + (err.message || "Erro desconhecido"));
+      setIsLoading(false);
+    }
   };
 
   return (

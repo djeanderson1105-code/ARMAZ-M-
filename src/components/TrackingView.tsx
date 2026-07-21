@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { ExchangeRecord, REPRESENTATIVOS_SETOR } from "../types";
-import { Search, Eye, Filter, CheckCircle2, AlertCircle, HelpCircle, X, ExternalLink, RefreshCw, UserCheck, Calendar, AlertTriangle, Layers, ChevronLeft, ChevronRight, DollarSign, ClipboardList, Percent, TrendingUp, Package, Tag } from "lucide-react";
+import { Search, Eye, Filter, CheckCircle2, AlertCircle, HelpCircle, X, ExternalLink, RefreshCw, UserCheck, Calendar, AlertTriangle, Layers, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, DollarSign, ClipboardList, Percent, TrendingUp, Package, Tag } from "lucide-react";
 import { calculateHL } from "../utils/hectoFactors";
 
 interface TrackingViewProps {
@@ -22,6 +22,10 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
   const [endDate, setEndDate] = useState<string>("");
   const [activeDetailRecord, setActiveDetailRecord] = useState<ExchangeRecord | null>(null);
 
+  // Sorting state for auditoria and rastreamento
+  const [sortBy, setSortBy] = useState<"data" | "valor" | "hecto">("data");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+
   // Grouped View States
   const [viewMode, setViewMode] = useState<"individual" | "grouped" | "duplicates">("grouped");
   const isGroupedView = viewMode === "grouped";
@@ -31,6 +35,9 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 24;
 
+  // Metric toggle for status distribution visualization
+  const [metricView, setMetricView] = useState<"value" | "volume" | "count">("value");
+
   // Debounce search input to avoid typing lag
   React.useEffect(() => {
     const timer = setTimeout(() => {
@@ -39,10 +46,10 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
     return () => clearTimeout(timer);
   }, [localSearchTerm]);
 
-  // Reset page to 1 whenever filters change
+  // Reset page to 1 whenever filters or sorting change
   React.useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, searchField, selectedStatus, selectedSector, selectedReason, selectedGv, startDate, endDate, viewMode]);
+  }, [searchTerm, searchField, selectedStatus, selectedSector, selectedReason, selectedGv, startDate, endDate, viewMode, sortBy, sortOrder]);
 
   // Helper to convert DD/MM/YYYY to YYYY-MM-DD for comparison
   const convertToISODate = (ptDateStr: string): string | null => {
@@ -293,31 +300,41 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
       return matchSearch && matchStatus && matchSector && matchDate && matchReason && matchGv;
     });
 
-    // Sort by date solicitation descending (newest first). If identical date, sort by hour descending or ID/timestamp descending
+    // Sort dynamically by selected option (date, value, hecto) and direction (asc/desc)
     return list.sort((a, b) => {
-      const [dayA, monthA, yearA] = (a.dataSolicitacao || "").split("/").map(Number);
-      const timeA = yearA && monthA && dayA ? new Date(yearA, monthA - 1, dayA).getTime() : 0;
+      let comparison = 0;
 
-      const [dayB, monthB, yearB] = (b.dataSolicitacao || "").split("/").map(Number);
-      const timeB = yearB && monthB && dayB ? new Date(yearB, monthB - 1, dayB).getTime() : 0;
+      if (sortBy === "data") {
+        const [dayA, monthA, yearA] = (a.dataSolicitacao || "").split("/").map(Number);
+        const timeA = yearA && monthA && dayA ? new Date(yearA, monthA - 1, dayA).getTime() : 0;
 
-      if (timeB !== timeA) {
-        return timeB - timeA; // Newest date first
-      }
+        const [dayB, monthB, yearB] = (b.dataSolicitacao || "").split("/").map(Number);
+        const timeB = yearB && monthB && dayB ? new Date(yearB, monthB - 1, dayB).getTime() : 0;
 
-      if (a.hora && b.hora) {
-        const [hA, mA] = a.hora.split(":").map(Number);
-        const [hB, mB] = b.hora.split(":").map(Number);
-        const minutesA = (hA || 0) * 60 + (mA || 0);
-        const minutesB = (hB || 0) * 60 + (mB || 0);
-        if (minutesB !== minutesA) {
-          return minutesB - minutesA; // Newest hour first
+        if (timeA !== timeB) {
+          comparison = timeA - timeB;
+        } else {
+          if (a.hora && b.hora) {
+            const [hA, mA] = a.hora.split(":").map(Number);
+            const [hB, mB] = b.hora.split(":").map(Number);
+            const minutesA = (hA || 0) * 60 + (mA || 0);
+            const minutesB = (hB || 0) * 60 + (mB || 0);
+            comparison = minutesA - minutesB;
+          } else {
+            comparison = (a.importTimestamp || 0) - (b.importTimestamp || 0);
+          }
         }
+      } else if (sortBy === "valor") {
+        comparison = a.valorTotal - b.valorTotal;
+      } else if (sortBy === "hecto") {
+        const hlA = calculateHL(a.produto, a.quantidade);
+        const hlB = calculateHL(b.produto, b.quantidade);
+        comparison = hlA - hlB;
       }
 
-      return (b.importTimestamp || 0) - (a.importTimestamp || 0);
+      return sortOrder === "desc" ? -comparison : comparison;
     });
-  }, [records, searchTerm, searchField, selectedStatus, selectedSector, selectedReason, selectedGv, startDate, endDate]);
+  }, [records, searchTerm, searchField, selectedStatus, selectedSector, selectedReason, selectedGv, startDate, endDate, sortBy, sortOrder]);
 
   // Grouped solicitations memo based on currently filtered records
   const groupedSolicitations = useMemo(() => {
@@ -330,7 +347,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
       groups[sol].push(rec);
     });
 
-    return Object.entries(groups).map(([sol, recs]) => {
+    const groupedList = Object.entries(groups).map(([sol, recs]) => {
       const first = recs[0];
       const productsKey = recs
         .map(r => `${r.produto.trim()}:${r.quantidade}`)
@@ -349,10 +366,35 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
         observacao: first.observacao || "",
         records: recs,
         productsKey,
-        totalValue: recs.reduce((sum, r) => sum + r.valorTotal, 0)
+        totalValue: recs.reduce((sum, r) => sum + r.valorTotal, 0),
+        totalHL: recs.reduce((sum, r) => sum + calculateHL(r.produto, r.quantidade), 0)
       };
     });
-  }, [filteredRecords]);
+
+    return groupedList.sort((a, b) => {
+      let comparison = 0;
+
+      if (sortBy === "data") {
+        const [dayA, monthA, yearA] = (a.dataSolicitacao || "").split("/").map(Number);
+        const timeA = yearA && monthA && dayA ? new Date(yearA, monthA - 1, dayA).getTime() : 0;
+
+        const [dayB, monthB, yearB] = (b.dataSolicitacao || "").split("/").map(Number);
+        const timeB = yearB && monthB && dayB ? new Date(yearB, monthB - 1, dayB).getTime() : 0;
+
+        if (timeA !== timeB) {
+          comparison = timeA - timeB;
+        } else {
+          comparison = a.solicitacao.localeCompare(b.solicitacao);
+        }
+      } else if (sortBy === "valor") {
+        comparison = a.totalValue - b.totalValue;
+      } else if (sortBy === "hecto") {
+        comparison = a.totalHL - b.totalHL;
+      }
+
+      return sortOrder === "desc" ? -comparison : comparison;
+    });
+  }, [filteredRecords, sortBy, sortOrder]);
 
   // Dynamic statistics for the Auditoria dashboard
   const dashStats = useMemo(() => {
@@ -360,7 +402,122 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
     let totalHl = 0;
     const uniqueSols = new Set<string>();
 
+    let bApprovedValor = 0;
+    let bApprovedHl = 0;
+    let bApprovedItemsCount = 0;
+    const bApprovedSols = new Set<string>();
+
+    let bPendingValor = 0;
+    let bPendingHl = 0;
+    let bPendingItemsCount = 0;
+    const bPendingSols = new Set<string>();
+
+    let bRejectedValor = 0;
+    let bRejectedHl = 0;
+    let bRejectedItemsCount = 0;
+    const bRejectedSols = new Set<string>();
+
+    let bRecadastrarValor = 0;
+    let bRecadastrarHl = 0;
+    let bRecadastrarItemsCount = 0;
+    const bRecadastrarSols = new Set<string>();
+
+    // Compute status distribution based on active search/filters EXCEPT the status filter
+    records.forEach(r => {
+      const normSearch = searchTerm.toLowerCase();
+      let matchSearch = true;
+      if (searchTerm) {
+        if (searchField === "cliente") {
+          matchSearch = r.nomeCliente.toLowerCase().includes(normSearch) || r.codigoCliente.includes(normSearch);
+        } else if (searchField === "setor") {
+          matchSearch = r.setorVenda.toLowerCase().includes(normSearch);
+        } else if (searchField === "nf") {
+          matchSearch = r.nf.toLowerCase().includes(normSearch);
+        } else if (searchField === "motorista") {
+          matchSearch = !!r.nomeMotorista && r.nomeMotorista.toLowerCase().includes(normSearch);
+        } else if (searchField === "mapa") {
+          matchSearch = !!r.mapa && r.mapa.includes(normSearch);
+        } else if (searchField === "solicitacao") {
+          matchSearch = r.solicitacao.includes(normSearch);
+        } else if (searchField === "item") {
+          matchSearch = r.produto.includes(normSearch) || r.descricaoProduto.toLowerCase().includes(normSearch);
+        } else {
+          matchSearch = 
+            r.nomeCliente.toLowerCase().includes(normSearch) ||
+            r.codigoCliente.includes(normSearch) ||
+            r.solicitacao.includes(normSearch) ||
+            r.descricaoProduto.toLowerCase().includes(normSearch) ||
+            r.produto.includes(normSearch) ||
+            r.nf.toLowerCase().includes(normSearch) ||
+            (r.nomeMotorista && r.nomeMotorista.toLowerCase().includes(normSearch)) ||
+            (r.mapa && r.mapa.includes(normSearch));
+        }
+      }
+
+      let matchSector = true;
+      if (selectedSector !== "todos") {
+        matchSector = r.setorVenda === selectedSector;
+      }
+
+      let matchDate = true;
+      const isoDate = convertToISODate(r.dataSolicitacao);
+      if (isoDate) {
+        if (startDate && isoDate < startDate) {
+          matchDate = false;
+        }
+        if (endDate && isoDate > endDate) {
+          matchDate = false;
+        }
+      } else if (startDate || endDate) {
+        matchDate = false;
+      }
+
+      let matchReason = true;
+      if (selectedReason !== "todos") {
+        matchReason = (r.justificativa || "").trim() === selectedReason.trim();
+      }
+
+      let matchGv = true;
+      if (selectedGv !== "todos") {
+        const s = (r.setorVenda || "").trim();
+        const rep = REPRESENTATIVOS_SETOR[s];
+        const recordGv = rep ? rep.gv.toUpperCase() : "OUTROS";
+        matchGv = recordGv === selectedGv.toUpperCase();
+      }
+
+      if (matchSearch && matchSector && matchDate && matchReason && matchGv) {
+        const statusClean = r.status.toLowerCase().trim();
+        const val = r.valorTotal || 0;
+        const hl = r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
+        const isRecadastrar = recadastrarSolIds.has(r.solicitacao);
+
+        if (isRecadastrar) {
+          bRecadastrarValor += val;
+          bRecadastrarHl += hl;
+          bRecadastrarItemsCount++;
+          if (r.solicitacao) bRecadastrarSols.add(r.solicitacao);
+        } else if (statusClean.includes("aprov")) {
+          bApprovedValor += val;
+          bApprovedHl += hl;
+          bApprovedItemsCount++;
+          if (r.solicitacao) bApprovedSols.add(r.solicitacao);
+        } else if (statusClean.includes("pend")) {
+          bPendingValor += val;
+          bPendingHl += hl;
+          bPendingItemsCount++;
+          if (r.solicitacao) bPendingSols.add(r.solicitacao);
+        } else if (statusClean.includes("reprov")) {
+          bRejectedValor += val;
+          bRejectedHl += hl;
+          bRejectedItemsCount++;
+          if (r.solicitacao) bRejectedSols.add(r.solicitacao);
+        }
+      }
+    });
+
+    // Sum total value and volume based on selected status filter to ensure consistency
     filteredRecords.forEach(r => {
+      // Show total of everything in the filtered records (respecting whichever status filter is selected, or all if "todos")
       totalValor += r.valorTotal || 0;
       totalHl += r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
       if (r.solicitacao) {
@@ -425,6 +582,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
       }
 
       if (matchStatus && matchSector && matchDate && matchReason && matchGv) {
+        // Sum all records matching active filters for baseline comparison
         baselineValor += r.valorTotal || 0;
         baselineHl += r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
         if (r.solicitacao) {
@@ -448,7 +606,24 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
       percentValor,
       percentHl,
       percentSols,
-      hasActiveSearchTerm: !!searchTerm.trim()
+      hasActiveSearchTerm: !!searchTerm.trim(),
+      // Status breakdown
+      bApprovedValor,
+      bApprovedHl,
+      bApprovedSolsCount: bApprovedSols.size,
+      bApprovedItemsCount,
+      bPendingValor,
+      bPendingHl,
+      bPendingSolsCount: bPendingSols.size,
+      bPendingItemsCount,
+      bRejectedValor,
+      bRejectedHl,
+      bRejectedSolsCount: bRejectedSols.size,
+      bRejectedItemsCount,
+      bRecadastrarValor,
+      bRecadastrarHl,
+      bRecadastrarSolsCount: bRecadastrarSols.size,
+      bRecadastrarItemsCount
     };
   }, [filteredRecords, records, selectedStatus, selectedSector, startDate, endDate, selectedReason, selectedGv, searchTerm, recadastrarSolIds]);
 
@@ -850,6 +1025,49 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
     }).format(val);
   };
 
+  const {
+    totalAllValor,
+    totalAllHl,
+    totalAllSols,
+    pctApprovedValor,
+    pctPendingValor,
+    pctRejectedValor,
+    pctRecadastrarValor,
+    pctApprovedHl,
+    pctPendingHl,
+    pctRejectedHl,
+    pctRecadastrarHl,
+    pctApprovedSols,
+    pctPendingSols,
+    pctRejectedSols,
+    pctRecadastrarSols
+  } = useMemo(() => {
+    const totalV = dashStats.bApprovedValor + dashStats.bPendingValor + dashStats.bRejectedValor + dashStats.bRecadastrarValor;
+    const totalH = dashStats.bApprovedHl + dashStats.bPendingHl + dashStats.bRejectedHl + dashStats.bRecadastrarHl;
+    const totalS = dashStats.bApprovedSolsCount + dashStats.bPendingSolsCount + dashStats.bRejectedSolsCount + dashStats.bRecadastrarSolsCount;
+
+    return {
+      totalAllValor: totalV,
+      totalAllHl: totalH,
+      totalAllSols: totalS,
+      
+      pctApprovedValor: totalV > 0 ? (dashStats.bApprovedValor / totalV) * 100 : 0,
+      pctPendingValor: totalV > 0 ? (dashStats.bPendingValor / totalV) * 100 : 0,
+      pctRejectedValor: totalV > 0 ? (dashStats.bRejectedValor / totalV) * 100 : 0,
+      pctRecadastrarValor: totalV > 0 ? (dashStats.bRecadastrarValor / totalV) * 100 : 0,
+
+      pctApprovedHl: totalH > 0 ? (dashStats.bApprovedHl / totalH) * 100 : 0,
+      pctPendingHl: totalH > 0 ? (dashStats.bPendingHl / totalH) * 100 : 0,
+      pctRejectedHl: totalH > 0 ? (dashStats.bRejectedHl / totalH) * 100 : 0,
+      pctRecadastrarHl: totalH > 0 ? (dashStats.bRecadastrarHl / totalH) * 100 : 0,
+
+      pctApprovedSols: totalS > 0 ? (dashStats.bApprovedSolsCount / totalS) * 100 : 0,
+      pctPendingSols: totalS > 0 ? (dashStats.bPendingSolsCount / totalS) * 100 : 0,
+      pctRejectedSols: totalS > 0 ? (dashStats.bRejectedSolsCount / totalS) * 100 : 0,
+      pctRecadastrarSols: totalS > 0 ? (dashStats.bRecadastrarSolsCount / totalS) * 100 : 0,
+    };
+  }, [dashStats]);
+
   return (
     <div className="space-y-6 text-slate-100">
       
@@ -1063,6 +1281,57 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
           </div>
         </div>
 
+        {/* Tier 3: Sorting Options Bar */}
+        <div className="bg-slate-950/40 p-3 rounded-xl border border-slate-850/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs mt-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider font-mono mr-2 flex items-center gap-1">
+              <TrendingUp className="w-3.5 h-3.5 text-blue-400" />
+              <span>Ordenar por:</span>
+            </span>
+            {[
+              { id: "data", label: "Data" },
+              { id: "valor", label: "Valor (R$)" },
+              { id: "hecto", label: "Volume (HL)" }
+            ].map(item => {
+              const isActive = sortBy === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    if (isActive) {
+                      setSortOrder(prev => prev === "asc" ? "desc" : "asc");
+                    } else {
+                      setSortBy(item.id as any);
+                      setSortOrder("desc"); // Default to desc on change
+                    }
+                  }}
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer border flex items-center space-x-1.5 ${
+                    isActive
+                      ? "bg-slate-900 text-blue-400 border-blue-500/50 shadow-md font-semibold font-mono"
+                      : "bg-slate-950/40 hover:bg-slate-950 text-slate-400 border-slate-900 font-mono"
+                  }`}
+                >
+                  <span>{item.label}</span>
+                  {isActive && (
+                    sortOrder === "desc" 
+                      ? <ChevronDown className="w-3.5 h-3.5 text-blue-400" /> 
+                      : <ChevronUp className="w-3.5 h-3.5 text-blue-400" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="text-slate-400 font-mono text-[10px] flex items-center gap-1.5">
+            <span className="uppercase text-slate-500">Direção:</span>
+            <button
+              onClick={() => setSortOrder(prev => prev === "asc" ? "desc" : "asc")}
+              className="px-2 py-1 bg-slate-900 hover:bg-slate-850 text-white rounded border border-slate-800 transition-colors uppercase font-bold text-[9px] cursor-pointer"
+            >
+              {sortOrder === "desc" ? "Decrescente" : "Crescente"}
+            </button>
+          </div>
+        </div>
+
         {/* Status Selection and Action reset row */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pt-3">
           
@@ -1158,15 +1427,33 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
         {/* Card 1: Valor Total */}
         <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl flex items-center justify-between space-x-4 relative overflow-hidden group hover:border-blue-600/40 transition-colors">
           <div className="space-y-1 z-10">
-            <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider font-mono block">Valor Consumido (R$)</span>
+            <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider font-mono block">
+              {selectedStatus === "todos"
+                ? "Valor Geral (R$)"
+                : selectedStatus === "aprovada"
+                ? "Valor Consumido (R$)"
+                : selectedStatus === "pendente"
+                ? "Valor Pendente (R$)"
+                : selectedStatus === "reprovada"
+                ? "Valor Reprovado (R$)"
+                : "Valor Recadastrar (R$)"}
+            </span>
             <span className="text-xl lg:text-2xl font-extrabold text-blue-400 font-mono block">{formatCurrency(dashStats.totalValor)}</span>
             <span className="text-[10px] text-slate-400 font-mono block leading-tight">
               {dashStats.hasActiveSearchTerm ? (
                 <>
                   <span className="text-emerald-400 font-bold">{dashStats.percentValor.toFixed(1)}%</span> do período ({formatCurrency(dashStats.baselineValor)})
                 </>
+              ) : selectedStatus === "todos" ? (
+                "Total de todas as solicitações"
+              ) : selectedStatus === "aprovada" ? (
+                "Apenas solicitações aprovadas"
+              ) : selectedStatus === "pendente" ? (
+                "Apenas solicitações pendentes"
+              ) : selectedStatus === "reprovada" ? (
+                "Apenas solicitações reprovadas"
               ) : (
-                "100% do período ativo"
+                "Apenas solicitações a recadastrar"
               )}
             </span>
           </div>
@@ -1178,15 +1465,33 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
         {/* Card 2: Volume em Hectolitros */}
         <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl flex items-center justify-between space-x-4 relative overflow-hidden group hover:border-indigo-600/40 transition-colors">
           <div className="space-y-1 z-10">
-            <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider font-mono block">Volume em Hectolitros (HL)</span>
+            <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider font-mono block">
+              {selectedStatus === "todos"
+                ? "Volume Geral (HL)"
+                : selectedStatus === "aprovada"
+                ? "Volume em Hectolitros (HL)"
+                : selectedStatus === "pendente"
+                ? "Volume Pendente (HL)"
+                : selectedStatus === "reprovada"
+                ? "Volume Reprovado (HL)"
+                : "Volume Recadastrar (HL)"}
+            </span>
             <span className="text-xl lg:text-2xl font-extrabold text-indigo-400 font-mono block">{dashStats.totalHl.toFixed(3)} HL</span>
             <span className="text-[10px] text-slate-400 font-mono block leading-tight">
               {dashStats.hasActiveSearchTerm ? (
                 <>
                   <span className="text-indigo-450 font-bold">{dashStats.percentHl.toFixed(1)}%</span> do período ({dashStats.baselineHl.toFixed(3)} HL)
                 </>
+              ) : selectedStatus === "todos" ? (
+                "Volume total das solicitações"
+              ) : selectedStatus === "aprovada" ? (
+                "Volume das solicitações aprovadas"
+              ) : selectedStatus === "pendente" ? (
+                "Volume das solicitações pendentes"
+              ) : selectedStatus === "reprovada" ? (
+                "Volume das solicitações reprovadas"
               ) : (
-                "100% do volume ativo"
+                "Volume das solicitações a recadastrar"
               )}
             </span>
           </div>
@@ -1198,13 +1503,25 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
         {/* Card 3: Número de Solicitações */}
         <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl flex items-center justify-between space-x-4 relative overflow-hidden group hover:border-emerald-600/40 transition-colors">
           <div className="space-y-1 z-10">
-            <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider font-mono block">Solicitações Atendidas</span>
+            <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider font-mono block">
+              {selectedStatus === "todos"
+                ? "Solicitações Gerais"
+                : selectedStatus === "aprovada"
+                ? "Solicitações Atendidas"
+                : selectedStatus === "pendente"
+                ? "Solicitações Pendentes"
+                : selectedStatus === "reprovada"
+                ? "Solicitações Reprovadas"
+                : "Solicitações Recadastrar"}
+            </span>
             <span className="text-xl lg:text-2xl font-extrabold text-emerald-400 font-mono block">{dashStats.solicitacoesCount} Sols.</span>
             <span className="text-[10px] text-slate-400 font-mono block leading-tight">
               {dashStats.hasActiveSearchTerm ? (
                 <>
                   <span className="text-emerald-450 font-bold">{dashStats.percentSols.toFixed(1)}%</span> do período ({dashStats.baselineSolsCount} Sols.)
                 </>
+              ) : selectedStatus === "todos" ? (
+                `Total de ${dashStats.itemsCount} itens lançados`
               ) : (
                 `Total de ${dashStats.itemsCount} itens lançados`
               )}
@@ -1228,6 +1545,245 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
           </div>
           <div className="p-3 bg-amber-950/60 rounded-xl border border-amber-900/40 text-amber-400 group-hover:scale-110 transition-transform">
             <Percent className="w-5 h-5" />
+          </div>
+        </div>
+      </div>
+
+      {/* VISUALIZAÇÃO DE STATUS (APROVADO, PENDENTE, REPROVADO) */}
+      <div className="bg-slate-900/80 p-6 rounded-2xl border border-slate-800 shadow-xl mt-6 space-y-6 animate-fade-in">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-200 tracking-wide uppercase font-sans flex items-center gap-2">
+              <Layers className="w-4 h-4 text-indigo-400" />
+              <span>Análise de Status e Distribuição das Solicitações</span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-1">
+              Visualização detalhada da proporção de solicitações Aprovadas, Pendentes e Reprovadas do filtro ativo.
+            </p>
+          </div>
+          
+          {/* Toggle buttons for metric */}
+          <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs self-start md:self-auto">
+            <button
+              onClick={() => setMetricView("value")}
+              className={`px-3 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
+                metricView === "value"
+                  ? "bg-blue-600 text-white shadow-md font-bold"
+                  : "text-slate-450 hover:text-slate-200"
+              }`}
+            >
+              Valor (R$)
+            </button>
+            <button
+              onClick={() => setMetricView("volume")}
+              className={`px-3 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
+                metricView === "volume"
+                  ? "bg-indigo-600 text-white shadow-md font-bold"
+                  : "text-slate-450 hover:text-slate-200"
+              }`}
+            >
+              Volume (HL)
+            </button>
+            <button
+              onClick={() => setMetricView("count")}
+              className={`px-3 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
+                metricView === "count"
+                  ? "bg-emerald-600 text-white shadow-md font-bold"
+                  : "text-slate-450 hover:text-slate-200"
+              }`}
+            >
+              Solicitações
+            </button>
+          </div>
+        </div>
+
+        {/* Stacked Progress Bar */}
+        <div className="space-y-2">
+          <div className="flex justify-between text-[11px] font-mono text-slate-400">
+            <span>Proporção por Status ({metricView === "value" ? "Valor Financeiro R$" : metricView === "volume" ? "Volume Físico HL" : "Quantidade de Solicitações"})</span>
+            <span>Total: {
+              metricView === "value" 
+                ? formatCurrency(totalAllValor) 
+                : metricView === "volume" 
+                  ? `${totalAllHl.toFixed(3)} HL` 
+                  : `${totalAllSols} Sols.`
+            }</span>
+          </div>
+          
+          <div className="h-4 w-full bg-slate-950 rounded-full overflow-hidden flex shadow-inner">
+            {/* Approved segment */}
+            <div 
+              style={{ width: `${Math.max(0.5, metricView === "value" ? pctApprovedValor : metricView === "volume" ? pctApprovedHl : pctApprovedSols)}%` }}
+              className={`bg-emerald-500 h-full transition-all duration-500 relative group ${
+                (metricView === "value" ? pctApprovedValor : metricView === "volume" ? pctApprovedHl : pctApprovedSols) === 0 ? "hidden" : ""
+              }`}
+              title={`Aprovado: ${(metricView === "value" ? pctApprovedValor : metricView === "volume" ? pctApprovedHl : pctApprovedSols).toFixed(1)}%`}
+            />
+            {/* Pending segment */}
+            <div 
+              style={{ width: `${Math.max(0.5, metricView === "value" ? pctPendingValor : metricView === "volume" ? pctPendingHl : pctPendingSols)}%` }}
+              className={`bg-amber-500 h-full transition-all duration-500 ${
+                (metricView === "value" ? pctPendingValor : metricView === "volume" ? pctPendingHl : pctPendingSols) === 0 ? "hidden" : ""
+              }`}
+              title={`Pendente: ${(metricView === "value" ? pctPendingValor : metricView === "volume" ? pctPendingHl : pctPendingSols).toFixed(1)}%`}
+            />
+            {/* Rejected segment */}
+            <div 
+              style={{ width: `${Math.max(0.5, metricView === "value" ? pctRejectedValor : metricView === "volume" ? pctRejectedHl : pctRejectedSols)}%` }}
+              className={`bg-rose-500 h-full transition-all duration-500 ${
+                (metricView === "value" ? pctRejectedValor : metricView === "volume" ? pctRejectedHl : pctRejectedSols) === 0 ? "hidden" : ""
+              }`}
+              title={`Reprovado: ${(metricView === "value" ? pctRejectedValor : metricView === "volume" ? pctRejectedHl : pctRejectedSols).toFixed(1)}%`}
+            />
+            {/* Recadastrar segment */}
+            <div 
+              style={{ width: `${Math.max(0.5, metricView === "value" ? pctRecadastrarValor : metricView === "volume" ? pctRecadastrarHl : pctRecadastrarSols)}%` }}
+              className={`bg-indigo-500 h-full transition-all duration-500 ${
+                (metricView === "value" ? pctRecadastrarValor : metricView === "volume" ? pctRecadastrarHl : pctRecadastrarSols) === 0 ? "hidden" : ""
+              }`}
+              title={`Recadastrar: ${(metricView === "value" ? pctRecadastrarValor : metricView === "volume" ? pctRecadastrarHl : pctRecadastrarSols).toFixed(1)}%`}
+            />
+          </div>
+          
+          {/* Legend */}
+          <div className="flex flex-wrap gap-4 text-[10px] font-semibold text-slate-400 pt-1">
+            <div className="flex items-center space-x-1.5">
+              <span className="w-2 h-2 rounded bg-emerald-500 block" />
+              <span>Aprovadas ({(metricView === "value" ? pctApprovedValor : metricView === "volume" ? pctApprovedHl : pctApprovedSols).toFixed(1)}%)</span>
+            </div>
+            <div className="flex items-center space-x-1.5">
+              <span className="w-2 h-2 rounded bg-amber-500 block" />
+              <span>Pendentes ({(metricView === "value" ? pctPendingValor : metricView === "volume" ? pctPendingHl : pctPendingSols).toFixed(1)}%)</span>
+            </div>
+            <div className="flex items-center space-x-1.5">
+              <span className="w-2 h-2 rounded bg-rose-500 block" />
+              <span>Reprovadas ({(metricView === "value" ? pctRejectedValor : metricView === "volume" ? pctRejectedHl : pctRejectedSols).toFixed(1)}%)</span>
+            </div>
+            {totalAllValor > 0 && dashStats.bRecadastrarValor > 0 && (
+              <div className="flex items-center space-x-1.5">
+                <span className="w-2 h-2 rounded bg-indigo-500 block" />
+                <span>Recadastrar ({(metricView === "value" ? pctRecadastrarValor : metricView === "volume" ? pctRecadastrarHl : pctRecadastrarSols).toFixed(1)}%)</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Status Cards Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Approved Card */}
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-emerald-950/40 hover:border-emerald-900/40 transition-colors space-y-3 shadow-md">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Aprovado</h4>
+              </div>
+              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Valor Consumido:</span>
+                <span className="font-semibold text-emerald-400 font-mono">{formatCurrency(dashStats.bApprovedValor)}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Volume Físico:</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bApprovedHl.toFixed(3)} HL</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Solicitações:</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bApprovedSolsCount} Sols</span>
+              </div>
+            </div>
+            <div className="pt-2 border-t border-slate-900/80 flex justify-between text-[10px] text-slate-400">
+              <span>Proporção (Valor):</span>
+              <span className="text-emerald-400 font-bold font-mono">{pctApprovedValor.toFixed(1)}%</span>
+            </div>
+          </div>
+
+          {/* Pending Card */}
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-amber-950/40 hover:border-amber-900/40 transition-colors space-y-3 shadow-md">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Pendente</h4>
+              </div>
+              <HelpCircle className="w-4 h-4 text-amber-500" />
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Valor Retido:</span>
+                <span className="font-semibold text-amber-400 font-mono">{formatCurrency(dashStats.bPendingValor)}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Volume Físico:</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bPendingHl.toFixed(3)} HL</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Solicitações:</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bPendingSolsCount} Sols</span>
+              </div>
+            </div>
+            <div className="pt-2 border-t border-slate-900/80 flex justify-between text-[10px] text-slate-400">
+              <span>Proporção (Valor):</span>
+              <span className="text-amber-400 font-bold font-mono">{pctPendingValor.toFixed(1)}%</span>
+            </div>
+          </div>
+
+          {/* Rejected Card */}
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-rose-950/40 hover:border-rose-900/40 transition-colors space-y-3 shadow-md">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+                <h4 className="text-xs font-bold text-rose-400 uppercase tracking-wider">Reprovado</h4>
+              </div>
+              <AlertCircle className="w-4 h-4 text-rose-500" />
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Valor Recusado:</span>
+                <span className="font-semibold text-rose-400 font-mono">{formatCurrency(dashStats.bRejectedValor)}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Volume Físico:</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bRejectedHl.toFixed(3)} HL</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Solicitações:</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bRejectedSolsCount} Sols</span>
+              </div>
+            </div>
+            <div className="pt-2 border-t border-slate-900/80 flex justify-between text-[10px] text-slate-400">
+              <span>Proporção (Valor):</span>
+              <span className="text-rose-400 font-bold font-mono">{pctRejectedValor.toFixed(1)}%</span>
+            </div>
+          </div>
+
+          {/* Recadastrar Card */}
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-indigo-950/40 hover:border-indigo-900/40 transition-colors space-y-3 shadow-md">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
+                <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Recadastrar</h4>
+              </div>
+              <RefreshCw className="w-4 h-4 text-indigo-400" />
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Valor Pendente:</span>
+                <span className="font-semibold text-indigo-400 font-mono">{formatCurrency(dashStats.bRecadastrarValor)}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Volume Físico:</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bRecadastrarHl.toFixed(3)} HL</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Solicitações:</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bRecadastrarSolsCount} Sols</span>
+              </div>
+            </div>
+            <div className="pt-2 border-t border-slate-900/80 flex justify-between text-[10px] text-slate-400">
+              <span>Proporção (Valor):</span>
+              <span className="text-indigo-400 font-bold font-mono">{pctRecadastrarValor.toFixed(1)}%</span>
+            </div>
           </div>
         </div>
       </div>
