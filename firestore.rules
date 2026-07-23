@@ -1,12 +1,6 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 1. Default-deny catch-all safety net
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Authorization rules for normalized collections
     match /exchangeRecords/{docId} {
       allow read, write: if true;
     }

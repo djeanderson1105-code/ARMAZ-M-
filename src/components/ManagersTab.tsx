@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from "react";
+import { safeSetItem } from "../utils/apiSync";
+import { useSstrData } from "../context/SstrDataContext";
 import * as XLSX from "xlsx";
 import { 
   UserPlus, 
@@ -47,6 +49,23 @@ interface ManagerUser {
 }
 
 export default function ManagersTab() {
+  const { 
+    pendingRequests: requests, 
+    savePendingRequest, 
+    crewList, 
+    saveCrewMember, 
+    deleteCrewMember,
+    repsList, 
+    saveRepsSetor,
+    deleteRepsSetor,
+    motoristasList: motoristasRotasList, 
+    saveMotoristaRota,
+    deleteMotoristaRota,
+    managers, 
+    saveManager, 
+    deleteManager,
+    vales 
+  } = useSstrData();
   const [activeSubTab, setActiveSubTab] = useState<"gestores" | "crew" | "rns" | "rotas" | "otimizacao" | "pdvs" | "produtos">("gestores");
 
   // PDV States
@@ -233,7 +252,7 @@ export default function ManagersTab() {
     setReqDraftItems(reqDraftItems.filter(item => item.id !== id));
   };
 
-  const handleCreateRequestSubmit = (e: React.FormEvent) => {
+  const handleCreateRequestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
@@ -360,11 +379,11 @@ export default function ManagersTab() {
         cadastroDate: dataFormatada,
         
         // Shortage fields
-        faltaMotorista: reqMotorista || undefined,
-        faltaMotoristaCpf: driverCpf || undefined,
-        faltaAjudantes: [reqAjudante1, reqAjudante2].filter(Boolean).join(", ") || undefined,
-        faltaAjudante1: reqAjudante1 || undefined,
-        faltaAjudante2: reqAjudante2 || undefined,
+        ...(reqMotorista ? { faltaMotorista: reqMotorista } : {}),
+        ...(driverCpf ? { faltaMotoristaCpf: driverCpf } : {}),
+        ...([reqAjudante1, reqAjudante2].filter(Boolean).length > 0 ? { faltaAjudantes: [reqAjudante1, reqAjudante2].filter(Boolean).join(", ") } : {}),
+        ...(reqAjudante1 ? { faltaAjudante1: reqAjudante1 } : {}),
+        ...(reqAjudante2 ? { faltaAjudante2: reqAjudante2 } : {}),
         faltaTipoErro: "entrega",
 
         // Compat fallbacks
@@ -387,12 +406,7 @@ export default function ManagersTab() {
         }))
       };
 
-      const existingReqs = JSON.parse(localStorage.getItem("sstr_representative_pending_requests") || "[]");
-      const updatedReqs = [newRequest, ...existingReqs];
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updatedReqs));
-
-      // Fire event to notify other tabs/views live
-      window.dispatchEvent(new Event("storage"));
+      await savePendingRequest(newRequest);
 
       // Clear all form states
       setReqNf("");
@@ -519,6 +533,33 @@ export default function ManagersTab() {
     }
   };
 
+  const handleDeleteApprovedItemInManagers = (requestId: string, productCode?: string) => {
+    try {
+      const targetReq = requests.find(r => r.id === requestId);
+      if (!targetReq) return;
+
+      if (targetReq.items && targetReq.items.length > 1 && productCode) {
+        const filteredItems = targetReq.items.filter((it: any) => (it.item || it.itemCode) !== productCode);
+        if (filteredItems.length > 0) {
+          savePendingRequest({
+            ...targetReq,
+            items: filteredItems
+          });
+          setSuccess("Item excluído do Espelho do Dia com sucesso!");
+          return;
+        }
+      }
+      savePendingRequest({
+        ...targetReq,
+        statusPromax: "reprovado",
+        rejeitadoObs: "Excluído do Espelho do Dia"
+      });
+      setSuccess("Solicitação excluída do Espelho do Dia com sucesso!");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleExportAnnualReport = () => {
     try {
       setError(null);
@@ -612,20 +653,17 @@ export default function ManagersTab() {
   }, [activeSubTab]);
 
   // Manager accounts state
-  const [managers, setManagers] = useState<ManagerUser[]>([]);
   const [newName, setNewName] = useState("");
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
 
   // Crew (Drivers/Helpers) state
-  const [crewList, setCrewList] = useState<CrewMember[]>([]);
   const [searchCrew, setSearchCrew] = useState("");
   const [newCrewNome, setNewCrewNome] = useState("");
   const [newCrewCargo, setNewCrewCargo] = useState("MOTORISTA DE DISTRIBUICAO");
   const [newCrewCpf, setNewCrewCpf] = useState("");
 
   // Representative (RN) states
-  const [repsList, setRepsList] = useState<Record<string, RepresentativeInfo>>({});
   const [searchRep, setSearchRep] = useState("");
   const [newRepSetor, setNewRepSetor] = useState("");
   const [newRepNome, setNewRepNome] = useState("");
@@ -634,7 +672,6 @@ export default function ManagersTab() {
   const [rnPasteText, setRnPasteText] = useState("");
 
   // Route Driver (SSTR Rotas) states
-  const [motoristasRotasList, setMotoristasRotasList] = useState<Record<string, RouteDriverInfo>>({});
   const [searchRoute, setSearchRoute] = useState("");
   const [newRouteCode, setNewRouteCode] = useState("");
   const [newRouteDriverName, setNewRouteDriverName] = useState("");
@@ -703,38 +740,7 @@ export default function ManagersTab() {
   // Load everything on mount and register storage listener for real-time updates
   useEffect(() => {
     const handleLoadData = () => {
-      // Managers
-      const listJson = localStorage.getItem("sstr_registered_managers");
-      const defaults = [
-        { username: "gestor", password: "paubrasil2026", name: "Gestor Principal" },
-        { username: "admin", password: "admin", name: "Administrador" }
-      ];
-      if (listJson) {
-        try {
-          const parsed = JSON.parse(listJson);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setManagers(parsed);
-          } else {
-            setManagers(defaults);
-            localStorage.setItem("sstr_registered_managers", JSON.stringify(defaults));
-          }
-        } catch (e) {
-          console.error(e);
-          setManagers(defaults);
-          localStorage.setItem("sstr_registered_managers", JSON.stringify(defaults));
-        }
-      } else {
-        setManagers(defaults);
-        localStorage.setItem("sstr_registered_managers", JSON.stringify(defaults));
-      }
-
-      // Dyn lists
-      setCrewList(getListaCrew());
-      setRepsList(getRepresentativosSetor());
-      setMotoristasRotasList(getMotoristasRotas());
       setProductsList(getProductsDatabase());
-      
-      // Load PDV database
       loadPdvDatabase();
     };
 
@@ -747,7 +753,7 @@ export default function ManagersTab() {
   }, []);
 
   // Manager Handlers
-  const handleAddManager = (e: React.FormEvent) => {
+  const handleAddManager = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
@@ -773,14 +779,7 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = managers.map(m =>
-        m.username.toLowerCase() === editingManagerUsername.toLowerCase()
-          ? { username: normUser, password: normPass, name: normName }
-          : m
-      );
-
-      setManagers(updated);
-      localStorage.setItem("sstr_registered_managers", JSON.stringify(updated));
+      await saveManager({ username: normUser, password: normPass, name: normName });
 
       setNewName("");
       setNewUsername("");
@@ -794,13 +793,7 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = [
-        ...managers,
-        { username: normUser, password: normPass, name: normName }
-      ];
-
-      setManagers(updated);
-      localStorage.setItem("sstr_registered_managers", JSON.stringify(updated));
+      await saveManager({ username: normUser, password: normPass, name: normName });
 
       setNewName("");
       setNewUsername("");
@@ -811,7 +804,7 @@ export default function ManagersTab() {
     setTimeout(() => setSuccess(null), 4000);
   };
 
-  const executeDeleteManager = (usernameToDelete: string) => {
+  const executeDeleteManager = async (usernameToDelete: string) => {
     setError(null);
     setSuccess(null);
     const normUser = usernameToDelete.toLowerCase();
@@ -822,16 +815,14 @@ export default function ManagersTab() {
       return;
     }
 
-    const updated = managers.filter(m => m.username.toLowerCase() !== normUser);
-    setManagers(updated);
-    localStorage.setItem("sstr_registered_managers", JSON.stringify(updated));
+    await deleteManager(normUser);
     setSuccess("Acesso de gestor excluído com sucesso.");
     setConfirmDeleteManager(null);
     setTimeout(() => setSuccess(null), 3000);
   };
 
   // Crew Member Handlers
-  const handleAddCrew = (e: React.FormEvent) => {
+  const handleAddCrew = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
@@ -863,13 +854,7 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = crewList.map(c =>
-        c.cpf === editingCrewCpf
-          ? { nome, cargo, cpf: formattedCpf }
-          : c
-      );
-      setCrewList(updated);
-      localStorage.setItem("sstr_lista_crew", JSON.stringify(updated));
+      await saveCrewMember({ nome, cargo, cpf: formattedCpf });
 
       setNewCrewNome("");
       setNewCrewCpf("");
@@ -881,9 +866,7 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = [...crewList, { nome, cargo, cpf: formattedCpf }];
-      setCrewList(updated);
-      localStorage.setItem("sstr_lista_crew", JSON.stringify(updated));
+      await saveCrewMember({ nome, cargo, cpf: formattedCpf });
 
       setNewCrewNome("");
       setNewCrewCpf("");
@@ -893,23 +876,20 @@ export default function ManagersTab() {
     setTimeout(() => setSuccess(null), 3000);
   };
 
-  const executeDeleteCrew = (cpfToDelete: string) => {
+  const executeDeleteCrew = async (cpfToDelete: string) => {
     setError(null);
     setSuccess(null);
     const target = crewList.find(c => c.cpf === cpfToDelete);
     if (!target) return;
 
-    const updated = crewList.filter(c => c.cpf !== cpfToDelete);
-    setCrewList(updated);
-    localStorage.setItem("sstr_lista_crew", JSON.stringify(updated));
-    window.dispatchEvent(new Event("storage"));
+    await deleteCrewMember(cpfToDelete);
     setSuccess(`Colaborador "${target.nome}" excluído do sistema.`);
     setConfirmDeleteCrew(null);
     setTimeout(() => setSuccess(null), 3000);
   };
 
   // Sector Representative (RN) Handlers
-  const handleAddRep = (e: React.FormEvent) => {
+  const handleAddRep = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
@@ -934,16 +914,10 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = { ...repsList };
       if (setor !== editingRepId) {
-        delete updated[editingRepId];
+        await deleteRepsSetor(editingRepId);
       }
-      updated[setor] = { setor, nome, gv };
-
-      setRepsList(updated);
-      localStorage.setItem("sstr_reps_setor", JSON.stringify(updated));
-      clearRepresentativosCache();
-      window.dispatchEvent(new Event("storage"));
+      await saveRepsSetor(setor, { setor, nome, gv });
 
       setNewRepSetor("");
       setNewRepNome("");
@@ -955,14 +929,7 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = {
-        ...repsList,
-        [setor]: { setor, nome, gv }
-      };
-      setRepsList(updated);
-      localStorage.setItem("sstr_reps_setor", JSON.stringify(updated));
-      clearRepresentativosCache();
-      window.dispatchEvent(new Event("storage"));
+      await saveRepsSetor(setor, { setor, nome, gv });
 
       setNewRepSetor("");
       setNewRepNome("");
@@ -972,25 +939,20 @@ export default function ManagersTab() {
     setTimeout(() => setSuccess(null), 3000);
   };
 
-  const executeDeleteRep = (setorToDelete: string) => {
+  const executeDeleteRep = async (setorToDelete: string) => {
     setError(null);
     setSuccess(null);
     const target = repsList[setorToDelete];
     if (!target) return;
 
-    const updated = { ...repsList };
-    delete updated[setorToDelete];
-    setRepsList(updated);
-    localStorage.setItem("sstr_reps_setor", JSON.stringify(updated));
-    clearRepresentativosCache();
-    window.dispatchEvent(new Event("storage"));
+    await deleteRepsSetor(setorToDelete);
     setSuccess(`Setor ${setorToDelete} (RN: ${target.nome}) removido do sistema.`);
     setConfirmDeleteRep(null);
     setTimeout(() => setSuccess(null), 3000);
   };
 
   // Route Driver (SSTR Rotas) Handlers
-  const handleAddRoute = (e: React.FormEvent) => {
+  const handleAddRoute = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
@@ -1010,16 +972,10 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = { ...motoristasRotasList };
       if (rota !== editingRouteCode) {
-        delete updated[editingRouteCode];
+        await deleteMotoristaRota(editingRouteCode);
       }
-      updated[rota] = { rota, nome, veiculo };
-
-      setMotoristasRotasList(updated);
-      localStorage.setItem("sstr_motoristas_rotas", JSON.stringify(updated));
-      clearMotoristasRotasCache();
-      window.dispatchEvent(new Event("storage"));
+      await saveMotoristaRota(rota, { rota, nome, veiculo });
 
       setNewRouteCode("");
       setNewRouteDriverName("");
@@ -1031,14 +987,7 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = {
-        ...motoristasRotasList,
-        [rota]: { rota, nome, veiculo }
-      };
-      setMotoristasRotasList(updated);
-      localStorage.setItem("sstr_motoristas_rotas", JSON.stringify(updated));
-      clearMotoristasRotasCache();
-      window.dispatchEvent(new Event("storage"));
+      await saveMotoristaRota(rota, { rota, nome, veiculo });
 
       setNewRouteCode("");
       setNewRouteDriverName("");
@@ -1048,18 +997,13 @@ export default function ManagersTab() {
     setTimeout(() => setSuccess(null), 3000);
   };
 
-  const executeDeleteRoute = (rotaToDelete: string) => {
+  const executeDeleteRoute = async (rotaToDelete: string) => {
     setError(null);
     setSuccess(null);
     const target = motoristasRotasList[rotaToDelete];
     if (!target) return;
 
-    const updated = { ...motoristasRotasList };
-    delete updated[rotaToDelete];
-    setMotoristasRotasList(updated);
-    localStorage.setItem("sstr_motoristas_rotas", JSON.stringify(updated));
-    clearMotoristasRotasCache();
-    window.dispatchEvent(new Event("storage"));
+    await deleteMotoristaRota(rotaToDelete);
 
     setSuccess(`Rota ${rotaToDelete} (Condutor: ${target.nome}) removida do sistema.`);
     setConfirmDeleteRoute(null);
@@ -1479,7 +1423,7 @@ export default function ManagersTab() {
     }
   };
 
-  const handleRnImportText = (text: string) => {
+  const handleRnImportText = async (text: string) => {
     setError(null);
     setSuccess(null);
     if (!text.trim()) {
@@ -1554,10 +1498,9 @@ export default function ManagersTab() {
         return;
       }
       
-      setRepsList(newReps);
-      localStorage.setItem("sstr_reps_setor", JSON.stringify(newReps));
-      clearRepresentativosCache();
-      window.dispatchEvent(new Event("storage"));
+      for (const [k, v] of Object.entries(newReps)) {
+        await saveRepsSetor(k, v);
+      }
       
       setSuccess(`${count} representantes cadastrados/atualizados com sucesso!${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""}`);
       setTimeout(() => setSuccess(null), 5000);
@@ -1568,7 +1511,7 @@ export default function ManagersTab() {
   };
 
   // Rotas batch import handlers
-  const handleRouteImportText = (text: string) => {
+  const handleRouteImportText = async (text: string) => {
     setError(null);
     setSuccess(null);
     if (!text.trim()) {
@@ -1641,10 +1584,9 @@ export default function ManagersTab() {
         return;
       }
       
-      setMotoristasRotasList(updated);
-      localStorage.setItem("sstr_motoristas_rotas", JSON.stringify(updated));
-      clearMotoristasRotasCache();
-      window.dispatchEvent(new Event("storage"));
+      for (const [r, obj] of Object.entries(updated)) {
+        await saveMotoristaRota(r, obj);
+      }
       
       setSuccess(`${count} rotas processadas e importadas com sucesso!${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""}`);
       setRoutePasteText("");
@@ -1701,7 +1643,7 @@ export default function ManagersTab() {
   };
 
   // Crew (Drivers/Helpers) batch import handlers
-  const handleCrewImportText = (text: string) => {
+  const handleCrewImportText = async (text: string) => {
     setError(null);
     setSuccess(null);
     if (!text.trim()) {
@@ -1792,9 +1734,9 @@ export default function ManagersTab() {
       }
       
       const updatedList = Array.from(crewMap.values());
-      setCrewList(updatedList);
-      localStorage.setItem("sstr_lista_crew", JSON.stringify(updatedList));
-      window.dispatchEvent(new Event("storage"));
+      for (const member of updatedList) {
+        await saveCrewMember(member);
+      }
       
       setSuccess(`${count} colaboradores processados e cadastrados com sucesso!${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""}`);
       setCrewPasteText("");
@@ -4800,12 +4742,13 @@ export default function ManagersTab() {
                     <th className="p-3">MAPA / NF</th>
                     <th className="p-3">CANAL</th>
                     <th className="p-3">HORÁRIO APROV.</th>
+                    <th className="p-3 text-center">AÇÃO</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-850">
                   {espelhoFiltrado.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="p-8 text-center text-slate-500 font-mono text-xs italic">
+                      <td colSpan={8} className="p-8 text-center text-slate-500 font-mono text-xs italic">
                         Nenhuma reposição/troca foi localizada com o status "Aprovada/Cadastrada" para a data {filterEspelhoDate}.
                       </td>
                     </tr>
@@ -4833,6 +4776,16 @@ export default function ManagersTab() {
                         <td className="p-3 font-mono text-[10.5px] text-indigo-400 font-semibold uppercase">{item.solicitante}</td>
                         <td className="p-3 text-slate-400 font-mono text-[10.5px]">
                           {item.cadastroDate ? item.cadastroDate.split(" ")[1] || "---" : "---"}
+                        </td>
+                        <td className="p-3 text-center">
+                          <button
+                            onClick={() => handleDeleteApprovedItemInManagers(item.requestId, item.productCode)}
+                            className="px-2 py-1 bg-red-950/80 hover:bg-red-900 border border-red-800/60 rounded text-red-300 text-[10px] font-bold font-mono transition-colors cursor-pointer flex items-center justify-center gap-1 mx-auto"
+                            title="Excluir item do Espelho do Dia e do sistema"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Excluir</span>
+                          </button>
                         </td>
                       </tr>
                     ))

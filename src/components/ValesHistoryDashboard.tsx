@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { Search, Printer, DollarSign, TrendingUp, Layers, UserCheck, AlertCircle, Trash2 } from "lucide-react";
 
-interface ValeEntry {
+export interface ValeEntry {
   id: string;
   requestId: string;
   nf: string;
@@ -17,6 +17,7 @@ interface ValeEntry {
   hectolitros: number;
   valorTotal: number;
   itemsCount: number;
+  status?: "pendente" | "assinado" | "compensado";
   originalRequest: any;
 }
 
@@ -24,11 +25,13 @@ interface ValesHistoryDashboardProps {
   vales: ValeEntry[];
   onReimprimir: (vale: ValeEntry) => void;
   onDeleteSingleVale?: (id: string) => void;
+  onUpdateValeStatus?: (id: string, newStatus: "pendente" | "assinado" | "compensado") => void;
 }
 
-export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSingleVale }: ValesHistoryDashboardProps) {
+export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSingleVale, onUpdateValeStatus }: ValesHistoryDashboardProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedRoute, setSelectedRoute] = useState("todas");
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>("todos");
   const [confirmDeleteValeId, setConfirmDeleteValeId] = useState<string | null>(null);
 
   // Format currency helper
@@ -60,10 +63,12 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
         (v.ajudante2 && v.ajudante2.toLowerCase().includes(searchTerm.toLowerCase()));
 
       const matchRoute = selectedRoute === "todas" || v.rota.trim() === selectedRoute.trim();
+      const st = v.status || "pendente";
+      const matchStatus = selectedStatusFilter === "todos" || st === selectedStatusFilter;
 
-      return matchSearch && matchRoute;
+      return matchSearch && matchRoute && matchStatus;
     });
-  }, [vales, searchTerm, selectedRoute]);
+  }, [vales, searchTerm, selectedRoute, selectedStatusFilter]);
 
   // Aggregate stats of filtered vales
   const stats = useMemo(() => {
@@ -286,6 +291,18 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
               />
             </div>
 
+            {/* Status filter selector */}
+            <select
+              value={selectedStatusFilter}
+              onChange={(e) => setSelectedStatusFilter(e.target.value)}
+              className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-indigo-500 focus:outline-none"
+            >
+              <option value="todos">Todos os Status</option>
+              <option value="pendente">🟡 Pendente</option>
+              <option value="assinado">🔵 Assinado</option>
+              <option value="compensado">🟢 Compensado</option>
+            </select>
+
             {/* Route filter selector */}
             <select
               value={selectedRoute}
@@ -316,13 +333,16 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                   <th className="p-3">Mapa</th>
                   <th className="p-3">Motorista / CPF</th>
                   <th className="p-3">Equipe / Ajudantes</th>
+                  <th className="p-3 text-center">Status</th>
                   <th className="p-3 text-center">Volume</th>
                   <th className="p-3 text-right">Valor</th>
                   <th className="p-3 text-center">Ação</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-850 bg-slate-950/10">
-                {filteredVales.map((vale) => (
+                {filteredVales.map((vale) => {
+                  const currentStatus = vale.status || "pendente";
+                  return (
                   <tr key={vale.id} className="hover:bg-slate-900/40 transition-colors">
                     {/* Emissão Date */}
                     <td className="p-3 font-mono text-slate-300 text-[10.5px] shrink-0 font-medium whitespace-nowrap">
@@ -361,6 +381,25 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                           CPF: {vale.ajudante1Cpf || "Ausente"} {vale.ajudante2Cpf && `| CPF: ${vale.ajudante2Cpf}`}
                         </span>
                       ) : null}
+                    </td>
+
+                    {/* Status Dropdown / Pill */}
+                    <td className="p-3 text-center whitespace-nowrap">
+                      <select
+                        value={currentStatus}
+                        onChange={(e) => onUpdateValeStatus && onUpdateValeStatus(vale.id, e.target.value as any)}
+                        className={`px-2 py-1 rounded-lg text-[10px] font-extrabold font-mono border cursor-pointer focus:outline-none transition-colors ${
+                          currentStatus === "compensado"
+                            ? "bg-emerald-950/90 text-emerald-300 border-emerald-800/80"
+                            : currentStatus === "assinado"
+                            ? "bg-blue-950/90 text-blue-300 border-blue-800/80"
+                            : "bg-amber-950/90 text-amber-300 border-amber-800/80"
+                        }`}
+                      >
+                        <option value="pendente" className="bg-slate-900 text-amber-300 font-bold">🟡 Pendente</option>
+                        <option value="assinado" className="bg-slate-900 text-blue-300 font-bold">🔵 Assinado</option>
+                        <option value="compensado" className="bg-slate-900 text-emerald-300 font-bold">🟢 Compensado</option>
+                      </select>
                     </td>
 
                     {/* Volume */}
@@ -418,7 +457,8 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                       </div>
                     </td>
                   </tr>
-                ))}
+                );
+              })}
               </tbody>
             </table>
           )}

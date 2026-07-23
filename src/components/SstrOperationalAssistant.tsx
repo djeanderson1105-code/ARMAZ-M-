@@ -810,7 +810,88 @@ Detalhes do erro: ${err?.message || "Servidor offline"}`,
                       </p>
                     </div>
 
-                    {/* SECTIONS 7 & 8: ELABORADORES E APROVADORES */}
+                    {/* SECTION 7: ARQUITETURA DE TI, DESENVOLVIMENTO & GUIA DE ALOCAÇÃO EM SERVIDOR */}
+                    <div className="bg-slate-900/40 border border-slate-900 p-4 rounded-2xl space-y-4">
+                      <h3 className="text-xs font-extrabold text-emerald-400 tracking-wider uppercase font-sans flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-emerald-500" />
+                        7. DOCUMENTAÇÃO DE TI: CRIAÇÃO, ALOCAÇÃO DE SERVIDOR & RECRIAÇÃO DO SSTR
+                      </h3>
+
+                      {/* 7.1 Como Foi Criado */}
+                      <div className="p-3.5 bg-slate-955 border border-slate-850 rounded-xl space-y-2">
+                        <strong className="text-white text-[11px] font-mono uppercase tracking-wide block border-b border-slate-800 pb-1 flex items-center gap-1.5">
+                          <span>🛠️ 7.1 Ferramentas e Tecnologias Utilizadas na Criação</span>
+                        </strong>
+                        <p className="text-[10.5px] text-slate-300 leading-relaxed">
+                          O <strong>SSTR (Sistema de Soluções de Trocas e Reposições)</strong> foi idealizado e projetado por <strong>Djeanderson Soares</strong> (Coordenador de Armazém • Pau Brasil Guarabira) para automatizar a gestão de avarias, trocas, inversões e vales de falta de carga.
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] pt-1">
+                          <div className="p-2 bg-slate-900 border border-slate-800 rounded-lg">
+                            <strong className="text-blue-400 block">Plataforma de Desenvolvimento:</strong>
+                            <span className="text-slate-400">Google AI Studio (Ambiente Agentic AI / Container Cloud Run com React + Vite + Node.js).</span>
+                          </div>
+                          <div className="p-2 bg-slate-900 border border-slate-800 rounded-lg">
+                            <strong className="text-indigo-400 block">Linguagem & Framework:</strong>
+                            <span className="text-slate-400">TypeScript, React 18, Vite, Tailwind CSS v4, Lucide Icons e Motion.</span>
+                          </div>
+                          <div className="p-2 bg-slate-900 border border-slate-800 rounded-lg">
+                            <strong className="text-emerald-400 block">Persistência & Banco de Dados:</strong>
+                            <span className="text-slate-400">Firebase Firestore Cloud Database com suporte a sincronização offline / IndexedDB local.</span>
+                          </div>
+                          <div className="p-2 bg-slate-900 border border-slate-800 rounded-lg">
+                            <strong className="text-amber-400 block">Motor de Inteligência Artificial:</strong>
+                            <span className="text-slate-400">Google Gemini API (SDK @google/genai) para assistente virtual e cruzamento de dados.</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 7.2 Alocação em Servidor / Conta Empresarial */}
+                      <div className="p-3.5 bg-slate-955 border border-slate-850 rounded-xl space-y-2">
+                        <strong className="text-white text-[11px] font-mono uppercase tracking-wide block border-b border-slate-800 pb-1 flex items-center gap-1.5">
+                          <span>🏢 7.2 Como Alocar em Servidor / Conta Empresarial da Pau Brasil</span>
+                        </strong>
+                        <p className="text-[10.5px] text-slate-300 leading-relaxed">
+                          Caso a empresa opte por hospedar a aplicação em um servidor local/VPN da distribuidora ou em uma conta em nuvem corporativa (Google Cloud Platform / Cloud Run / AWS / Vercel Empresarial):
+                        </p>
+                        <ol className="list-decimal list-inside space-y-2 text-[10.5px] text-slate-300 pl-1 leading-relaxed">
+                          <li>
+                            <strong>Exportação do Código Fonte:</strong> Acesse o menu principal do AI Studio e escolha a opção <strong>"Export to ZIP"</strong> ou <strong>"Export to GitHub"</strong> para transferir todos os arquivos do projeto para o repositório oficial de TI da empresa.
+                          </li>
+                          <li>
+                            <strong>Configuração das Variáveis de Ambiente (.env):</strong> No novo servidor empresarial, configure o arquivo de ambiente com as credenciais do projeto corporativo:
+                            <div className="mt-1 p-2 bg-slate-900 font-mono text-[9.5px] text-emerald-300 rounded border border-slate-800 space-y-0.5">
+                              <div>VITE_FIREBASE_PROJECT_ID=pau-brasil-sstr-prod</div>
+                              <div>VITE_FIREBASE_API_KEY=sua_chave_firebase_empresarial</div>
+                              <div>GEMINI_API_KEY=sua_chave_gemini_api_corporativa</div>
+                            </div>
+                          </li>
+                          <li>
+                            <strong>Compilação de Produção:</strong> Execute o comando <code className="text-amber-300 bg-slate-900 px-1 py-0.5 rounded font-mono">npm run build</code> para gerar a pasta minificada <code className="text-amber-300 bg-slate-900 px-1 py-0.5 rounded font-mono">dist/</code> e o arquivo bundled <code className="text-amber-300 bg-slate-900 px-1 py-0.5 rounded font-mono">dist/server.cjs</code>.
+                          </li>
+                          <li>
+                            <strong>Execução em Produção:</strong> Inicie o serviço Node.js executando <code className="text-emerald-300 bg-slate-900 px-1 py-0.5 rounded font-mono">npm start</code> (que roda <code className="text-emerald-300 bg-slate-900 px-1 py-0.5 rounded font-mono">node dist/server.cjs</code> na porta 3000) ou utilize o Dockerfile containerizado.
+                          </li>
+                        </ol>
+                      </div>
+
+                      {/* 7.3 Como Outra Pessoa Pode Refazer o Sistema */}
+                      <div className="p-3.5 bg-slate-955 border border-slate-850 rounded-xl space-y-2">
+                        <strong className="text-white text-[11px] font-mono uppercase tracking-wide block border-b border-slate-800 pb-1 flex items-center gap-1.5">
+                          <span>🔄 7.3 Como Outra Pessoa Pode Refazer ou Recriar a Aplicação do Zero</span>
+                        </strong>
+                        <p className="text-[10.5px] text-slate-300 leading-relaxed">
+                          Para um novo desenvolvedor ou profissional de TI recriar este sistema mantendo 100% da compatibilidade operacional:
+                        </p>
+                        <ul className="list-disc list-inside space-y-1.5 text-[10.5px] text-slate-300 pl-1 leading-relaxed">
+                          <li><strong>Passo 1 (Instalação):</strong> Instale Node.js v18+ e clone o código fonte do repositório. Execute <code className="text-blue-300 font-mono">npm install</code> para baixar as dependências de interface e backend Express.</li>
+                          <li><strong>Passo 2 (Banco de Dados Firestore):</strong> Crie um projeto no Firebase Console com Firestore Database ativado em modo de produção. Importe as coleções primárias: <code className="text-indigo-300 font-mono">exchange_requests</code> (solicitações), <code className="text-indigo-300 font-mono">vales_historico</code> (vales) e <code className="text-indigo-300 font-mono">rep_credentials</code> (acessos dos representantes).</li>
+                          <li><strong>Passo 3 (Regras de Segurança):</strong> Aplique as regras de acesso Firestore permitindo leitura/escrita autenticada dos registros.</li>
+                          <li><strong>Passo 4 (Base de Dados Promax):</strong> Certifique-se de manter o parser de relatórios CSV do Promax (Relatório <code className="text-amber-300 font-mono">03.18.05</code>) localizado em <code className="text-slate-400 font-mono">src/utils/promaxParser.ts</code> para garantir a detecção automática de duplicatas.</li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    {/* SECTIONS 8 & 9: ELABORADORES E APROVADORES */}
                     <div className="border-t border-slate-900 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-[10px]">
                       <div className="p-3.5 bg-slate-900/40 border border-slate-900 rounded-xl space-y-1">
                         <strong className="text-slate-400 uppercase font-sans tracking-wider block text-[9.5px]">✒️ Elaborado Por:</strong>

@@ -1,7 +1,9 @@
 {
   "name": "Remix: Gestão de Trocas e Reposições",
-  "description": "Portál de controle, auditoria e rastreamento de trocas de produtos, com suporte a importação de dados e análise de custos por setor.",
-  "requestFramePermissions": [],
+  "description": "Portal de controle, auditoria e rastreamento de trocas de produtos, com suporte a importação de dados e análise de custos por setor.",
+  "requestFramePermissions": [
+    "camera"
+  ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

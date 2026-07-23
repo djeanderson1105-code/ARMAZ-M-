@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { ExchangeRecord, REPRESENTATIVOS_SETOR, PendingRequest, MOTORISTAS_ROTAS, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, RouteDriverInfo } from "../types";
 import { getApiUrl } from "../utils/apiUrl";
+import { useSstrData } from "../context/SstrDataContext";
 import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
 import { 
@@ -28,11 +29,14 @@ import {
   Printer,
   FileImage,
   User,
-  Calendar
+  Calendar,
+  Copy,
+  FolderOpen
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import PauBrasilLogo from "./PauBrasilLogo";
+import { exportRegistrationPdf, generatePdfFilename, NETWORK_REGISTROS_PATH } from "../utils/pdfGenerator";
 
 interface RepresentativePortalProps {
   records: ExchangeRecord[];
@@ -170,6 +174,7 @@ const compressImage = (file: File, maxWidth: number = 800, maxHeight: number = 8
 };
 
 export default function RepresentativePortal({ records, onTransferApprovedRequest }: RepresentativePortalProps) {
+  const { pendingRequests, savePendingRequest, deletePendingRequest, repsList, motoristasList } = useSstrData();
   // Helper to get solicitation number of any pending request
   const getSolicitacaoNum = (req: PendingRequest): string => {
     return (req as any).solicitacao || req.id.replace(/\D/g, "").slice(-8) || String(req.timestamp || Date.now()).slice(-8);
@@ -190,8 +195,6 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
 
   const [selectedSector, setSelectedSector] = useState<string | null>(null);
   const [roleContext, setRoleContext] = useState<"rn" | "rota">("rn");
-  const [repsList, setRepsList] = useState(() => getRepresentativosSetor());
-  const [motoristasList, setMotoristasList] = useState(() => getMotoristasRotas());
   
   // Tabs within a selected sector: "historico" | "novo" | "pendentes" | "aprovadas"
   const [sectorTab, setSectorTab] = useState<"historico" | "novo" | "pendentes" | "aprovadas">("historico");
@@ -468,10 +471,8 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     // 1. Send all final exchange records (as an array)
     onTransferApprovedRequest(finalRecordsToSubmit);
 
-    // 2. Remove the request from local pending requests
-    const updatedList = pendingRequests.filter(item => item.id !== req.id);
-    localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updatedList));
-    setPendingRequests(updatedList);
+    // 2. Remove the request from pending requests via SstrDataContext
+    deletePendingRequest(req.id);
 
     // 3. Clear local overlay detail state
     setSelectedApprovedDetail(null);
@@ -502,6 +503,12 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
   // Multiple item draft queue for a single request
   const [draftItems, setDraftItems] = useState<any[]>([]);
   const [draftRestored, setDraftRestored] = useState(false);
+
+  // User-isolated drafts & smart recovery prompt states
+  const [pendingDraftToRecover, setPendingDraftToRecover] = useState<any | null>(null);
+  const [showDraftRecoveryModal, setShowDraftRecoveryModal] = useState<boolean>(false);
+  const [createdPdfModalInfo, setCreatedPdfModalInfo] = useState<{ filename: string; fullPath: string } | null>(null);
+  const [copyToast, setCopyToast] = useState<string | null>(null);
 
   // Pre-calculate product demand ranking from consolidated records (User request)
   const productPopularity = useMemo(() => {
@@ -742,8 +749,6 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     record: any;
   } | null>(null);
 
-  // Local state for representative's pending requests (read/sync from localStorage)
-  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
   const [editingRequestId, setEditingRequestId] = useState<string | null>(null);
 
   // Connection tracking states & background synchronization queue
@@ -779,21 +784,12 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
 
     if (offlineItems.length === 0) return;
 
-    // Get current pending requests
-    const existingJson = localStorage.getItem("sstr_representative_pending_requests") || "[]";
-    let existingRequests: PendingRequest[] = [];
-    try {
-      existingRequests = JSON.parse(existingJson);
-    } catch(e) {}
+    // Save offline items via context to push to Firestore
+    offlineItems.forEach(item => {
+      savePendingRequest({ ...item, isOffline: undefined });
+    });
 
-    // Merge offline items into standard pending requests so controller/manager can see them
-    const updatedOfflineList = offlineItems.map(item => ({ ...item, isOffline: undefined }));
-    const merged = [...updatedOfflineList, ...existingRequests];
-
-    localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(merged));
     localStorage.setItem("sstr_offline_requests_queue", "[]");
-
-    setPendingRequests(merged);
     setOfflineQueue([]);
 
     alert(`🚀 Sincronização automática concluída com sucesso! ${offlineItems.length} solicitações cadastradas em modo offline foram descarregadas e enviadas para o controle.`);
@@ -815,32 +811,13 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     return list.sort((a,b) => a.localeCompare(b, undefined, {numeric: true}));
   }, [records, repsList]);
 
-  // Load and sync pending requests
-  const loadPendingRequests = () => {
-    const dataJson = localStorage.getItem("sstr_representative_pending_requests");
-    if (dataJson) {
-      try {
-        setPendingRequests(JSON.parse(dataJson));
-      } catch (e) {
-        console.error("Erro ao carregar solicitações pendentes:", e);
-      }
-    } else {
-      setPendingRequests([]);
-    }
-  };
-
   useEffect(() => {
-    loadPendingRequests();
     loadOfflineQueue();
 
-    // Listen to changes in localStorage so multiple tabs are synced
     const handleStorageChange = () => {
-      loadPendingRequests();
       loadOfflineQueue();
       clearRepresentativosCache();
       clearMotoristasRotasCache();
-      setRepsList(getRepresentativosSetor());
-      setMotoristasList(getMotoristasRotas());
     };
 
     const handleOnline = () => {
@@ -867,36 +844,36 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     };
   }, []);
 
-  // 1. Recover active form draft on mount to survive OS camera memory restarts (User request)
+  // Draft storage key generator strictly isolated by user role and sector
+  const getIsolatedDraftKey = (role: string, sector: string | null) => {
+    return `sstr_draft_${role}_${sector || "geral"}`;
+  };
+
+  // 1. Intelligent Draft Recovery Check when entering a sector
   useEffect(() => {
-    const savedDraft = localStorage.getItem("sstr_active_creation_draft");
+    if (!selectedSector) return;
+
+    const draftKey = getIsolatedDraftKey(roleContext, selectedSector);
+    const savedDraft = localStorage.getItem(draftKey);
     if (savedDraft) {
       try {
         const parsed = JSON.parse(savedDraft);
-        setSelectedSector(parsed.selectedSector);
-        if (parsed.formMapa) setFormMapa(parsed.formMapa);
-        if (parsed.formNb) setFormNb(parsed.formNb);
-        if (parsed.formNf) setFormNf(parsed.formNf);
-        if (parsed.formObservacao) setFormObservacao(parsed.formObservacao);
-        if (parsed.formMotiveType) setFormMotiveType(parsed.formMotiveType);
-        if (parsed.formMotiveText) setFormMotiveText(parsed.formMotiveText);
-        if (parsed.draftItems) setDraftItems(parsed.draftItems);
-        if (parsed.roleContext) setRoleContext(parsed.roleContext);
-        
-        // Show high contrast status success message
-        setFormError("✨ Seu rascunho de preenchimento foi restaurado automaticamente após o reinício da câmera!");
+        if (parsed.formMapa || parsed.formNb || parsed.formNf || (parsed.draftItems && parsed.draftItems.length > 0)) {
+          setPendingDraftToRecover(parsed);
+          setShowDraftRecoveryModal(true);
+        }
       } catch (e) {
-        console.error("Failed to restore draft from localStorage:", e);
+        console.error("Failed to parse isolated draft from localStorage:", e);
       }
     }
-    setDraftRestored(true);
-  }, []);
+  }, [selectedSector, roleContext]);
 
-  // 2. Continually persist active form inputs in real-time
+  // 2. Continually persist active form inputs into isolated storage in real-time
   useEffect(() => {
-    if (!draftRestored) return;
+    if (!selectedSector) return;
 
-    if (selectedSector) {
+    const draftKey = getIsolatedDraftKey(roleContext, selectedSector);
+    if (formMapa || formNb || formNf || formObservacao || draftItems.length > 0) {
       const stateObj = {
         selectedSector,
         formMapa,
@@ -906,13 +883,12 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
         formMotiveType,
         formMotiveText,
         draftItems,
-        roleContext
+        roleContext,
+        savedAt: new Date().toLocaleTimeString("pt-BR")
       };
-      localStorage.setItem("sstr_active_creation_draft", JSON.stringify(stateObj));
-    } else {
-      localStorage.removeItem("sstr_active_creation_draft");
+      localStorage.setItem(draftKey, JSON.stringify(stateObj));
     }
-  }, [draftRestored, selectedSector, formMapa, formNb, formNf, formObservacao, formMotiveType, formMotiveText, draftItems, roleContext]);
+  }, [selectedSector, formMapa, formNb, formNf, formObservacao, formMotiveType, formMotiveText, draftItems, roleContext]);
 
   // Filter records matching selected sector
   const sectorRecords = useMemo(() => {
@@ -996,17 +972,14 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
 
   // Dismiss notification of newly approved/registered requests
   const handleDismissApprovals = () => {
-    const updated = pendingRequests.map(req => {
+    pendingRequests.forEach(req => {
       if (req.setor.trim() === selectedSector?.trim() && req.statusPromax === "cadastrado" && req.notified === false) {
-        return {
+        savePendingRequest({
           ...req,
           notified: true
-        };
+        });
       }
-      return req;
     });
-    localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-    setPendingRequests(updated);
   };
 
   // Find newly rejected requests for this sector/route that haven't been acknowledged
@@ -1021,17 +994,14 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
 
   // Dismiss notification of newly rejected/returned requests
   const handleDismissRejections = () => {
-    const updated = pendingRequests.map(req => {
+    pendingRequests.forEach(req => {
       if (req.setor.trim() === selectedSector?.trim() && (req.statusPromax === "reprovado" || req.statusPromax === "corrigir") && req.notified === false) {
-        return {
+        savePendingRequest({
           ...req,
           notified: true
-        };
+        });
       }
-      return req;
     });
-    localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-    setPendingRequests(updated);
   };
 
   const formatCurrency = (val: number) => {
@@ -1374,22 +1344,29 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     setFormError(null);
     setDuplicateFound(null);
 
-    // NF validation is optional as requested
-    const finalNf = formNf.trim() || "NÃO CONSTA";
+    // Validation 7: Mandatory fields Mapa, NB, NF are required for all registrations
+    const cleanMapa = formMapa.trim();
+    const cleanNb = formNb.trim();
+    const cleanNf = formNf.trim();
+
+    if (!cleanMapa || !cleanNb || !cleanNf) {
+      const missingFields: string[] = [];
+      if (!cleanMapa) missingFields.push("Número do Mapa");
+      if (!cleanNb) missingFields.push("Número da NB");
+      if (!cleanNf) missingFields.push("Número da NF");
+
+      setFormError(
+        `⚠️ Preenchimento obrigatório pendente: Por favor, informe o ${missingFields.join(", ")} para finalizar o registro da troca.`
+      );
+      return;
+    }
+
+    const finalNf = cleanNf;
 
     const isFaltaSkuCompleto = formMotiveType === "Falta de SKU Completo";
     if (!formFotoUrl && !isFaltaSkuCompleto) {
       setFormError("A Foto/Doc comprobatório de avaria ou pendência é obrigatória para o Controle.");
       return;
-    }
-
-    // Map is mandatory when inversion or lack, NB is optional
-    const isLackOrInversion = formMotiveType === "Inversão" || (formMotiveType && formMotiveType.includes("Falta"));
-    if (isLackOrInversion) {
-      if (!formMapa.trim()) {
-        setFormError("O número do Mapa de Carga é obrigatório para solicitações de falta ou inversão.");
-        return;
-      }
     }
 
     // If user has defined fields inside the item entry fields but didn't click "Add",
@@ -1462,7 +1439,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       }
     }
 
-    const inputNf = formNf.trim().toLowerCase();
+    const inputNf = finalNf.toLowerCase();
 
     // Check duplicate check for each item in currentDrafts list
     for (const dItem of currentDrafts) {
@@ -1559,19 +1536,25 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       }
     }
 
+    const expectedFilename = generatePdfFilename(cleanMapa, cleanNb, cleanNf, dataFormatada);
+    const expectedFullPath = `${NETWORK_REGISTROS_PATH}\\${expectedFilename}`;
+
     // Create Request with complete item array and multi-sku attributes
     const newRequest: PendingRequest = {
       id: `pending_req_${Date.now()}`,
       timestamp: Date.now(),
       data: dataFormatada,
       setor: selectedSector || "600",
-      mapa: formMapa.trim(),
-      nb: formNb.trim() || "000000",
+      mapa: cleanMapa,
+      nb: cleanNb,
       nf: finalNf,
       fotoUrl: uploadedFotoUrl,
       observacao: formObservacao.trim(),
       statusPromax: "pendente",
       notified: false,
+      pdfFilename: expectedFilename,
+      pdfFilePath: expectedFullPath,
+      cadastroUser: roleContext === "rn" ? `Representante Setor ${selectedSector}` : `Motorista / Rota ${selectedSector}`,
       
       // Fallbacks on top-level properties for compatibility with older display cards
       item: firstItem.itemCode,
@@ -1593,45 +1576,44 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       }))
     };
 
+    // Note: PDF is not auto-downloaded on request creation by RN/Route collaborator.
+    // It is generated on demand or when control operator confirms/completes the registration.
+
     // Save in storage (offline vs online branch support or edit mode)
     if (editingRequestId) {
-      const updated = pendingRequests.map(req => {
-        if (req.id === editingRequestId) {
-          return {
-            ...req,
-            mapa: formMapa.trim(),
-            nb: formNb.trim() || "000000",
-            nf: finalNf,
-            fotoUrl: uploadedFotoUrl,
-            observacao: formObservacao.trim(),
-            statusPromax: "pendente" as const, // Put it back to pendente
-            notified: false,
-            rejeitadoObs: undefined, // Clear old observation
-            
-            // Fallbacks on top-level properties
-            item: firstItem.itemCode,
-            quantidade: currentDrafts.reduce((sum, current) => sum + current.quantidade, 0),
-            fatorHecto: firstItem.fatorHecto,
-            hectolitros: totalAccumulatedHl,
-            motivo: firstItem.motivo,
-            
-            items: currentDrafts.map(d => ({
-              id: d.id,
-              item: d.itemCode,
-              descricao: d.itemDesc,
-              quantidade: d.quantidade,
-              motivo: d.motivo,
-              fatorHecto: d.fatorHecto,
-              hectolitros: d.hectolitros,
-              produtoAhEnviar: d.produtoAhEnviar,
-              produtoARecolher: d.produtoARecolher
-            }))
-          };
-        }
-        return req;
-      });
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-      setPendingRequests(updated);
+      const targetReq = pendingRequests.find(req => req.id === editingRequestId);
+      if (targetReq) {
+        const updatedReq: PendingRequest = {
+          ...targetReq,
+          mapa: cleanMapa,
+          nb: cleanNb,
+          nf: finalNf,
+          fotoUrl: uploadedFotoUrl,
+          observacao: formObservacao.trim(),
+          statusPromax: "pendente" as const,
+          notified: false,
+          rejeitadoObs: undefined,
+          pdfFilename: expectedFilename,
+          pdfFilePath: expectedFullPath,
+          item: firstItem.itemCode,
+          quantidade: currentDrafts.reduce((sum, current) => sum + current.quantidade, 0),
+          fatorHecto: firstItem.fatorHecto,
+          hectolitros: totalAccumulatedHl,
+          motivo: firstItem.motivo,
+          items: currentDrafts.map(d => ({
+            id: d.id,
+            item: d.itemCode,
+            descricao: d.itemDesc,
+            quantidade: d.quantidade,
+            motivo: d.motivo,
+            fatorHecto: d.fatorHecto,
+            hectolitros: d.hectolitros,
+            produtoAhEnviar: d.produtoAhEnviar,
+            produtoARecolher: d.produtoARecolher
+          }))
+        };
+        await savePendingRequest(updatedReq);
+      }
       setEditingRequestId(null); // Reset edit state
     } else if (!isOnline) {
       const offlineRequest: PendingRequest = {
@@ -1645,13 +1627,17 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       // Notify friendly offline alert
       alert("💾 REGISTRO OFFLINE SALVO!\n\nVocê está sem conexão com a internet (Rota em Campo).\n\nSua troca foi gravada com segurança no seu dispositivo e será enviada automaticamente para o controle assim que o sinal web for restabelecido.");
     } else {
-      const list = [newRequest, ...pendingRequests];
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(list));
-      setPendingRequests(list);
+      await savePendingRequest(newRequest);
     }
 
-    // Reset Form completely
+    // Requirement 8: Clear user-isolated draft upon completion
+    if (selectedSector) {
+      const draftKey = getIsolatedDraftKey(roleContext, selectedSector);
+      localStorage.removeItem(draftKey);
+    }
     localStorage.removeItem("sstr_active_creation_draft");
+
+    // Reset Form completely
     setFormMapa("");
     setFormNb("");
     setFormNf("");
@@ -1668,13 +1654,17 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     setDraftItems([]);
     setFormSuccess(true);
     setReceiptRequest(newRequest);
+
+    // Requirement 3: Trigger PDF Created confirmation modal
+    setCreatedPdfModalInfo({
+      filename: expectedFilename,
+      fullPath: expectedFullPath
+    });
   };
 
   const handleDeleteSectorPendingRequest = (id: string) => {
     if (window.confirm("Deseja realmente cancelar esta solicitação pendente?")) {
-      const updated = pendingRequests.filter(req => req.id !== id);
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-      setPendingRequests(updated);
+      deletePendingRequest(id);
     }
   };
 
@@ -1964,7 +1954,6 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
               <button
                 onClick={() => {
                   setSectorTab("historico");
-                  loadPendingRequests();
                 }}
                 className={`py-2 text-center rounded-lg flex flex-col items-center justify-center gap-1 transition-all leading-none ${
                   sectorTab === "historico" 
@@ -1979,7 +1968,6 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
               <button
                 onClick={() => {
                   setSectorTab("novo");
-                  loadPendingRequests();
                 }}
                 className={`py-2 text-center rounded-lg flex flex-col items-center justify-center gap-1 transition-all leading-none ${
                     sectorTab === "novo" 
@@ -1994,7 +1982,6 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
               <button
                 onClick={() => {
                   setSectorTab("pendentes");
-                  loadPendingRequests();
                 }}
                 className={`py-2 text-center rounded-lg flex flex-col items-center justify-center gap-1 transition-all relative leading-none ${
                   sectorTab === "pendentes" 
@@ -2012,7 +1999,6 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
               <button
                 onClick={() => {
                   setSectorTab("aprovadas");
-                  loadPendingRequests();
                 }}
                 className={`py-2 text-center rounded-lg flex flex-col items-center justify-center gap-1 relative leading-none ${
                   sectorTab === "aprovadas" 
@@ -2296,15 +2282,16 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                     {/* Mapa */}
                     <div className="space-y-1">
                       <label className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider font-mono block">
-                        Número do Mapa {(formMotiveType === "Inversão" || (formMotiveType && formMotiveType.includes("Falta"))) ? "*" : "(Opcional)"}
+                        Número do Mapa <span className="text-red-500">*</span>
                       </label>
                       <input
                         type="text"
+                        required
                         placeholder="Ex: 50412"
                         value={formMapa}
                         onChange={(e) => setFormMapa(e.target.value)}
                         className={`w-full bg-slate-950 border rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:border-blue-500 focus:outline-hidden ${
-                          (formMotiveType === "Inversão" || (formMotiveType && formMotiveType.includes("Falta"))) && !formMapa.trim()
+                          !formMapa.trim()
                             ? "border-red-900/50 placeholder-red-900/60"
                             : "border-slate-800"
                         }`}
@@ -2314,14 +2301,19 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                     {/* NB / Código do Cliente */}
                     <div className="space-y-1">
                       <label className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider font-mono block">
-                        NB / Cód. Cliente <span className="text-slate-500 font-normal">(Opcional)</span>
+                        NB / Cód. Cliente <span className="text-red-500">*</span>
                       </label>
                       <input
                         type="text"
+                        required
                         placeholder="Ex: 120448"
                         value={formNb}
                         onChange={(e) => setFormNb(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:border-blue-500 focus:outline-hidden"
+                        className={`w-full bg-slate-950 border rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:border-blue-500 focus:outline-hidden ${
+                          !formNb.trim()
+                            ? "border-red-900/50 placeholder-red-900/60"
+                            : "border-slate-800"
+                        }`}
                       />
                       {(() => {
                         const db = getPdvDatabase();
@@ -2338,18 +2330,22 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                     </div>
                   </div>
 
-                  {/* Nota Fiscal (NF) - OPTIONAL */}
+                  {/* Nota Fiscal (NF) */}
                   <div className="space-y-1">
                     <label className="text-[8.5px] font-bold text-slate-400 uppercase tracking-widest font-mono block flex items-center justify-between">
-                      <span>Nota Fiscal (NF-e) <span className="text-slate-500 font-normal">(Opcional)</span></span>
-                      <span className="text-[7.5px] text-slate-500 font-normal">OPCIONAL</span>
+                      <span>Nota Fiscal (NF-e) <span className="text-red-500">*</span></span>
                     </label>
                     <input
                       type="text"
+                      required
                       placeholder="Número da NF de faturamento ou devolução"
                       value={formNf}
                       onChange={(e) => setFormNf(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:outline-hidden"
+                      className={`w-full bg-slate-950 border focus:border-blue-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:outline-hidden ${
+                        !formNf.trim()
+                          ? "border-red-900/50 placeholder-red-900/60"
+                          : "border-slate-800"
+                      }`}
                     />
                   </div>
 
@@ -2752,24 +2748,37 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                             💡 <strong>DICA DE VELOCIDADE:</strong> Se o seu celular vive travando, use a <strong>Câmera Integrada (Recomendado)</strong>. Ela consome pouquíssima memória e não fecha a página.
                           </div>
 
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 py-1">
-                            {/* Option 1: INTERACTIVE REAL-TIME WEBCAM (NO CRASH) */}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 py-1">
+                            {/* Option 1: INTERACTIVE REAL-TIME WEBCAM */}
                             <button
                               type="button"
                               onClick={() => {
                                 setWebcamFacingMode("environment");
                                 setIsWebcamOpen(true);
                               }}
-                              className="flex items-center justify-center gap-2 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white text-[10.5px] font-extrabold rounded-xl cursor-pointer shadow-lg hover:shadow-emerald-900/40 active:scale-95 transition-all hover:scale-[1.01]"
+                              className="flex items-center justify-center gap-1.5 py-2.5 px-2 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-extrabold rounded-xl cursor-pointer shadow-lg active:scale-95 transition-all"
                             >
-                              <Camera className="w-4 h-4 text-emerald-100" />
-                              <span>📸 Câmera Integrada (Evita Travamentos)</span>
+                              <Camera className="w-3.5 h-3.5 text-emerald-100 shrink-0" />
+                              <span className="truncate">Câmera Integrada</span>
                             </button>
 
+                            {/* Option 2: Direct Native Phone Camera */}
+                            <label className="flex items-center justify-center gap-1.5 py-2.5 px-2 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-extrabold rounded-xl cursor-pointer shadow-lg active:scale-95 transition-all">
+                              <Camera className="w-3.5 h-3.5 text-blue-100 shrink-0" />
+                              <span className="truncate">Câmera do Celular</span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                onChange={handleImageUpload}
+                                className="hidden"
+                              />
+                            </label>
+
                             {/* Option 3: Document / File Import */}
-                            <label className="flex items-center justify-center gap-2 py-2.5 px-3 bg-slate-900 border border-slate-800 hover:bg-slate-850 text-slate-250 text-[10.5px] font-bold rounded-xl cursor-pointer active:scale-95 transition-all hover:scale-[1.01]">
-                              <FileText className="w-4 h-4 text-slate-400" />
-                              <span>📁 Escolher da Galeria / PDF</span>
+                            <label className="flex items-center justify-center gap-1.5 py-2.5 px-2 bg-slate-900 border border-slate-800 hover:bg-slate-850 text-slate-250 text-[10px] font-bold rounded-xl cursor-pointer active:scale-95 transition-all">
+                              <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              <span className="truncate">Galeria / PDF</span>
                               <input
                                 type="file"
                                 accept="image/*,application/pdf"
@@ -2812,24 +2821,37 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                               </div>
                             )}
                             {webcamError && (
-                              <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 text-red-400 font-mono text-[9px] p-4 space-y-2">
-                                <AlertTriangle className="w-5 h-5 text-red-500" />
-                                <span className="text-center font-sans font-medium text-slate-300">{webcamError}</span>
-                                <div className="flex gap-2 mt-1">
-                                  <button 
-                                    type="button" 
-                                    onClick={() => startWebcam(webcamFacingMode)}
-                                    className="bg-slate-800 hover:bg-slate-700 text-[9px] text-white px-3 py-1.5 rounded-lg border border-slate-700 cursor-pointer font-sans font-bold"
-                                  >
-                                    🔄 Tentar De Novo
-                                  </button>
-                                  <button 
-                                    type="button" 
-                                    onClick={stopWebcam}
-                                    className="bg-rose-950 hover:bg-rose-900 text-[9px] text-rose-300 px-3 py-1.5 rounded-lg border border-rose-900/50 cursor-pointer font-sans font-bold"
-                                  >
-                                    Cancelar
-                                  </button>
+                              <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 text-red-400 font-mono text-[9px] p-4 space-y-2 z-10">
+                                <AlertTriangle className="w-6 h-6 text-red-500 animate-pulse" />
+                                <span className="text-center font-sans font-medium text-slate-200 max-w-xs">{webcamError}</span>
+                                <div className="flex flex-col sm:flex-row gap-2 mt-1 w-full max-w-xs">
+                                  <label className="bg-emerald-600 hover:bg-emerald-500 text-[10px] text-white px-3 py-2 rounded-xl border border-emerald-500 cursor-pointer font-sans font-bold flex items-center justify-center gap-1.5 shadow-md transition-all">
+                                    <Camera className="w-4 h-4" />
+                                    <span>📸 Tirar Foto (Câmera Nativa)</span>
+                                    <input 
+                                      type="file" 
+                                      accept="image/*" 
+                                      capture="environment" 
+                                      onChange={(e) => { handleImageUpload(e); stopWebcam(); }} 
+                                      className="hidden" 
+                                    />
+                                  </label>
+                                  <div className="flex gap-2">
+                                    <button 
+                                      type="button" 
+                                      onClick={() => startWebcam(webcamFacingMode)}
+                                      className="flex-1 bg-slate-800 hover:bg-slate-700 text-[9px] text-white px-3 py-1.5 rounded-lg border border-slate-700 cursor-pointer font-sans font-bold"
+                                    >
+                                      🔄 Tentar Novamente
+                                    </button>
+                                    <button 
+                                      type="button" 
+                                      onClick={stopWebcam}
+                                      className="bg-rose-950 hover:bg-rose-900 text-[9px] text-rose-300 px-3 py-1.5 rounded-lg border border-rose-900/50 cursor-pointer font-sans font-bold"
+                                    >
+                                      Cancelar
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
                             )}
@@ -3794,6 +3816,148 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Requirement 9: Smart Isolated Draft Recovery Modal */}
+      {showDraftRecoveryModal && pendingDraftToRecover && (
+        <div className="fixed inset-0 z-[120] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-blue-500/40 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl animate-fade-in text-left">
+            <div className="flex items-center gap-2.5 text-blue-400 border-b border-slate-800 pb-3">
+              <Clock className="w-5 h-5 text-blue-400 shrink-0" />
+              <div>
+                <h3 className="font-extrabold text-sm text-white font-display">
+                  Rascunho de Preenchimento Localizado
+                </h3>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  Você possui um rascunho em andamento salvo neste perfil
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2 text-xs font-mono">
+              <div className="flex justify-between text-slate-400">
+                <span>Perfil e Setor:</span>
+                <strong className="text-white">{roleContext === 'rn' ? 'Representante RN' : 'Motorista / Rota'} (Setor {selectedSector})</strong>
+              </div>
+              {pendingDraftToRecover.formMapa && (
+                <div className="flex justify-between text-slate-400">
+                  <span>Mapa:</span>
+                  <strong className="text-amber-400">{pendingDraftToRecover.formMapa}</strong>
+                </div>
+              )}
+              {pendingDraftToRecover.formNb && (
+                <div className="flex justify-between text-slate-400">
+                  <span>NB / Cliente:</span>
+                  <strong className="text-emerald-400">{pendingDraftToRecover.formNb}</strong>
+                </div>
+              )}
+              {pendingDraftToRecover.formNf && (
+                <div className="flex justify-between text-slate-400">
+                  <span>NF-e:</span>
+                  <strong className="text-blue-400">{pendingDraftToRecover.formNf}</strong>
+                </div>
+              )}
+              {pendingDraftToRecover.draftItems && pendingDraftToRecover.draftItems.length > 0 && (
+                <div className="flex justify-between text-slate-400">
+                  <span>Itens no Rascunho:</span>
+                  <strong className="text-purple-400">{pendingDraftToRecover.draftItems.length} SKU(s)</strong>
+                </div>
+              )}
+              {pendingDraftToRecover.savedAt && (
+                <div className="flex justify-between text-slate-500 text-[10px]">
+                  <span>Salvo às:</span>
+                  <span>{pendingDraftToRecover.savedAt}</span>
+                </div>
+              )}
+            </div>
+
+            <p className="text-[11px] text-slate-300 font-sans leading-relaxed">
+              Deseja continuar preenchendo este rascunho salvo ou prefere descartá-lo para iniciar do zero?
+            </p>
+
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (pendingDraftToRecover.formMapa) setFormMapa(pendingDraftToRecover.formMapa);
+                  if (pendingDraftToRecover.formNb) setFormNb(pendingDraftToRecover.formNb);
+                  if (pendingDraftToRecover.formNf) setFormNf(pendingDraftToRecover.formNf);
+                  if (pendingDraftToRecover.formObservacao) setFormObservacao(pendingDraftToRecover.formObservacao);
+                  if (pendingDraftToRecover.formMotiveType) setFormMotiveType(pendingDraftToRecover.formMotiveType);
+                  if (pendingDraftToRecover.formMotiveText) setFormMotiveText(pendingDraftToRecover.formMotiveText);
+                  if (pendingDraftToRecover.draftItems) setDraftItems(pendingDraftToRecover.draftItems);
+                  setShowDraftRecoveryModal(false);
+                  setPendingDraftToRecover(null);
+                }}
+                className="py-2.5 px-4 bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs rounded-xl transition-all cursor-pointer shadow-lg active:scale-95 text-center font-sans"
+              >
+                ▶️ Continuar Rascunho
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedSector) {
+                    const key = `sstr_draft_${roleContext}_${selectedSector}`;
+                    localStorage.removeItem(key);
+                  }
+                  setFormMapa("");
+                  setFormNb("");
+                  setFormNf("");
+                  setFormObservacao("");
+                  setDraftItems([]);
+                  setShowDraftRecoveryModal(false);
+                  setPendingDraftToRecover(null);
+                }}
+                className="py-2.5 px-4 bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-200 border border-slate-700 hover:border-rose-800 font-bold text-xs rounded-xl transition-all cursor-pointer active:scale-95 text-center font-sans"
+              >
+                🗑️ Descartar Rascunho
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Requirement 1, 2, 3: PDF Exported Confirmation Modal */}
+      {createdPdfModalInfo && (
+        <div className="fixed inset-0 z-[120] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-emerald-500/40 rounded-2xl max-w-lg w-full p-5 space-y-4 shadow-2xl animate-fade-in text-left">
+            <div className="flex items-center gap-2.5 text-emerald-400 border-b border-slate-800 pb-3">
+              <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
+              <div>
+                <h3 className="font-extrabold text-sm text-white font-display">
+                  Registro Finalizado & PDF Exportado!
+                </h3>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  Comprovante gerado com sucesso e direcionado para armazenamento oficial
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2.5 text-xs font-mono">
+              <div className="space-y-1">
+                <span className="text-[9px] text-slate-400 uppercase tracking-widest font-bold block">
+                  📄 Nome do Arquivo PDF Gerado:
+                </span>
+                <code className="text-emerald-400 font-bold text-[11px] block bg-emerald-950/40 p-2 rounded border border-emerald-900/40 break-all select-all">
+                  {createdPdfModalInfo.filename}
+                </code>
+              </div>
+            </div>
+
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setCreatedPdfModalInfo(null);
+                }}
+                className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl transition-all cursor-pointer shadow-lg text-center"
+              >
+                Concluir
+              </button>
+            </div>
           </div>
         </div>
       )}

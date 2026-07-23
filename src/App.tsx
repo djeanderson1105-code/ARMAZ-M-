@@ -41,32 +41,20 @@ import {
   Info
 } from "lucide-react";
 
+import { SstrDataProvider, useSstrData } from "./context/SstrDataContext";
+
 const STORAGE_RECORDS_KEY = "sstr_cached_records_v1";
 const STORAGE_BATCHES_KEY = "sstr_cached_batches_v1";
 
-export default function App() {
-  const [records, setRecords] = useState<ExchangeRecord[]>(() => {
-    const cached = localStorage.getItem(STORAGE_RECORDS_KEY);
-    if (cached) {
-      try {
-        return JSON.parse(cached);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    return [];
-  });
-  const [batches, setBatches] = useState<ImportBatch[]>(() => {
-    const cached = localStorage.getItem(STORAGE_BATCHES_KEY);
-    if (cached) {
-      try {
-        return JSON.parse(cached);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    return [];
-  });
+function MainApp() {
+  const { 
+    records, 
+    batches, 
+    saveRecordsAndBatches, 
+    isInitialLoading, 
+    isHeavyLoading 
+  } = useSstrData();
+
   const [activePortal, setActivePortal] = useState<"gestor" | "representante">("representante");
   const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "import" | "export" | "pending" | "managers" | "rankings">("dashboard");
   const [isManagerLoggedIn, setIsManagerLoggedIn] = useState<boolean>(() => {
@@ -76,11 +64,6 @@ export default function App() {
     return sessionStorage.getItem("sstr_current_manager_name") || "";
   });
   const [toastMessage, setToastMessage] = useState<{title: string, subtitle: string} | null>(null);
-  const [isSyncingInitial, setIsSyncingInitial] = useState<boolean>(() => {
-    const cached = localStorage.getItem(STORAGE_RECORDS_KEY);
-    return !cached;
-  });
-  const [isSyncingHeavy, setIsSyncingHeavy] = useState<boolean>(true);
 
   // PWA installation state
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -124,81 +107,10 @@ export default function App() {
   // Specific filter from clicking sector in dashboard view
   const [selectedSectorFilter, setSelectedSectorFilter] = useState<string | undefined>(undefined);
 
-  // Initialize and load sample data or localStorage on mounts
-  const loadRecordsFromLocal = () => {
-    const cachedRecs = localStorage.getItem(STORAGE_RECORDS_KEY);
-    const cachedBatches = localStorage.getItem(STORAGE_BATCHES_KEY);
-
-    if (cachedRecs) {
-      try {
-        setRecords(JSON.parse(cachedRecs));
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    if (cachedBatches) {
-      try {
-        setBatches(JSON.parse(cachedBatches));
-      } catch (e) {
-        console.error(e);
-      }
-    }
-  };
-
   useEffect(() => {
     // Force clean up of legacy localStorage authentication keys
     localStorage.removeItem("is_sstr_manager_authenticated");
     localStorage.removeItem("sstr_current_manager_name");
-
-    const hasCache = localStorage.getItem(STORAGE_RECORDS_KEY);
-    if (hasCache) {
-      loadRecordsFromLocal();
-    } else {
-      setIsSyncingInitial(true);
-    }
-
-    // Sync with other devices on booting and schedule polling in background
-    const { fastSyncPromise, heavySyncPromise } = initializeSync();
-
-    fastSyncPromise.then(() => {
-      startPolling();
-      
-      const cachedRecs = localStorage.getItem(STORAGE_RECORDS_KEY);
-      const cachedBatches = localStorage.getItem(STORAGE_BATCHES_KEY);
-
-      if (cachedRecs) {
-        try {
-          setRecords(JSON.parse(cachedRecs));
-          if (cachedBatches) {
-            setBatches(JSON.parse(cachedBatches));
-          }
-        } catch (e) {
-          console.error("Erro ao analisar registros salvos localmente:", e);
-        }
-      }
-      setIsSyncingInitial(false);
-    }).catch((err) => {
-      console.error("Erro na sincronização inicial rápida, usando cache local:", err);
-      loadRecordsFromLocal();
-      setIsSyncingInitial(false);
-    });
-
-    heavySyncPromise.then(() => {
-      setIsSyncingHeavy(false);
-      loadRecordsFromLocal();
-    }).catch((err) => {
-      console.error("Erro na sincronização de dados históricos:", err);
-      setIsSyncingHeavy(false);
-    });
-
-    // Listen to changes in localStorage when updated by server polling
-    const handleStorageChange = () => {
-      loadRecordsFromLocal();
-    };
-    window.addEventListener("storage", handleStorageChange);
-    return () => {
-      window.removeEventListener("storage", handleStorageChange);
-    };
   }, []);
 
   const resetToDefaultDemoData = () => {
@@ -211,19 +123,11 @@ export default function App() {
       totalValue: defaultRecords.reduce((acc, r) => acc + r.valorTotal, 0)
     };
 
-    setRecords(defaultRecords);
-    setBatches([initialBatch]);
-
-    localStorage.setItem(STORAGE_RECORDS_KEY, JSON.stringify(defaultRecords));
-    localStorage.setItem(STORAGE_BATCHES_KEY, JSON.stringify([initialBatch]));
+    saveRecordsAndBatches(defaultRecords, [initialBatch], "overwrite");
   };
 
-  // Sync state changes with localStorage
   const saveStateToStorage = (updatedRecords: ExchangeRecord[], updatedBatches: ImportBatch[]) => {
-    setRecords(updatedRecords);
-    setBatches(updatedBatches);
-    localStorage.setItem(STORAGE_RECORDS_KEY, JSON.stringify(updatedRecords));
-    localStorage.setItem(STORAGE_BATCHES_KEY, JSON.stringify(updatedBatches));
+    saveRecordsAndBatches(updatedRecords, updatedBatches, "overwrite");
   };
 
   // Handle import triggered from ImportPanel
@@ -490,7 +394,7 @@ export default function App() {
 
               {/* Data integrity status indicator */}
               <div className="flex items-center space-x-3 shrink-0">
-                {isSyncingHeavy && (
+                {isHeavyLoading && (
                   <div className="flex items-center space-x-1.5 text-[10px] font-mono text-blue-400 bg-blue-950/40 border border-blue-900/30 px-2.5 py-1 rounded-xl shrink-0">
                     <RefreshCw className="w-3 h-3 animate-spin text-blue-500" />
                     <span>Sincronizando Banco...</span>
@@ -565,5 +469,13 @@ export default function App() {
       <SstrOperationalAssistant records={records} />
 
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <SstrDataProvider>
+      <MainApp />
+    </SstrDataProvider>
   );
 }

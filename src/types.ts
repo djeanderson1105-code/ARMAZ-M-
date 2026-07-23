@@ -1,3 +1,5 @@
+import { safeSetItem } from "./utils/apiSync";
+
 export interface ExchangeRecord {
   id: string; // Unique generated ID (hash or index of import)
   unb: string;
@@ -239,11 +241,18 @@ export const MOTORISTAS_ROTAS: Record<string, RouteDriverInfo> = new Proxy({}, {
 export interface RequestItem {
   id: string;
   item: string; // SKU code
+  itemCode?: string;
   descricao?: string; // Product name
+  itemDesc?: string;
   quantidade: number;
   fatorHecto?: number;
   hectolitros?: number;
   motivo?: string; // specific item reason: Product Avariado, Falta no SKU, Falta de SKU Completo, Inversão
+  unidadeMedida?: string;
+  precoSugerido?: number;
+  precoCalculated?: number; // calculated item price (BRL)
+  fatorEmbalagem?: number;
+  customUnitPrice?: number;
   
   // Specific fields for Inversion ("Inversão")
   produtoAhEnviar?: string; // product that should go
@@ -266,14 +275,27 @@ export interface PendingRequest {
   motivo?: string; // e.g., "Avaria", "Falta no SKU", etc.
   notified?: boolean; // has the RN seen the approval notification
   rejeitadoObs?: string; // Motivo de reprovação (Required if rejected)
+  reprovadoReason?: string;
   reprovadoDate?: string;
   reprovadoUser?: string;
   item?: string; // added to support duplicate checks and detailed listings
+  produto?: string;
+  descricaoProduto?: string;
+  productDesc?: string;
   quantidade?: number; // added to support duplicate checks and detailed listings
+  unidadeMedida?: string;
+  unidadeMedia?: string;
+  um?: string;
   fatorHecto?: number;
   hectolitros?: number;
   isOffline?: boolean;
   items?: RequestItem[];
+
+  // PDF Export and Network Storage
+  pdfFilePath?: string;
+  pdfFilename?: string;
+  baixadaDate?: string;
+  baixadaUser?: string;
 
   // Shortage physical settlement properties (Faltas e Inversões)
   faltaBaixa?: boolean;
@@ -295,6 +317,9 @@ export interface PendingRequest {
   dataEntregaRecibo?: string;
   observacaoRecibo?: string;
   municipioRecibo?: string;
+  nomeRecibo?: string;
+  documentoRecibo?: string;
+  enderecoRecibo?: string;
 }
 
 export interface CrewMember {
@@ -363,7 +388,7 @@ export const getListaCrew = (): CrewMember[] => {
     }
   }
   // Initialize in localStorage so users can edit it
-  localStorage.setItem("sstr_lista_crew", JSON.stringify(DEFAULT_LISTA_CREW));
+  safeSetItem("sstr_lista_crew", JSON.stringify(DEFAULT_LISTA_CREW));
   return DEFAULT_LISTA_CREW;
 };
 

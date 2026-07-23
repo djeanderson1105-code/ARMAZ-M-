@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache } from "../types";
 import { getApiUrl } from "../utils/apiUrl";
+import { safeSetItem } from "../utils/apiSync";
+import { useSstrData } from "../context/SstrDataContext";
 import { PRODUCT_DATABASE } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
+import { getHectoFactor, calculateHL } from "../utils/hectoFactors";
+import { exportRegistrationPdf, generatePdfFilename, NETWORK_REGISTROS_PATH } from "../utils/pdfGenerator";
 import ValesHistoryDashboard from "./ValesHistoryDashboard";
 import { 
   Clock, 
@@ -32,8 +36,33 @@ import {
   TrendingUp,
   PlusCircle,
   Plus,
-  Copy
+  Copy,
+  Sliders
 } from "lucide-react";
+
+// Helper to check if a request or any of its items is a "Falta de SKU Fechado / Completo"
+const isFaltaSkuCompletoReq = (req: PendingRequest): boolean => {
+  const m = (req.motivo || "").toLowerCase();
+  if (m.includes("completo") || m.includes("fechado")) return true;
+  if (req.items && req.items.some((it: any) => {
+    const im = (it.motivo || "").toLowerCase();
+    return im.includes("completo") || im.includes("fechado");
+  })) return true;
+  return false;
+};
+
+// Helper to check if a request is "Reposição" (i.e. motivo contains "falta" / product lack)
+const isReposicaoReq = (req: PendingRequest): boolean => {
+  const m = (req.motivo || "").toLowerCase();
+  if (m.includes("falta")) return true;
+  if (req.items && req.items.some((it: any) => (it.motivo || "").toLowerCase().includes("falta"))) return true;
+  return false;
+};
+
+// Helper to check if a request is "Troca" (any motive other than product lack)
+const isTrocaReq = (req: PendingRequest): boolean => {
+  return !isReposicaoReq(req);
+};
 
 // Helper function to extract or parse request date safely for range filtering
 const getReqDate = (req: PendingRequest): Date | null => {
@@ -211,7 +240,18 @@ const formatCurrency = (val: number) => {
 };
 
 export default function PendingRequestsTab() {
-  const [requests, setRequests] = useState<PendingRequest[]>([]);
+  const { 
+    pendingRequests: requests, 
+    records: promaxRecords, 
+    vales: valesHistorico, 
+    repsList, 
+    motoristasList,
+    savePendingRequest,
+    deletePendingRequest,
+    saveValeEntry,
+    deleteValeEntry
+  } = useSstrData();
+
   const compilingPdfRef = useRef<Set<string>>(new Set());
 
   // Client-side triggers for compiling PDFs on demand via server API
@@ -246,17 +286,10 @@ export default function PendingRequestsTab() {
           if (data.success && data.url) {
             console.log(`[CLIENT-PDF] PDF compiled successfully for ${requestId}: ${data.url}`);
             
-            // Update the requests list with the new PDF URL
-            setRequests(prev => {
-              const updated = prev.map(item => {
-                if (item.id === requestId) {
-                  return { ...item, fotoUrl: data.url };
-                }
-                return item;
-              });
-              localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-              return updated;
-            });
+            const itemToUpdate = requests.find(item => item.id === requestId);
+            if (itemToUpdate) {
+              savePendingRequest({ ...itemToUpdate, fotoUrl: data.url });
+            }
           } else {
             console.warn(`[CLIENT-PDF] Compile failed for ${requestId}:`, data.error || "unknown error");
           }
@@ -269,16 +302,14 @@ export default function PendingRequestsTab() {
         compilingSet.delete(requestId);
       }
     });
-  }, [requests]);
+  }, [requests, savePendingRequest]);
 
-  const [repsList, setRepsList] = useState(() => getRepresentativosSetor());
-  const [motoristasList, setMotoristasList] = useState(() => getMotoristasRotas());
-  const [promaxRecords, setPromaxRecords] = useState<ExchangeRecord[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState<"pendente" | "cadastrado" | "reprovado" | "faltas_inversoes" | "historico_baixas" | "historico_vales" | "espelho">("pendente");
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [sectorFilter, setSectorFilter] = useState<string>("todos");
+  const [processTypeFilter, setProcessTypeFilter] = useState<"todos" | "reposicao" | "troca" | "troca_exceto_sku_fechado">("todos");
   const [zoomPhoto, setZoomPhoto] = useState<string | null>(null);
 
   // Espelho de Reposições state variables
@@ -291,6 +322,9 @@ export default function PendingRequestsTab() {
   // Faltas & Inversões specific filters
   const [lackFilterStatus, setLackFilterStatus] = useState<"todos" | "abertos" | "baixados">("abertos");
   const [lackFilterErrorType, setLackFilterErrorType] = useState<"todos" | "carregamento" | "entrega" | "indefinido">("todos");
+  
+  // Status filter for Histórico de Baixas (Requirement 4)
+  const [historicoBaixasStatusFilter, setHistoricoBaixasStatusFilter] = useState<"todos" | "aprovados" | "reprovados" | "baixados" | "pendentes">("todos");
 
   // States for physical settlement ("Dar Baixa" with signed receipt attachment)
   const [baixandoFalta, setBaixandoFalta] = useState<PendingRequest | null>(null);
@@ -356,17 +390,13 @@ export default function PendingRequestsTab() {
   const handleUpdatePrintCidade = (newCity: string) => {
     setCustomPrintCidade(newCity);
     if (selectedPrintDoc) {
-      const updated = requests.map(r => {
-        if (r.id === selectedPrintDoc.request.id) {
-          return {
-            ...r,
-            municipioRecibo: newCity || undefined,
-          };
-        }
-        return r;
-      });
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-      setRequests(updated);
+      const targetReq = requests.find(r => r.id === selectedPrintDoc.request.id);
+      if (targetReq) {
+        savePendingRequest({
+          ...targetReq,
+          municipioRecibo: newCity || undefined,
+        });
+      }
 
       setSelectedPrintDoc(prev => {
         if (!prev) return null;
@@ -384,17 +414,13 @@ export default function PendingRequestsTab() {
   const handleUpdatePrintNome = (newName: string) => {
     setCustomPrintNome(newName);
     if (selectedPrintDoc) {
-      const updated = requests.map(r => {
-        if (r.id === selectedPrintDoc.request.id) {
-          return {
-            ...r,
-            nomeRecibo: newName || undefined,
-          };
-        }
-        return r;
-      });
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-      setRequests(updated);
+      const targetReq = requests.find(r => r.id === selectedPrintDoc.request.id);
+      if (targetReq) {
+        savePendingRequest({
+          ...targetReq,
+          nomeRecibo: newName || undefined,
+        });
+      }
 
       setSelectedPrintDoc(prev => {
         if (!prev) return null;
@@ -412,17 +438,13 @@ export default function PendingRequestsTab() {
   const handleUpdatePrintDocumento = (newDoc: string) => {
     setCustomPrintDocumento(newDoc);
     if (selectedPrintDoc) {
-      const updated = requests.map(r => {
-        if (r.id === selectedPrintDoc.request.id) {
-          return {
-            ...r,
-            documentoRecibo: newDoc || undefined,
-          };
-        }
-        return r;
-      });
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-      setRequests(updated);
+      const targetReq = requests.find(r => r.id === selectedPrintDoc.request.id);
+      if (targetReq) {
+        savePendingRequest({
+          ...targetReq,
+          documentoRecibo: newDoc || undefined,
+        });
+      }
 
       setSelectedPrintDoc(prev => {
         if (!prev) return null;
@@ -440,17 +462,13 @@ export default function PendingRequestsTab() {
   const handleUpdatePrintEndereco = (newEnd: string) => {
     setCustomPrintEndereco(newEnd);
     if (selectedPrintDoc) {
-      const updated = requests.map(r => {
-        if (r.id === selectedPrintDoc.request.id) {
-          return {
-            ...r,
-            enderecoRecibo: newEnd || undefined,
-          };
-        }
-        return r;
-      });
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-      setRequests(updated);
+      const targetReq = requests.find(r => r.id === selectedPrintDoc.request.id);
+      if (targetReq) {
+        savePendingRequest({
+          ...targetReq,
+          enderecoRecibo: newEnd || undefined,
+        });
+      }
 
       setSelectedPrintDoc(prev => {
         if (!prev) return null;
@@ -465,21 +483,141 @@ export default function PendingRequestsTab() {
     }
   };
 
-  // Vales historical records state and handlers (User request)
-  const [valesHistorico, setValesHistorico] = useState<any[]>(() => {
-    try {
-      const saved = localStorage.getItem("sstr_vales_historico_reg");
-      return saved ? JSON.parse(saved) : [];
-    } catch (e) {
-      return [];
-    }
-  });
-
   // Delete a single voucher from historical log
   const handleDeleteSingleVale = (id: string) => {
-    const updated = valesHistorico.filter(v => v.id !== id);
-    setValesHistorico(updated);
-    localStorage.setItem("sstr_vales_historico_reg", JSON.stringify(updated));
+    deleteValeEntry(id);
+  };
+
+  // Update status of a voucher (Pendente, Assinado, Compensado)
+  const handleUpdateValeStatus = (id: string, newStatus: "pendente" | "assinado" | "compensado") => {
+    const vale = valesHistorico.find(v => v.id === id);
+    if (vale) {
+      saveValeEntry({ ...vale, status: newStatus });
+    }
+  };
+
+  // Delete an approved item / request from Espelho do Dia and Approved list
+  const handleDeleteApprovedItem = (requestId: string, productCode?: string) => {
+    const targetReq = requests.find(r => r.id === requestId);
+    if (!targetReq) return;
+
+    if (targetReq.items && targetReq.items.length > 1 && productCode) {
+      const filteredItems = targetReq.items.filter((it: any) => (it.item || it.itemCode) !== productCode);
+      if (filteredItems.length > 0) {
+        savePendingRequest({
+          ...targetReq,
+          items: filteredItems
+        });
+        return;
+      }
+    }
+
+    savePendingRequest({
+      ...targetReq,
+      statusPromax: "reprovado",
+      rejeitadoObs: "Excluído do Espelho do Dia"
+    });
+  };
+
+  // Editable state for Items inside the Reimprimir / Print Modal
+  const [printDocItems, setPrintDocItems] = useState<any[]>([]);
+
+  // Initialize printDocItems when selectedPrintDoc changes
+  useEffect(() => {
+    if (selectedPrintDoc) {
+      const req = selectedPrintDoc.request;
+      const baseItems = req.items && req.items.length > 0 ? req.items : [
+        {
+          id: "1",
+          item: req.item || "SKU_GENERIC",
+          descricao: req.productDesc || "PRODUTO EM COMPENSAÇÃO SSTR",
+          quantidade: req.quantidade || 1,
+          unidadeMedida: req.unidadeMedida || "cx",
+          hectolitros: req.hectolitros || 0.1200,
+          motivo: req.motivo || "Falta de SKU"
+        } as RequestItem
+      ];
+
+      setPrintDocItems(baseItems.map((it: any) => {
+        const itemCode = it.item || it.itemCode || "SKU_GENERIC";
+        const defaultUnitPrice = promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 98.50;
+        const rawUm = it.unidadeMedida || (promaxRecords.find(r => r.produto === itemCode)?.um || "cx");
+        const isFaltaSku = (it.motivo || req.motivo || "").toLowerCase().includes("sku");
+        const um = (it.unidadeMedida || (isFaltaSku ? "sku" : rawUm)).toLowerCase();
+
+        return {
+          ...it,
+          itemCode,
+          quantidade: Number(it.quantidade) || 1,
+          unidadeMedida: um,
+          customUnitPrice: Number(it.customUnitPrice || defaultUnitPrice)
+        };
+      }));
+    } else {
+      setPrintDocItems([]);
+    }
+  }, [selectedPrintDoc, promaxRecords]);
+
+  // Handle live updating of quantity, unit, or unit price in print modal
+  const handleUpdatePrintDocItem = (index: number, field: string, value: any) => {
+    setPrintDocItems(prev => {
+      const updated = [...prev];
+      const item = { ...updated[index], [field]: value };
+      
+      const code = item.item || item.itemCode || "";
+      const qty = Number(item.quantidade) || 0;
+      const factor = getHectoFactor(code);
+      const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === code || p.codigo === code.replace(/^0+/, ""));
+      const embalagem = dbProduct?.embalagem || 12;
+
+      if (item.unidadeMedida === "und") {
+        item.hectolitros = Number(((qty / embalagem) * factor).toFixed(4));
+      } else {
+        item.hectolitros = Number((qty * factor).toFixed(4));
+      }
+
+      updated[index] = item;
+      return updated;
+    });
+  };
+
+  // Handle saving modifications made in the print modal back to storage
+  const handleSavePrintDocEdits = () => {
+    if (!selectedPrintDoc) return;
+    const reqId = selectedPrintDoc.request.id;
+
+    const totalHl = printDocItems.reduce((acc, it) => acc + (Number(it.hectolitros) || 0), 0);
+    const totalQty = printDocItems.reduce((acc, it) => acc + (Number(it.quantidade) || 0), 0);
+
+    const targetReq = requests.find(r => r.id === reqId);
+    if (targetReq) {
+      savePendingRequest({
+        ...targetReq,
+        items: printDocItems,
+        quantidade: totalQty,
+        hectolitros: totalHl,
+        unidadeMedida: printDocItems[0]?.unidadeMedida || targetReq.unidadeMedida
+      });
+    }
+
+    if (selectedPrintDoc.type === "vale") {
+      const targetVale = valesHistorico.find(v => v.originalRequest?.id === reqId || v.id === reqId);
+      if (targetVale && targetVale.originalRequest) {
+        saveValeEntry({
+          ...targetVale,
+          originalRequest: {
+            ...targetVale.originalRequest,
+            items: printDocItems,
+            quantidade: totalQty,
+            hectolitros: totalHl,
+            unidadeMedida: printDocItems[0]?.unidadeMedida || targetVale.originalRequest.unidadeMedida
+          }
+        });
+      }
+    }
+
+    window.dispatchEvent(new Event("storage"));
+    alert("Alterações do recibo/vale salvas com sucesso no Espelho do Dia e no Histórico!");
   };
 
   // Request creation states (modo supervisor / gestor)
@@ -498,6 +636,7 @@ export default function PendingRequestsTab() {
   // Single item entry states
   const [reqItem, setReqItem] = useState("");
   const [reqQuantidade, setReqQuantidade] = useState("");
+  const [reqUnidade, setReqUnidade] = useState<"sku" | "und">("sku");
   const [showItemSuggestions, setShowItemSuggestions] = useState(false);
 
   // Inversion fields
@@ -668,8 +807,18 @@ export default function PendingRequestsTab() {
         return;
       }
 
+      const embalagem = productDef.fator || 12;
+      const closedBoxPrice = productDef.valor || 98.50;
+      const unitPrice = closedBoxPrice / embalagem;
+
       const factor = productDef.fatorHecto || 0.0800;
-      const calculatedHl = Number((qty * factor).toFixed(4));
+      const calculatedHl = reqUnidade === "und"
+        ? Number(((qty / embalagem) * factor).toFixed(4))
+        : Number((qty * factor).toFixed(4));
+
+      const calculatedPrice = reqUnidade === "und"
+        ? Number((qty * unitPrice).toFixed(2))
+        : Number((qty * closedBoxPrice).toFixed(2));
 
       let finalMotive = reqMotiveType;
       if (reqMotiveType === "Falta de SKU Completo") {
@@ -689,7 +838,11 @@ export default function PendingRequestsTab() {
         quantidade: qty,
         motivo: finalMotive,
         fatorHecto: factor,
-        hectolitros: calculatedHl
+        hectolitros: calculatedHl,
+        unidadeMedida: reqUnidade,
+        precoSugerido: closedBoxPrice,
+        precoCalculated: calculatedPrice,
+        fatorEmbalagem: embalagem
       };
 
       setReqDraftItems([...reqDraftItems, newItem]);
@@ -697,6 +850,7 @@ export default function PendingRequestsTab() {
       // Clear fields
       setReqItem("");
       setReqQuantidade("");
+      setReqUnidade("sku");
     }
   };
 
@@ -709,19 +863,18 @@ export default function PendingRequestsTab() {
     setCreateError(null);
     setCreateSuccess(null);
 
-    if (!reqSetor) {
-      setCreateError("Selecione o Setor / RN para o qual deseja criar a solicitação.");
+    // Setor/RN is optional for gestor creation, default to "600" or auto-identified sector if empty
+    const effectiveSetor = reqSetor.trim() || sectorLoadingInfo?.foundSector || "600";
+
+    // NF, NB, and Mapa are mandatory
+    if (!reqNf.trim() || !reqNb.trim() || !reqMapa.trim()) {
+      setCreateError("O preenchimento de Nota Fiscal, Cód. Cliente (NB) e Mapa de Carga é obrigatório.");
       return;
     }
 
-    // NF validation is optional as requested
-    const finalNf = reqNf.trim() || "NÃO CONSTA";
+    const finalNf = reqNf.trim();
 
-    const isFaltaSkuCompleto = reqMotiveType === "Falta de SKU Completo";
-    if (!reqFotoUrl && !isFaltaSkuCompleto) {
-      setCreateError("É obrigatório tirar foto ou anexar comprovante, exceto para solicitações de Falta de SKU Completo.");
-      return;
-    }
+    // Photo is always optional now as requested
 
     // Check if Map is empty when Lack/Inversion, NB is optional
     const isLackOrInversion = reqMotiveType === "Inversão" || reqMotiveType.includes("Falta");
@@ -770,8 +923,20 @@ export default function PendingRequestsTab() {
           setCreateError("O SKU ou quantidade digitados são inválidos. Adicione o item de forma válida.");
           return;
         }
+
+        const embalagem = productDef.fator || 12;
+        const closedBoxPrice = productDef.valor || 98.50;
+        const unitPrice = closedBoxPrice / embalagem;
+
         const factor = productDef.fatorHecto || 0.0800;
-        const calculatedHl = Number((qty * factor).toFixed(4));
+        const calculatedHl = reqUnidade === "und"
+          ? Number(((qty / embalagem) * factor).toFixed(4))
+          : Number((qty * factor).toFixed(4));
+
+        const calculatedPrice = reqUnidade === "und"
+          ? Number((qty * unitPrice).toFixed(2))
+          : Number((qty * closedBoxPrice).toFixed(2));
+
         let finalMotive = reqMotiveType;
         if (reqMotiveType === "Falta de SKU Completo") {
           finalMotive = reqMotiveText.trim() ? `Falta de SKU Completo - ${reqMotiveText.trim()}` : "Falta de SKU Completo";
@@ -790,7 +955,11 @@ export default function PendingRequestsTab() {
           quantidade: qty,
           motivo: finalMotive,
           fatorHecto: factor,
-          hectolitros: calculatedHl
+          hectolitros: calculatedHl,
+          unidadeMedida: reqUnidade,
+          precoSugerido: closedBoxPrice,
+          precoCalculated: calculatedPrice,
+          fatorEmbalagem: embalagem
         });
       }
     }
@@ -836,7 +1005,7 @@ export default function PendingRequestsTab() {
         id: `pending_req_${Date.now()}`,
         timestamp: Date.now(),
         data: dataFormatada,
-        setor: reqSetor,
+        setor: effectiveSetor,
         mapa: reqMapa.trim(),
         nb: reqNb.trim() || "000000",
         nf: finalNf,
@@ -848,11 +1017,11 @@ export default function PendingRequestsTab() {
         cadastroDate: dataFormatada,
         
         // Shortage fields
-        faltaMotorista: reqMotorista || undefined,
-        faltaMotoristaCpf: driverCpf || undefined,
-        faltaAjudantes: [reqAjudante1, reqAjudante2].filter(Boolean).join(", ") || undefined,
-        faltaAjudante1: reqAjudante1 || undefined,
-        faltaAjudante2: reqAjudante2 || undefined,
+        ...(reqMotorista ? { faltaMotorista: reqMotorista } : {}),
+        ...(driverCpf ? { faltaMotoristaCpf: driverCpf } : {}),
+        ...([reqAjudante1, reqAjudante2].filter(Boolean).length > 0 ? { faltaAjudantes: [reqAjudante1, reqAjudante2].filter(Boolean).join(", ") } : {}),
+        ...(reqAjudante1 ? { faltaAjudante1: reqAjudante1 } : {}),
+        ...(reqAjudante2 ? { faltaAjudante2: reqAjudante2 } : {}),
         faltaTipoErro: "entrega",
 
         // Compat fallbacks
@@ -871,16 +1040,15 @@ export default function PendingRequestsTab() {
           fatorHecto: d.fatorHecto,
           hectolitros: d.hectolitros,
           produtoAhEnviar: d.produtoAhEnviar,
-          produtoARecolher: d.produtoARecolher
+          produtoARecolher: d.produtoARecolher,
+          unidadeMedida: d.unidadeMedida,
+          precoSugerido: d.precoSugerido,
+          precoCalculated: d.precoCalculated,
+          fatorEmbalagem: d.fatorEmbalagem
         }))
       };
 
-      const existingReqs = JSON.parse(localStorage.getItem("sstr_representative_pending_requests") || "[]");
-      const updatedReqs = [newRequest, ...existingReqs];
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updatedReqs));
-
-      // Trigger local storage event
-      window.dispatchEvent(new Event("storage"));
+      await savePendingRequest(newRequest);
 
       // Clear all form states
       setReqNf("");
@@ -972,8 +1140,7 @@ export default function PendingRequestsTab() {
         });
 
       if (seededVales.length > 0) {
-        setValesHistorico(seededVales);
-        localStorage.setItem("sstr_vales_historico_reg", JSON.stringify(seededVales));
+        seededVales.forEach(vale => saveValeEntry(vale));
       }
     }
   }, [requests, promaxRecords]);
@@ -1104,9 +1271,7 @@ export default function PendingRequestsTab() {
           originalRequest: { ...req, fotoUrl: req.fotoUrl ? "imagem_no_vale_detalhes" : "" }
         };
 
-        const updated = [newValeEntry, ...valesHistorico];
-        setValesHistorico(updated);
-        localStorage.setItem("sstr_vales_historico_reg", JSON.stringify(updated));
+        saveValeEntry(newValeEntry);
       }
     }
   };
@@ -1114,89 +1279,7 @@ export default function PendingRequestsTab() {
   const now = Date.now();
   const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
 
-  // Load and sync requests
-  const loadRequests = () => {
-    const dataJson = localStorage.getItem("sstr_representative_pending_requests");
-    if (dataJson) {
-      try {
-        const rawList = JSON.parse(dataJson) as PendingRequest[];
-        const now = Date.now();
-        const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-        const autoPurgeImgMs = 2 * 24 * 60 * 60 * 1000; // 2 days
 
-        let changedObj = false;
-
-        // Keep only requests made within the last 30 days
-        let freshList = rawList.filter(req => {
-          const reqDate = getReqDate(req);
-          if (!reqDate) return true;
-          return (now - reqDate.getTime()) <= thirtyDaysMs;
-        });
-
-        if (freshList.length !== rawList.length) {
-          changedObj = true;
-        }
-
-        // Automatic strip of heavy Base64 image payload for resolved/rejected requests older than 2 days
-        freshList = freshList.map(req => {
-          const reqDate = getReqDate(req);
-          const isProcessed = req.statusPromax === "cadastrado" || req.statusPromax === "reprovado";
-          if (isProcessed && reqDate && (now - reqDate.getTime()) > autoPurgeImgMs && req.fotoUrl && req.fotoUrl.startsWith("data:image")) {
-            changedObj = true;
-            return {
-              ...req,
-              fotoUrl: "imagem_purgada"
-            };
-          }
-          return req;
-        });
-
-        setRequests(freshList);
-
-        if (changedObj) {
-          localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(freshList));
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    }
-  };
-
-  // Load official Promax records for budget calculation
-  const loadPromaxRecords = () => {
-    const cached = localStorage.getItem("sstr_cached_records_v1");
-    if (cached) {
-      try {
-        setPromaxRecords(JSON.parse(cached));
-      } catch (e) {
-        console.error(e);
-      }
-    }
-  };
-
-  useEffect(() => {
-    loadRequests();
-    loadPromaxRecords();
-    
-    const handleStorage = () => {
-      loadRequests();
-      loadPromaxRecords();
-      clearRepresentativosCache();
-      clearMotoristasRotasCache();
-      setRepsList(getRepresentativosSetor());
-      setMotoristasList(getMotoristasRotas());
-      try {
-        const savedVales = localStorage.getItem("sstr_vales_historico_reg");
-        if (savedVales) {
-          setValesHistorico(JSON.parse(savedVales));
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, []);
 
   // Memoized tomorrow's reminders (exactly 1 day before delivery date)
   const tomorrowReminders = useMemo(() => {
@@ -1363,11 +1446,51 @@ export default function PendingRequestsTab() {
         }
       }
 
+      // 3.5 Process Type filter (Reposição vs Troca vs Troca Exceto SKU Fechado)
+      const motiveLower = (req.motivo || "").toLowerCase();
+      
+      // Checking for individual sub-item motives as well to be completely foolproof
+      const hasFaltaItem = req.items && req.items.some((it: any) => (it.motivo || "").toLowerCase().includes("falta"));
+      const isFaltaSkuCompleto = motiveLower.includes("completo") || motiveLower.includes("fechado") ||
+        (req.items && req.items.some((it: any) => {
+          const m = (it.motivo || "").toLowerCase();
+          return m.includes("completo") || m.includes("fechado");
+        }));
+
+      // Reposição = Motivo has "falta"
+      const isReposicao = motiveLower.includes("falta") || hasFaltaItem;
+      const isTroca = !isReposicao;
+
+      if (processTypeFilter === "reposicao") {
+        if (!isReposicao) return false;
+      } else if (processTypeFilter === "troca") {
+        if (!isTroca) return false;
+      } else if (processTypeFilter === "troca_exceto_sku_fechado") {
+        if (isFaltaSkuCompleto) return false;
+      }
+
       // 4. Tab filters
       if (activeTab === "historico_baixas") {
-        const isFalta = isFaltaOrInversao(req);
-        const isBaixada = !!(req as any).faltaBaixa;
-        return isFalta && isBaixada && matchSearch && matchSector;
+        const isCadastrado = req.statusPromax === "cadastrado";
+        const isReprovado = req.statusPromax === "reprovado";
+        const isFaltaBaixada = !!(req as any).faltaBaixa;
+        const isPendente = req.statusPromax === "pendente";
+
+        let matchesStatus = true;
+        if (historicoBaixasStatusFilter === "aprovados") {
+          matchesStatus = isCadastrado;
+        } else if (historicoBaixasStatusFilter === "reprovados") {
+          matchesStatus = isReprovado;
+        } else if (historicoBaixasStatusFilter === "baixados") {
+          matchesStatus = isFaltaBaixada || isCadastrado || isReprovado;
+        } else if (historicoBaixasStatusFilter === "pendentes") {
+          matchesStatus = isPendente;
+        } else {
+          // "todos": Consolidate all occurrences regardless of origin flow (Approved, Rejected, Manual/System Baixas)
+          matchesStatus = isCadastrado || isReprovado || isFaltaBaixada || (req as any).statusPromax === "cadastrado";
+        }
+
+        return matchesStatus && matchSearch && matchSector;
       }
 
       if (activeTab === "faltas_inversoes") {
@@ -1394,7 +1517,49 @@ export default function PendingRequestsTab() {
         return matchSearch && matchStatus && matchSector;
       }
     });
-  }, [requests, searchTerm, activeTab, sectorFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType]);
+  }, [requests, searchTerm, activeTab, sectorFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType, processTypeFilter, historicoBaixasStatusFilter]);
+
+  // Process type summary breakdown for dashboard cards (Reposição vs. Troca vs. Contingências)
+  const processSummary = useMemo(() => {
+    let reposicaoCount = 0;
+    let reposicaoVal = 0;
+    let trocaCount = 0;
+    let trocaVal = 0;
+    let excetoSkuFechadoCount = 0;
+    let excetoSkuFechadoVal = 0;
+
+    requests.forEach(r => {
+      // Requirement 5: Settled/baixado records stop impacting active operational goals and indicators
+      const isBaixada = !!(r as any).faltaBaixa || r.statusPromax === "cadastrado" || r.statusPromax === "reprovado";
+      if (isBaixada) return;
+
+      const val = getRequestValue(r, promaxRecords);
+      const isRep = isReposicaoReq(r);
+      const isFechado = isFaltaSkuCompletoReq(r);
+
+      if (isRep) {
+        reposicaoCount++;
+        reposicaoVal += val;
+      } else {
+        trocaCount++;
+        trocaVal += val;
+      }
+
+      if (!isFechado) {
+        excetoSkuFechadoCount++;
+        excetoSkuFechadoVal += val;
+      }
+    });
+
+    return {
+      reposicaoCount,
+      reposicaoVal,
+      trocaCount,
+      trocaVal,
+      excetoSkuFechadoCount,
+      excetoSkuFechadoVal
+    };
+  }, [requests, promaxRecords]);
 
   // Trigger handlers to open custom interactive modals
   const triggerRegister = (id: string) => {
@@ -1421,7 +1586,7 @@ export default function PendingRequestsTab() {
     setModalError("");
   };
 
-  const handleModalConfirm = () => {
+  const handleModalConfirm = async () => {
     if (!modalAction) return;
     const { type, requestId } = modalAction;
 
@@ -1431,41 +1596,52 @@ export default function PendingRequestsTab() {
         setModalError(errMsg);
         return;
       }
-      const updated = requests.map(req => {
-        if (req.id === requestId) {
-          return {
-            ...req,
-            statusPromax: type === "reject" ? ("reprovado" as const) : ("corrigir" as const),
-            notified: false,
-            rejeitadoObs: modalInput.trim(),
-            reprovadoUser: "Responsável pelo Controle",
-            reprovadoDate: new Date().toLocaleDateString("pt-BR") + " " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
-          };
-        }
-        return req;
-      });
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-      setRequests(updated);
+      const targetReq = requests.find(r => r.id === requestId);
+      if (targetReq) {
+        savePendingRequest({
+          ...targetReq,
+          statusPromax: type === "reject" ? ("reprovado" as const) : ("corrigir" as const),
+          notified: false,
+          rejeitadoObs: modalInput.trim(),
+          reprovadoUser: "Responsável pelo Controle",
+          reprovadoDate: new Date().toLocaleDateString("pt-BR") + " " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+        });
+      }
     } else if (type === "register") {
       const name = modalInput.trim() || "Responsável pelo Controle";
-      const updated = requests.map(req => {
-        if (req.id === requestId) {
-          return {
-            ...req,
-            statusPromax: "cadastrado" as const,
-            notified: false,
-            cadastroUser: name,
-            cadastroDate: new Date().toLocaleDateString("pt-BR") + " " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
-          };
+      const targetReq = requests.find(r => r.id === requestId);
+      if (targetReq) {
+        const reqToExport = {
+          ...targetReq,
+          statusPromax: "cadastrado" as const,
+          cadastroUser: name,
+          cadastroDate: new Date().toLocaleDateString("pt-BR") + " " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+        };
+
+        try {
+          // Export registration PDF immediately (includes request details + attached evidence photos)
+          const pdfResult = await exportRegistrationPdf(reqToExport, { autoDownload: true });
+          if (!pdfResult || !pdfResult.filename) {
+            throw new Error("Erro na compilação do arquivo PDF.");
+          }
+        } catch (pdfErr: any) {
+          console.error("Erro ao gerar PDF no lançamento:", pdfErr);
+          alert("❌ ATENÇÃO: O lançamento NÃO foi concluído pois ocorreu um erro ao gerar/baixar o PDF oficial com as evidências.\n\nDetalhes: " + (pdfErr?.message || pdfErr));
+          setModalError("O lançamento foi bloqueado pois o PDF de evidências não pôde ser gerado.");
+          return;
         }
-        return req;
-      });
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-      setRequests(updated);
+
+        // Save status as cadastrado and convert fotoUrl to the network path (archived in PDF on network folder)
+        const networkPath = targetReq.pdfFilePath || `${NETWORK_REGISTROS_PATH}\\${generatePdfFilename(targetReq.mapa, targetReq.nb, targetReq.nf, targetReq.data)}`;
+
+        savePendingRequest({
+          ...reqToExport,
+          notified: false,
+          fotoUrl: networkPath
+        });
+      }
     } else if (type === "delete") {
-      const updated = requests.filter(req => req.id !== requestId);
-      localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-      setRequests(updated);
+      deletePendingRequest(requestId);
     }
 
     setModalAction(null);
@@ -1541,39 +1717,35 @@ export default function PendingRequestsTab() {
     setEditFaltaCidade(cast.municipioRecibo || clientInfo.municipio || "");
   };
 
-  // Save customized shortage parameters to localStorage
+  // Save customized shortage parameters
   const handleSaveFaltaDetails = () => {
     if (!editingFalta) return;
 
-    const updated = requests.map(req => {
-      if (req.id === editingFalta.id) {
-        // Build comma separated helpers list for backwards compatibility
-        const helpersList: string[] = [];
-        if (editFaltaAjudante1.trim()) helpersList.push(editFaltaAjudante1.trim());
-        if (editFaltaAjudante2.trim()) helpersList.push(editFaltaAjudante2.trim());
-        const combinedHelpers = helpersList.join(", ");
+    const targetReq = requests.find(r => r.id === editingFalta.id);
+    if (targetReq) {
+      const helpersList: string[] = [];
+      if (editFaltaAjudante1.trim()) helpersList.push(editFaltaAjudante1.trim());
+      if (editFaltaAjudante2.trim()) helpersList.push(editFaltaAjudante2.trim());
+      const combinedHelpers = helpersList.join(", ");
 
-        return {
-          ...req,
-          faltaTipoErro: editFaltaErrorType || undefined,
-          faltaMotorista: editFaltaMotorista.trim() || undefined,
-          faltaMotoristaCpf: editFaltaMotoristaCpf.trim() || undefined,
-          faltaAjudantes: combinedHelpers || editFaltaAjudantes.trim() || undefined,
-          faltaAjudante1: editFaltaAjudante1.trim() || undefined,
-          faltaAjudante1Cpf: editFaltaAjudante1Cpf.trim() || undefined,
-          faltaAjudante2: editFaltaAjudante2.trim() || undefined,
-          faltaAjudante2Cpf: editFaltaAjudante2Cpf.trim() || undefined,
-          mapaDataAnomalia: editFaltaDataAnomalia.trim() || undefined,
-          dataEntregaRecibo: editFaltaDataEntrega.trim() || undefined,
-          observacaoRecibo: editFaltaObservacao.trim() || undefined,
-          municipioRecibo: editFaltaCidade.trim() || undefined,
-        } as PendingRequest;
-      }
-      return req;
-    });
+      const updatedReq = {
+        ...targetReq,
+        ...(editFaltaErrorType ? { faltaTipoErro: editFaltaErrorType } : {}),
+        ...(editFaltaMotorista.trim() ? { faltaMotorista: editFaltaMotorista.trim() } : {}),
+        ...(editFaltaMotoristaCpf.trim() ? { faltaMotoristaCpf: editFaltaMotoristaCpf.trim() } : {}),
+        ...((combinedHelpers || editFaltaAjudantes.trim()) ? { faltaAjudantes: combinedHelpers || editFaltaAjudantes.trim() } : {}),
+        ...(editFaltaAjudante1.trim() ? { faltaAjudante1: editFaltaAjudante1.trim() } : {}),
+        ...(editFaltaAjudante1Cpf.trim() ? { faltaAjudante1Cpf: editFaltaAjudante1Cpf.trim() } : {}),
+        ...(editFaltaAjudante2.trim() ? { faltaAjudante2: editFaltaAjudante2.trim() } : {}),
+        ...(editFaltaAjudante2Cpf.trim() ? { faltaAjudante2Cpf: editFaltaAjudante2Cpf.trim() } : {}),
+        ...(editFaltaDataAnomalia.trim() ? { mapaDataAnomalia: editFaltaDataAnomalia.trim() } : {}),
+        ...(editFaltaDataEntrega.trim() ? { dataEntregaRecibo: editFaltaDataEntrega.trim() } : {}),
+        ...(editFaltaObservacao.trim() ? { observacaoRecibo: editFaltaObservacao.trim() } : {}),
+        ...(editFaltaCidade.trim() ? { municipioRecibo: editFaltaCidade.trim() } : {}),
+      } as PendingRequest;
 
-    localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-    setRequests(updated);
+      savePendingRequest(updatedReq);
+    }
     setEditingFalta(null);
   };
 
@@ -1679,18 +1851,7 @@ export default function PendingRequestsTab() {
       fotoUrl: compiledPdfUrl // Replace original heavy image with the complete compiled PDF URL
     } as PendingRequest;
 
-    const updated = requests.map(req => {
-      if (req.id === baixandoFalta.id) {
-        return updatedRequestObj;
-      }
-      return req;
-    });
-
-    localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-    setRequests(updated);
-
-    // Trigger local storage storage event
-    window.dispatchEvent(new Event("storage"));
+    savePendingRequest(updatedRequestObj);
 
     // Save to concludedBaixa to display the success copy path modal
     setConcludedBaixa(updatedRequestObj);
@@ -1703,23 +1864,19 @@ export default function PendingRequestsTab() {
 
   // Undoing "Dar Baixa" on shortage request if mistakes were made
   const handleReverterBaixaShortage = (id: string) => {
-    const updated = requests.map(req => {
-      if (req.id === id) {
-        return {
-          ...req,
-          faltaBaixa: false,
-          faltaBaixaDate: undefined,
-          faltaBaixaUser: undefined,
-          faltaBaixaReciboName: undefined,
-          faltaBaixaReciboUrl: undefined,
-          faltaBaixaReciboType: undefined,
-          faltaBaixaObs: undefined
-        } as PendingRequest;
-      }
-      return req;
-    });
-    localStorage.setItem("sstr_representative_pending_requests", JSON.stringify(updated));
-    setRequests(updated);
+    const targetReq = requests.find(r => r.id === id);
+    if (targetReq) {
+      savePendingRequest({
+        ...targetReq,
+        faltaBaixa: false,
+        faltaBaixaDate: undefined,
+        faltaBaixaUser: undefined,
+        faltaBaixaReciboName: undefined,
+        faltaBaixaReciboUrl: undefined,
+        faltaBaixaReciboType: undefined,
+        faltaBaixaObs: undefined
+      } as PendingRequest);
+    }
   };
 
   // Count active requests by status category
@@ -2131,46 +2288,135 @@ export default function PendingRequestsTab() {
         </div>
       </div>
 
-      {/* FOUR FILTER SUB-TABS */}
-      <div className="bg-slate-950 p-2 rounded-2xl border border-slate-850/80 flex flex-wrap gap-2 no-print">
+      {/* PROCESS TYPE BREAKDOWN DASHBOARD PANEL (Reposição vs. Troca vs. Contingências) */}
+      <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl space-y-3 text-left">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800 pb-2">
+          <div>
+            <h3 className="text-xs font-bold font-mono uppercase text-slate-300 flex items-center gap-1.5">
+              <Sliders className="w-4 h-4 text-indigo-400" />
+              <span>Dashboard Geral de Processos (Reposição vs. Troca)</span>
+            </h3>
+            <p className="text-[10px] text-slate-400">
+              Classificação por motivo do lançamento e liberação de Recibo PDV de Contingência
+            </p>
+          </div>
+          
+          {processTypeFilter !== "todos" && (
+            <button
+              onClick={() => setProcessTypeFilter("todos")}
+              className="text-[10px] font-mono text-indigo-400 hover:text-indigo-300 underline font-bold cursor-pointer"
+            >
+              Exibindo filtro: {processTypeFilter.toUpperCase()} (Limpar)
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Card 1: Reposição */}
+          <button
+            onClick={() => setProcessTypeFilter(processTypeFilter === "reposicao" ? "todos" : "reposicao")}
+            className={`p-3.5 rounded-xl text-left border transition-all cursor-pointer relative overflow-hidden ${
+              processTypeFilter === "reposicao"
+                ? "bg-indigo-950/80 border-indigo-500 shadow-lg shadow-indigo-950/50 ring-1 ring-indigo-500"
+                : "bg-slate-950/60 hover:bg-slate-950 border-slate-850 hover:border-slate-750"
+            }`}
+          >
+            <div className="flex justify-between items-start">
+              <span className="text-[10px] font-mono text-indigo-400 font-bold uppercase tracking-wider block">
+                📦 Reposição (Falta de Produto)
+              </span>
+              <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                {processSummary.reposicaoCount} reg.
+              </span>
+            </div>
+            <p className="text-lg font-black font-mono text-white mt-1">
+              {formatCurrency(processSummary.reposicaoVal)}
+            </p>
+            <span className="text-[9.5px] text-slate-400 block mt-1 font-sans leading-tight">
+              Lançamentos motivados oficialmente por falta de produto física na entrega/carga
+            </span>
+          </button>
+
+          {/* Card 2: Troca */}
+          <button
+            onClick={() => setProcessTypeFilter(processTypeFilter === "troca" ? "todos" : "troca")}
+            className={`p-3.5 rounded-xl text-left border transition-all cursor-pointer relative overflow-hidden ${
+              processTypeFilter === "troca"
+                ? "bg-emerald-950/80 border-emerald-500 shadow-lg shadow-emerald-950/50 ring-1 ring-emerald-500"
+                : "bg-slate-950/60 hover:bg-slate-950 border-slate-850 hover:border-slate-750"
+            }`}
+          >
+            <div className="flex justify-between items-start">
+              <span className="text-[10px] font-mono text-emerald-400 font-bold uppercase tracking-wider block">
+                🔁 Troca (Outros Motivos)
+              </span>
+              <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                {processSummary.trocaCount} reg.
+              </span>
+            </div>
+            <p className="text-lg font-black font-mono text-white mt-1">
+              {formatCurrency(processSummary.trocaVal)}
+            </p>
+            <span className="text-[9.5px] text-slate-400 block mt-1 font-sans leading-tight">
+              Avaria, inversão de SKU, data vencida, defeito, erro de pedido e qualidade
+            </span>
+          </button>
+
+          {/* Card 3: Exceto SKU Fechado / Recibo PDV Contingência */}
+          <button
+            onClick={() => setProcessTypeFilter(processTypeFilter === "troca_exceto_sku_fechado" ? "todos" : "troca_exceto_sku_fechado")}
+            className={`p-3.5 rounded-xl text-left border transition-all cursor-pointer relative overflow-hidden ${
+              processTypeFilter === "troca_exceto_sku_fechado"
+                ? "bg-amber-950/80 border-amber-500 shadow-lg shadow-amber-950/50 ring-1 ring-amber-500"
+                : "bg-slate-950/60 hover:bg-slate-950 border-slate-850 hover:border-slate-750"
+            }`}
+          >
+            <div className="flex justify-between items-start">
+              <span className="text-[10px] font-mono text-amber-400 font-bold uppercase tracking-wider block flex items-center gap-1">
+                <span>⚠️ Recibo PDV Contingência</span>
+              </span>
+              <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                {processSummary.excetoSkuFechadoCount} reg.
+              </span>
+            </div>
+            <p className="text-lg font-black font-mono text-white mt-1">
+              {formatCurrency(processSummary.excetoSkuFechadoVal)}
+            </p>
+            <span className="text-[9.5px] text-slate-400 block mt-1 font-sans leading-tight">
+              Aprovados com emissão de Recibo PDV (Exceto Falta SKU Fechado)
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {/* SIX FILTER SUB-TABS (ALIGNED GRID) */}
+      <div className="bg-slate-950 p-2 rounded-2xl border border-slate-850/80 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2 no-print">
         <button
           onClick={() => setActiveTab("pendente")}
-          className={`flex-grow md:flex-none px-5 py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 relative cursor-pointer ${
+          className={`w-full px-3.5 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 relative cursor-pointer truncate ${
             activeTab === "pendente"
               ? "bg-amber-600 text-white shadow-lg shadow-amber-900/20"
               : "bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-850 border border-slate-850"
           }`}
         >
-          <Clock className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
-          <span>⏳ Pendentes ({pendingCount})</span>
+          <Clock className="w-3.5 h-3.5 text-amber-400 animate-pulse shrink-0" />
+          <span className="truncate">Pendentes ({pendingCount})</span>
           {pendingCount > 0 && (
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 absolute top-2 right-2 animate-ping"></span>
           )}
         </button>
 
         <button
-          onClick={() => setActiveTab("cadastrado")}
-          className={`flex-grow md:flex-none px-5 py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${
-            activeTab === "cadastrado"
-              ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
-              : "bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-850 border border-slate-850"
-          }`}
-        >
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-          <span>✔️ Aprovadas ({approvedCount})</span>
-        </button>
-
-        <button
           onClick={() => setActiveTab("faltas_inversoes")}
-          className={`flex-grow md:flex-none px-5 py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 relative cursor-pointer ${
+          className={`w-full px-3.5 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 relative cursor-pointer truncate ${
             activeTab === "faltas_inversoes"
               ? "bg-indigo-600 text-white shadow-lg shadow-indigo-900/20"
               : "bg-slate-900 text-slate-400 hover:text-slate-205 hover:bg-slate-850 border border-slate-850"
           }`}
           title="Faltas de carregar ou entregar não faturadas"
         >
-          <Layers className="w-3.5 h-3.5 text-indigo-350" />
-          <span>📦 Faltas & Inversões ({lackActiveCount} ativas)</span>
+          <Layers className="w-3.5 h-3.5 text-indigo-350 shrink-0" />
+          <span className="truncate">Faltas/Inversões ({lackActiveCount})</span>
           {lackActiveCount > 0 && (
             <span className="px-1.5 py-0.5 bg-rose-600 text-[8.5px] font-mono text-white rounded-full absolute -top-1 -right-1 font-bold animate-pulse">
               {lackActiveCount}
@@ -2179,67 +2425,55 @@ export default function PendingRequestsTab() {
         </button>
 
         <button
-          onClick={() => setActiveTab("reprovado")}
-          className={`flex-grow md:flex-none px-5 py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${
-            activeTab === "reprovado"
-              ? "bg-red-650 text-white shadow-lg shadow-red-900/10 border border-red-900/35"
-              : "bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-850 border border-slate-850"
-          }`}
-        >
-          <XCircle className="w-3.5 h-3.5 text-red-500" />
-          <span>❌ Reprovadas ({rejectedCount})</span>
-        </button>
-
-        <button
           onClick={() => setActiveTab("historico_baixas")}
-          className={`flex-grow md:flex-none px-5 py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${
+          className={`w-full px-3.5 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer truncate ${
             activeTab === "historico_baixas"
               ? "bg-emerald-650 text-white shadow-lg shadow-emerald-950 border border-emerald-900/30"
               : "bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-850 border border-slate-850"
           }`}
           title="Consulte todos os recibos físicos digitados e liquidados com comprovante assinado"
         >
-          <FileText className="w-3.5 h-3.5 text-emerald-450" />
-          <span>📜 Histórico de Baixas ({lackHistoryCount})</span>
+          <FileText className="w-3.5 h-3.5 text-emerald-450 shrink-0" />
+          <span className="truncate">Histórico ({requests.length - pendingCount})</span>
         </button>
 
         <button
           onClick={() => setActiveTab("historico_vales")}
-          className={`flex-grow md:flex-none px-5 py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${
+          className={`w-full px-3.5 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer truncate ${
             activeTab === "historico_vales"
               ? "bg-amber-600 text-white shadow-lg shadow-amber-900/20 border border-amber-800"
               : "bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-850 border border-slate-850"
           }`}
           title="Consulte o financeiro de vales emitidos, rankings de equipes e reimpressões"
         >
-          <TrendingUp className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
-          <span>📈 Histórico de Vales ({valesHistorico.length})</span>
+          <TrendingUp className="w-3.5 h-3.5 text-amber-500 animate-pulse shrink-0" />
+          <span className="truncate">Vales ({valesHistorico.length})</span>
         </button>
 
         <button
           onClick={() => setActiveTab("criar_solicitacao")}
-          className={`flex-grow md:flex-none px-5 py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer relative ${
+          className={`w-full px-3.5 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer relative truncate ${
             activeTab === "criar_solicitacao"
               ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20 border border-emerald-550"
               : "bg-slate-900 text-slate-450 hover:text-slate-200 hover:bg-slate-850 border border-slate-850"
           }`}
           title="Criar nova solicitação de troca, falta ou reposição diretamente pelo controle"
         >
-          <PlusCircle className="w-3.5 h-3.5 text-emerald-450" />
-          <span>Criar Solicitação 🆕</span>
+          <PlusCircle className="w-3.5 h-3.5 text-emerald-450 shrink-0" />
+          <span className="truncate">Criar Solicitação 🆕</span>
         </button>
 
         <button
           onClick={() => setActiveTab("espelho")}
-          className={`flex-grow md:flex-none px-5 py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer relative ${
+          className={`w-full px-3.5 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer relative truncate ${
             activeTab === "espelho"
               ? "bg-indigo-600 text-white shadow-lg shadow-indigo-900/20 border border-indigo-550"
               : "bg-slate-900 text-slate-450 hover:text-slate-200 hover:bg-slate-850 border border-slate-850"
           }`}
           title="Consulte o espelho consolidado de reposições e trocas homologadas e liquidas do dia"
         >
-          <FileText className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Espelho do Dia 📋</span>
+          <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+          <span className="truncate">Espelho do Dia 📋</span>
         </button>
       </div>
 
@@ -2251,16 +2485,16 @@ export default function PendingRequestsTab() {
           <div className="bg-slate-900 p-4.5 rounded-2xl border border-slate-800 grid grid-cols-1 md:grid-cols-12 gap-3.5 text-left no-print">
             
             {/* Search bar */}
-            <div className="md:col-span-4 relative space-y-1">
+            <div className="md:col-span-3 relative space-y-1">
               <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Pesquisa de Documento:</span>
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 w-3.5 h-3.5" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-505 w-3.5 h-3.5" />
                 <input
                   type="text"
                   placeholder="NF, Código NB, Mapa, Solicitação..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 h-10 rounded-xl pl-9 pr-3 py-2 text-xs font-mono text-slate-200 placeholder:text-slate-650 placeholder:font-sans focus:outline-none focus:border-blue-500"
+                  className="w-full bg-slate-950 border border-slate-800 h-10 rounded-xl pl-9 pr-3 py-2 text-xs font-mono text-slate-205 placeholder:text-slate-650 placeholder:font-sans focus:outline-none focus:border-blue-500"
                 />
               </div>
             </div>
@@ -2294,12 +2528,12 @@ export default function PendingRequestsTab() {
             </div>
 
             {/* Sector filter */}
-            <div className="md:col-span-3 space-y-1">
+            <div className="md:col-span-2 space-y-1">
               <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Setor / Rota RN:</span>
               <select
                 value={sectorFilter}
                 onChange={(e) => setSectorFilter(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 h-10 text-xs text-slate-350 font-semibold cursor-pointer focus:outline-none"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 h-10 text-xs text-slate-350 font-semibold cursor-pointer focus:outline-none"
               >
                 <option value="todos">Todos os Setores</option>
                 {uniqueSectors.map(sec => {
@@ -2319,25 +2553,83 @@ export default function PendingRequestsTab() {
               </select>
             </div>
 
+            {/* Process Type filter */}
+            <div className="md:col-span-2 space-y-1">
+              <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Tipo de Processo:</span>
+              <select
+                value={processTypeFilter}
+                onChange={(e) => setProcessTypeFilter(e.target.value as any)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 h-10 text-xs text-slate-350 font-semibold cursor-pointer focus:outline-none"
+              >
+                <option value="todos">🔄 Todos os Cadastros</option>
+                <option value="reposicao">📦 Reposição (Falta Prod.)</option>
+                <option value="troca">🔁 Troca (Outros Motivos)</option>
+                <option value="troca_exceto_sku_fechado">⚠️ Exceto SKU Fechado</option>
+              </select>
+            </div>
+
             {/* Clear Button */}
             <div className="md:col-span-1">
-              {(searchTerm || startDate || endDate || sectorFilter !== "todos") ? (
+              {(searchTerm || startDate || endDate || sectorFilter !== "todos" || processTypeFilter !== "todos") ? (
                 <button
                   onClick={() => {
                     setSearchTerm("");
                     setStartDate("");
                     setEndDate("");
                     setSectorFilter("todos");
+                    setProcessTypeFilter("todos");
                   }}
-                  className="w-full h-10 bg-rose-950/60 hover:bg-rose-900 border border-rose-800/40 text-rose-300 text-[10px] font-mono font-bold rounded-xl cursor-pointer flex items-center justify-center transition-all hover:scale-[1.02]"
+                  className="w-full h-10 bg-rose-955/60 hover:bg-rose-900 border border-rose-800/40 text-rose-300 text-[10px] font-mono font-bold rounded-xl cursor-pointer flex items-center justify-center transition-all hover:scale-[1.02]"
                 >
                   Limpar
                 </button>
               ) : (
-                <div className="w-full h-10 border border-dashed border-slate-800 rounded-xl flex items-center justify-center text-[9px] text-slate-600 font-mono font-bold uppercase tracking-wider select-none">
+                <div className="w-full h-10 border border-dashed border-slate-800 rounded-xl flex items-center justify-center text-[9px] text-slate-605 font-mono font-bold uppercase tracking-wider select-none">
                   Ativos
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Requirement 4: Situation Status Filter bar for Histórico de Baixas */}
+        {activeTab === "historico_baixas" && (
+          <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-850 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-left animate-fade-in no-print">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
+              <div>
+                <span className="text-xs font-bold text-white font-mono block">
+                  Filtrar Situação do Histórico
+                </span>
+                <span className="text-[10px] text-slate-400 font-sans block">
+                  Selecione o estado do registro para consultar no histórico consolidado
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-mono">
+              {(
+                [
+                  { id: "todos", label: "📋 Todas as Ocorrências" },
+                  { id: "aprovados", label: "✅ Aprovadas / Promax" },
+                  { id: "reprovados", label: "❌ Reprovadas" },
+                  { id: "baixados", label: "🟢 Baixadas" },
+                  { id: "pendentes", label: "⏳ Pendentes" }
+                ] as const
+              ).map((st) => (
+                <button
+                  key={st.id}
+                  type="button"
+                  onClick={() => setHistoricoBaixasStatusFilter(st.id)}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer ${
+                    historicoBaixasStatusFilter === st.id
+                      ? "bg-emerald-600 text-white shadow-md shadow-emerald-950 border border-emerald-500"
+                      : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800 hover:bg-slate-850"
+                  }`}
+                >
+                  {st.label}
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -2518,14 +2810,15 @@ export default function PendingRequestsTab() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4.5">
                 {/* Sector */}
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Setor / RN:</label>
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">
+                    Setor / RN <span className="text-slate-500 font-normal text-[9px]">(Opcional)</span>:
+                  </label>
                   <select
                     value={reqSetor}
                     onChange={(e) => setReqSetor(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-10 text-xs font-semibold text-slate-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
-                    required
                   >
-                    <option value="">-- Selecione o Setor --</option>
+                    <option value="">-- Não especificar Setor (Opcional) --</option>
                     {repsArray.map(r => (
                       <option key={r.setor} value={r.setor}>
                         Setor {r.setor} ({r.nome})
@@ -2573,9 +2866,12 @@ export default function PendingRequestsTab() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4.5">
                 {/* Nota Fiscal */}
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Nota Fiscal (NF) <span className="text-slate-600 font-normal text-[9px]">(Opcional)</span>:</label>
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">
+                    Nota Fiscal (NF) <span className="text-red-500">*</span>:
+                  </label>
                   <input
                     type="text"
+                    required
                     placeholder="Ex: 123456"
                     value={reqNf}
                     onChange={(e) => setReqNf(e.target.value)}
@@ -2585,9 +2881,12 @@ export default function PendingRequestsTab() {
 
                 {/* Cliente NB */}
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Cód. Cliente (NB) <span className="text-slate-600 font-normal text-[9px]">(Opcional)</span>:</label>
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">
+                    Cód. Cliente (NB) <span className="text-red-500">*</span>:
+                  </label>
                   <input
                     type="text"
+                    required
                     placeholder="Ex: 504030"
                     value={reqNb}
                     onChange={(e) => setReqNb(e.target.value)}
@@ -2620,9 +2919,12 @@ export default function PendingRequestsTab() {
 
                 {/* Mapa de Carga */}
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Mapa de Carga:</label>
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">
+                    Mapa de Carga <span className="text-red-500">*</span>:
+                  </label>
                   <input
                     type="text"
+                    required
                     placeholder="Ex: 987"
                     value={reqMapa}
                     onChange={(e) => setReqMapa(e.target.value)}
@@ -2669,51 +2971,44 @@ export default function PendingRequestsTab() {
 
                 {/* Evidence Photo Section */}
                 <div className="border-t border-slate-900 pt-3.5">
-                  {reqMotiveType === "Falta de SKU Completo" ? (
-                    <div className="p-3 bg-blue-950/20 border border-blue-900/35 rounded-xl flex items-start gap-2 text-blue-400">
-                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 animate-pulse" />
-                      <div className="text-[10.5px] leading-relaxed">
-                        <span className="font-extrabold uppercase font-mono block">⚠️ Foto Dispensada para SKU Completo</span>
-                        Conforme regra operacional, solicitações de <strong>Falta de SKU Completo</strong> não necessitam de foto ou comprovante físico anexado, visto que não existe produto ou fragmento físico para ser registrado.
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block flex items-center gap-1.5">
-                        <span>📸 Foto da Evidência / Comprovante:</span>
-                        <span className="text-red-500 font-sans font-bold text-[9px] uppercase tracking-normal">(Obrigatório)</span>
-                      </span>
+                  <div className="space-y-2">
+                    <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block flex items-center gap-1.5">
+                      <span>📸 Foto da Evidência / Comprovante:</span>
+                      <span className="text-emerald-500 font-sans font-bold text-[9px] uppercase tracking-normal">(Opcional)</span>
+                    </span>
+                    <p className="text-[10.5px] text-slate-500 leading-normal">
+                      Anexar uma foto da evidência ou do comprovante físico é opcional para todos os motivos e serve apenas para maior rastreabilidade e auditoria.
+                    </p>
 
-                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                        <label className="h-10 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-350 hover:text-white px-4 rounded-xl cursor-pointer flex items-center justify-center gap-2 text-xs font-bold transition-all hover:scale-[1.01]">
-                          <Camera className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Tirar Foto / Anexar</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            capture="environment"
-                            onChange={handleImageCaptureInForm}
-                            className="hidden"
-                          />
-                        </label>
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mt-1.5">
+                      <label className="h-10 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-350 hover:text-white px-4 rounded-xl cursor-pointer flex items-center justify-center gap-2 text-xs font-bold transition-all hover:scale-[1.01]">
+                        <Camera className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Tirar Foto / Anexar</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          onChange={handleImageCaptureInForm}
+                          className="hidden"
+                        />
+                      </label>
 
-                        {reqFotoUrl && (
-                          <div className="flex items-center gap-2 p-1.5 px-3 bg-emerald-950/20 border border-emerald-900/25 rounded-xl max-w-sm">
-                            <img src={reqFotoUrl} className="w-7 h-7 object-cover rounded border border-emerald-900/30" alt="Evidência" />
-                            <span className="text-[10px] font-mono text-emerald-400 font-bold truncate max-w-[150px]">Foto capturada!</span>
-                            <button
-                              type="button"
-                              onClick={() => setReqFotoUrl("")}
-                              className="text-red-500 hover:text-red-400 p-1 cursor-pointer ml-auto"
-                              title="Remover foto"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
+                      {reqFotoUrl && (
+                        <div className="flex items-center gap-2 p-1.5 px-3 bg-emerald-950/20 border border-emerald-900/25 rounded-xl max-w-sm">
+                          <img src={reqFotoUrl} className="w-7 h-7 object-cover rounded border border-emerald-900/30" alt="Evidência" />
+                          <span className="text-[10px] font-mono text-emerald-400 font-bold truncate max-w-[150px]">Foto capturada!</span>
+                          <button
+                            type="button"
+                            onClick={() => setReqFotoUrl("")}
+                            className="text-red-500 hover:text-red-400 p-1 cursor-pointer ml-auto"
+                            title="Remover foto"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
               </div>
 
@@ -2840,7 +3135,7 @@ export default function PendingRequestsTab() {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
                     {/* SKU search */}
-                    <div className="md:col-span-8 space-y-1 relative">
+                    <div className="md:col-span-6 space-y-1 relative">
                       <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">SKU do Produto:</label>
                       <input
                         type="text"
@@ -2870,6 +3165,37 @@ export default function PendingRequestsTab() {
                           ))}
                         </div>
                       )}
+
+                      {/* Dynamic Price / Unit Preview */}
+                      {(() => {
+                        const productDef = PRODUCT_DATABASE.find(p => p.codigo === reqItem.trim());
+                        if (productDef) {
+                          const embalagem = productDef.fator || 12;
+                          const closedBoxPrice = productDef.valor || 98.50;
+                          const unitPrice = closedBoxPrice / embalagem;
+                          return (
+                            <div className="mt-1.5 p-1.5 px-2 bg-slate-900/40 border border-slate-850 rounded-xl text-[10px] text-slate-400 font-mono flex flex-wrap gap-x-3 gap-y-1 leading-relaxed">
+                              <span>📦 Embalagem: <strong>{embalagem} un</strong></span>
+                              <span>Sugerido (SKU): <strong className="text-emerald-400">R$ {closedBoxPrice.toFixed(2)}</strong></span>
+                              <span>Unitário (UND): <strong className="text-amber-500">R$ {unitPrice.toFixed(2)}</strong></span>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </div>
+
+                    {/* Unidade de Medida */}
+                    <div className="md:col-span-2 space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Unidade:</label>
+                      <select
+                        value={reqUnidade}
+                        onChange={(e) => setReqUnidade(e.target.value as "sku" | "und")}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 h-10 text-xs font-semibold text-slate-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                      >
+                        <option value="sku">SKU (Caixa)</option>
+                        <option value="und">UND (Unidade)</option>
+                      </select>
                     </div>
 
                     {/* Quantity */}
@@ -2880,7 +3206,7 @@ export default function PendingRequestsTab() {
                         placeholder="Ex: 5"
                         value={reqQuantidade}
                         onChange={(e) => setReqQuantidade(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 h-10 text-xs text-slate-205 placeholder:text-slate-700 font-mono focus:outline-none focus:border-emerald-500"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 h-10 text-xs text-slate-200 placeholder:text-slate-700 font-mono focus:outline-none focus:border-emerald-500"
                       />
                     </div>
 
@@ -2905,40 +3231,62 @@ export default function PendingRequestsTab() {
                       <thead>
                         <tr className="bg-slate-900/50 font-mono font-bold text-slate-500 text-[10px] uppercase tracking-wider">
                           <th className="px-4 py-2.5">SKU / Produto</th>
-                          <th className="px-4 py-2.5">Qtd</th>
-                          <th className="px-4 py-2.5">Motivo</th>
+                          <th className="px-4 py-2.5">Unidade</th>
+                          <th className="px-4 py-2.5 text-center">Qtd</th>
+                          <th className="px-4 py-2.5 text-right">Valor Unit.</th>
+                          <th className="px-4 py-2.5 text-right">Subtotal</th>
+                          <th className="px-4 py-2.5 pl-6">Motivo</th>
                           <th className="px-4 py-2.5 text-right">Ação</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-900">
-                        {reqDraftItems.map((item) => (
-                          <tr key={item.id} className="hover:bg-slate-900/30">
-                            <td className="px-4 py-2.5">
-                              <span className="font-mono font-bold text-emerald-450">{item.itemCode}</span>
-                              <span className="text-slate-400 ml-2 block sm:inline truncate max-w-[250px]">{item.itemDesc}</span>
-                            </td>
-                            <td className="px-4 py-2.5 font-mono font-bold text-slate-200">
-                              {item.quantidade} <span className="text-[10px] text-slate-500 font-normal">
-                                {item.motivo && item.motivo.toLowerCase().includes("falta de sku completo") ? "cx" : "un"}
-                              </span>
-                            </td>
-                            <td className="px-4 py-2.5">
-                              <span className="p-0.5 px-2 bg-slate-900 border border-slate-800 rounded font-bold text-[10px] text-amber-500 font-mono">
-                                {item.motivo}
-                              </span>
-                            </td>
-                            <td className="px-4 py-2.5 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveReqDraftItem(item.id)}
-                                className="text-red-500 hover:text-red-400 p-1 rounded hover:bg-slate-900/60 cursor-pointer inline-flex items-center"
-                                title="Excluir item"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                        {reqDraftItems.map((item) => {
+                          const isUnd = item.unidadeMedida === "und";
+                          const embalagem = item.fatorEmbalagem || 12;
+                          const precoSugerido = item.precoSugerido || 98.50;
+                          const valUnit = isUnd ? (precoSugerido / embalagem) : precoSugerido;
+                          const subtotal = item.precoCalculated || (valUnit * item.quantidade);
+
+                          return (
+                            <tr key={item.id} className="hover:bg-slate-900/30">
+                              <td className="px-4 py-2.5">
+                                <span className="font-mono font-bold text-emerald-400">{item.itemCode}</span>
+                                <span className="text-slate-400 ml-2 block sm:inline truncate max-w-[200px]" title={item.itemDesc}>{item.itemDesc}</span>
+                              </td>
+                              <td className="px-4 py-2.5 font-mono text-[10px]">
+                                {isUnd ? (
+                                  <span className="p-1 px-1.5 bg-blue-950/40 border border-blue-900/50 rounded text-blue-400 font-bold">UND</span>
+                                ) : (
+                                  <span className="p-1 px-1.5 bg-emerald-950/40 border border-emerald-900/50 rounded text-emerald-400 font-bold">SKU</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-2.5 text-center font-mono font-bold text-slate-200">
+                                {item.quantidade}
+                              </td>
+                              <td className="px-4 py-2.5 text-right font-mono text-slate-350">
+                                R$ {valUnit.toFixed(2)}
+                              </td>
+                              <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-450">
+                                R$ {subtotal.toFixed(2)}
+                              </td>
+                              <td className="px-4 py-2.5 pl-6">
+                                <span className="p-0.5 px-2 bg-slate-900 border border-slate-800 rounded font-bold text-[10px] text-amber-500 font-mono block whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px]" title={item.motivo}>
+                                  {item.motivo}
+                                </span>
+                              </td>
+                              <td className="px-4 py-2.5 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveReqDraftItem(item.id)}
+                                  className="text-red-500 hover:text-red-400 p-1 rounded hover:bg-slate-900/60 cursor-pointer inline-flex items-center"
+                                  title="Excluir item"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -2988,6 +3336,7 @@ export default function PendingRequestsTab() {
               vales={valesHistorico} 
               onReimprimir={(vale) => setSelectedPrintDoc({ type: "vale", request: vale.originalRequest })} 
               onDeleteSingleVale={handleDeleteSingleVale}
+              onUpdateValeStatus={handleUpdateValeStatus}
             />
           </div>
         ) : activeTab === "espelho" ? (
@@ -3067,12 +3416,13 @@ export default function PendingRequestsTab() {
                       <th className="p-3">MAPA / NF</th>
                       <th className="p-3">CANAL</th>
                       <th className="p-3">HORÁRIO APROV.</th>
+                      <th className="p-3 text-center">AÇÃO</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-850">
                     {espelhoFiltrado.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="p-8 text-center text-slate-500 font-mono text-xs italic">
+                        <td colSpan={8} className="p-8 text-center text-slate-500 font-mono text-xs italic">
                           Nenhuma reposição/troca foi localizada com o status "Aprovada/Cadastrada" para a data {filterEspelhoDate}.
                         </td>
                       </tr>
@@ -3100,6 +3450,16 @@ export default function PendingRequestsTab() {
                           <td className="p-3 font-mono text-[10.5px] text-indigo-400 font-semibold uppercase">{item.solicitante}</td>
                           <td className="p-3 text-slate-400 font-mono text-[10.5px]">
                             {item.cadastroDate ? item.cadastroDate.split(" ")[1] || "---" : "---"}
+                          </td>
+                          <td className="p-3 text-center">
+                            <button
+                              onClick={() => handleDeleteApprovedItem(item.requestId, item.productCode)}
+                              className="px-2 py-1 bg-red-950/80 hover:bg-red-900 border border-red-800/60 rounded text-red-300 text-[10px] font-bold font-mono transition-colors cursor-pointer flex items-center justify-center gap-1 mx-auto"
+                              title="Excluir item do Espelho do Dia e do sistema"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Excluir</span>
+                            </button>
                           </td>
                         </tr>
                       ))
@@ -3183,22 +3543,41 @@ export default function PendingRequestsTab() {
                           )}
                         </div>
                       ) : (
-                        req.statusPromax === "cadastrado" ? (
-                          <span className="px-2 py-0.5 bg-emerald-950/60 border border-emerald-900/55 rounded-full text-[9px] font-bold font-mono text-emerald-400 flex items-center gap-1 shrink-0">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-450" />
-                            <span>Promax Ok</span>
-                          </span>
-                        ) : req.statusPromax === "reprovado" ? (
-                          <span className="px-2 py-0.5 bg-red-950/60 border border-red-900/55 rounded-full text-[9px] font-bold font-mono text-red-400 flex items-center gap-1 shrink-0">
-                            <XCircle className="w-3 h-3 text-red-450" />
-                            <span>Reprovado</span>
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 bg-amber-950 text-amber-450 border border-amber-900/60 text-[9px] font-bold font-mono rounded-full flex items-center gap-1 shrink-0">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
-                            <span>Pendente</span>
-                          </span>
-                        )
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          {req.statusPromax === "cadastrado" ? (
+                            <span className="px-2 py-0.5 bg-emerald-950/60 border border-emerald-900/55 rounded-full text-[9px] font-bold font-mono text-emerald-400 flex items-center gap-1 shrink-0">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-450" />
+                              <span>Promax Ok</span>
+                            </span>
+                          ) : req.statusPromax === "reprovado" ? (
+                            <span className="px-2 py-0.5 bg-red-950/60 border border-red-900/55 rounded-full text-[9px] font-bold font-mono text-red-400 flex items-center gap-1 shrink-0">
+                              <XCircle className="w-3 h-3 text-red-450" />
+                              <span>Reprovado</span>
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-amber-950 text-amber-450 border border-amber-900/60 text-[9px] font-bold font-mono rounded-full flex items-center gap-1 shrink-0">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                              <span>Pendente</span>
+                            </span>
+                          )}
+
+                          {/* Process Type Badge */}
+                          {isReposicaoReq(req) ? (
+                            <span className="text-[7.5px] uppercase font-bold font-mono text-indigo-300 bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-800/40" title="Reposição por Falta de Produto">
+                              📦 Reposição
+                            </span>
+                          ) : (
+                            <span className="text-[7.5px] uppercase font-bold font-mono text-emerald-300 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/40" title="Troca (Avaria/Inversão/Outros Motivos)">
+                              🔁 Troca
+                            </span>
+                          )}
+
+                          {!isFaltaSkuCompletoReq(req) && (
+                            <span className="text-[7.5px] uppercase font-bold font-mono text-amber-400 bg-amber-955/40 px-1.5 py-0.5 rounded border border-amber-800/40" title="Elegível para Recibo PDV de Contingência">
+                              ⚠️ Contingência
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
 
@@ -3246,10 +3625,19 @@ export default function PendingRequestsTab() {
                                     <span className="text-slate-200 font-bold max-w-[170px] break-words whitespace-normal leading-tight">
                                       #{sub.item} - <span className="font-sans font-medium text-slate-400">{sub.descricao || "Item SSTR"}</span>
                                     </span>
-                                    <strong className="text-emerald-400 whitespace-nowrap">{sub.quantidade} cx</strong>
+                                    <strong className="text-emerald-400 whitespace-nowrap">
+                                      {sub.quantidade} {sub.unidadeMedida ? sub.unidadeMedida.toUpperCase() : "cx"}
+                                    </strong>
                                   </div>
                                   <div className="flex justify-between text-[8.5px] text-slate-500">
-                                    <span>Hl: <strong className="text-amber-500 font-semibold">{sub.hectolitros?.toFixed(4) || "0.0000"}</strong></span>
+                                    <span>
+                                      Hl: <strong className="text-amber-500 font-semibold">{sub.hectolitros?.toFixed(4) || "0.0000"}</strong>
+                                      {sub.precoCalculated !== undefined && (
+                                        <span className="ml-1.5 border-l border-slate-850 pl-1.5">
+                                          Val: <strong className="text-emerald-400 font-bold">R$ {sub.precoCalculated.toFixed(2)}</strong>
+                                        </span>
+                                      )}
+                                    </span>
                                     <span>Motivo: <strong className={isItemShort ? "text-red-400" : isSwapItem ? "text-indigo-400" : "text-blue-400"}>{sub.motivo}</strong></span>
                                   </div>
                                   
@@ -3325,30 +3713,76 @@ export default function PendingRequestsTab() {
                       )}
                     </div>
 
-                    {/* Evidence and photo link */}
-                    {req.fotoUrl && (
-                      <div className="relative group bg-slate-950 p-2 rounded-xl border border-slate-850 flex items-center gap-3 select-none text-left">
-                        <img 
-                          src={req.fotoUrl} 
-                          alt="Pre visualizacao" 
-                          className="w-11 h-11 object-cover rounded-md border border-slate-800 shrink-0"
-                          referrerPolicy="no-referrer"
-                        />
-                        <div className="text-[10px] leading-relaxed">
-                          <span className="text-slate-500 font-semibold block uppercase tracking-wider text-[8px] font-sans">Evidência anexada:</span>
-                          <span className="text-slate-300 italic font-mono block max-w-[140px] truncate">
-                            "{req.observacao || "Sem observações..."}"
-                          </span>
+                    {/* Photo Evidence Box for Control/Management (Visible while request has an image attached) */}
+                    {req.fotoUrl && !req.fotoUrl.toLowerCase().endsWith(".pdf") && (req.fotoUrl.startsWith("data:image") || req.fotoUrl.startsWith("http") || req.fotoUrl.startsWith("blob:") || req.fotoUrl.startsWith("/")) && (
+                      <div className="relative group bg-slate-950 p-2.5 rounded-xl border border-slate-850 flex items-center justify-between gap-3 text-left font-mono">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <img 
+                            src={req.fotoUrl} 
+                            alt="Evidência anexada" 
+                            className="w-11 h-11 object-cover rounded-lg border border-slate-800 shrink-0 cursor-pointer hover:opacity-90 transition-opacity"
+                            onClick={() => setZoomPhoto(req.fotoUrl)}
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="text-[10px] leading-relaxed min-w-0 flex-1">
+                            <span className="text-amber-400 font-extrabold uppercase tracking-wider block text-[8.5px] font-sans">
+                              📷 Evidência Anexada (Pendência):
+                            </span>
+                            <span className="text-slate-300 italic block truncate max-w-[180px] font-medium text-[9.5px]">
+                              "{req.observacao || "Foto enviada pelo solicitante"}"
+                            </span>
+                          </div>
                         </div>
                         <button 
+                          type="button"
                           onClick={() => setZoomPhoto(req.fotoUrl)}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 bg-slate-900 hover:bg-slate-850 rounded-md border border-slate-800 text-blue-400 cursor-pointer transition-transform"
-                          title="Visualizar tela cheia"
+                          className="p-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-blue-400 hover:text-white cursor-pointer transition-colors flex items-center gap-1 shrink-0 text-[9px] font-bold"
+                          title="Visualizar foto em tela cheia"
                         >
-                          <Eye className="w-3 h-3" />
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Ampliar</span>
                         </button>
                       </div>
                     )}
+
+                    {/* Shared Network Folder & Official PDF Info Box */}
+                    <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-850 space-y-2 text-left font-mono">
+                      <div className="flex items-center justify-between text-slate-400 border-b border-slate-900 pb-1.5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span className="font-bold text-slate-200 text-[10px] truncate">
+                            {req.pdfFilename || generatePdfFilename(req.mapa, req.nb, req.nf, req.data)}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => exportRegistrationPdf(req, { autoDownload: true })}
+                          className="text-[9px] text-blue-400 hover:text-blue-300 font-bold underline cursor-pointer shrink-0 ml-1"
+                          title="Baixar cópia do PDF com informações e foto anexada"
+                        >
+                          Re-gerar/Baixar PDF
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[9px] text-slate-400 pt-0.5">
+                        <span className="truncate max-w-[180px] font-medium text-slate-300" title={req.pdfFilePath || `${NETWORK_REGISTROS_PATH}\\${generatePdfFilename(req.mapa, req.nb, req.nf, req.data)}`}>
+                          📂 {req.pdfFilePath || `${NETWORK_REGISTROS_PATH}\\${generatePdfFilename(req.mapa, req.nb, req.nf, req.data)}`}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const fullPath = req.pdfFilePath || `${NETWORK_REGISTROS_PATH}\\${generatePdfFilename(req.mapa, req.nb, req.nf, req.data)}`;
+                            navigator.clipboard.writeText(fullPath);
+                            alert("✅ Caminho da pasta compartilhada copiado:\n" + fullPath);
+                          }}
+                          className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded text-emerald-400 hover:text-white cursor-pointer transition-colors flex items-center gap-1 shrink-0 text-[9px] font-bold"
+                          title="Copiar caminho para colar no Explorador de Arquivos"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>Copiar</span>
+                        </button>
+                      </div>
+                    </div>
 
                     {/* Low checkmared details info */}
                     {(activeTab === "faltas_inversoes" || activeTab === "historico_baixas") && cast.faltaBaixa && (
@@ -3450,7 +3884,7 @@ export default function PendingRequestsTab() {
                           {(() => {
                             const isReqInversion = (req.motivo && (req.motivo.toLowerCase().includes("inver") || req.motivo.toLowerCase().includes("troca"))) || 
                               (req.items && req.items.some((it: any) => it.produtoAhEnviar || it.produtoARecolher));
-                            const canPrintRecibo = !!cast.faltaTipoErro || !!isReqInversion;
+                            const canPrintRecibo = !isFaltaSkuCompletoReq(req) || !!cast.faltaTipoErro || !!isReqInversion;
                             return (
                               <button
                                 onClick={() => setSelectedPrintDoc({ type: "recibo", request: req })}
@@ -3460,7 +3894,7 @@ export default function PendingRequestsTab() {
                                     ? "bg-slate-950 hover:bg-slate-855 border border-slate-800 text-blue-400 cursor-pointer" 
                                     : "bg-slate-950/40 border border-slate-900 text-slate-600 cursor-not-allowed"
                                 }`}
-                                title={canPrintRecibo ? "Gerar recibo de entrega timbrado Ambev para o PDV assinar" : "Classifique o erro primeiro para gerar o recibo de faltas"}
+                                title={canPrintRecibo ? "Gerar recibo de entrega timbrado Ambev para o PDV assinar" : "Indisponível apenas para Falta de SKU Fechado sem classificação"}
                               >
                                 <Printer className="w-3.5 h-3.5 text-blue-550" />
                                 <span>Recibo PDV</span>
@@ -3534,8 +3968,21 @@ export default function PendingRequestsTab() {
                             Aguardando Correção pelo RN
                           </div>
                         ) : (
-                          <div className="py-1.5 px-3 bg-slate-950 border border-slate-850/60 text-slate-500 rounded-lg text-[10px] font-mono shrink-0">
-                            Lançado por: <strong className="text-slate-350">{req.cadastroUser}</strong>
+                          <div className="flex items-center justify-between gap-2 w-full pt-1 border-t border-slate-850/50">
+                            <div className="py-1 px-2.5 bg-slate-950 border border-slate-850/60 text-slate-500 rounded-lg text-[9.5px] font-mono shrink-0">
+                              Lançado por: <strong className="text-slate-350">{req.cadastroUser}</strong>
+                            </div>
+
+                            {!isFaltaSkuCompletoReq(req) && (
+                              <button
+                                onClick={() => setSelectedPrintDoc({ type: "recibo", request: req })}
+                                className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
+                                title="Gerar Recibo PDV em Contingência para este cadastro aprovado"
+                              >
+                                <Printer className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Recibo PDV ⚠️</span>
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -3598,7 +4045,7 @@ export default function PendingRequestsTab() {
                         {sub.produtoAhEnviar ? (
                           <span>🔄 Enviar: {sub.produtoAhEnviar} | Recolher: {sub.produtoARecolher}</span>
                         ) : (
-                          <span>📦 SKU: {sub.item} - {sub.descricao || "Falta"} (Qtd: {sub.quantidade})</span>
+                          <span>📦 SKU: {sub.item} - {sub.descricao || "Falta"} (Qtd: {sub.quantidade} {sub.unidadeMedida ? sub.unidadeMedida.toUpperCase() : "cx"})</span>
                         )}
                       </li>
                     ))}
@@ -4135,6 +4582,14 @@ export default function PendingRequestsTab() {
 
               <div className="flex gap-2">
                 <button
+                  onClick={handleSavePrintDocEdits}
+                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-extrabold cursor-pointer flex items-center gap-1.5 shadow"
+                  title="Salvar edições de peças, unidade ou valores no banco de dados"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+                  <span>Salvar Alterações</span>
+                </button>
+                <button
                   onClick={() => setSelectedPrintDoc(null)}
                   className="px-4 py-1.5 bg-slate-950 hover:bg-slate-850 border border-slate-850 text-slate-400 hover:text-white rounded-xl text-xs font-bold cursor-pointer"
                 >
@@ -4272,7 +4727,7 @@ export default function PendingRequestsTab() {
               </div>
 
               {/* TITLE OF DOCUMENT */}
-              <div className="my-6 text-center space-y-1 bg-slate-100 py-3 rounded border border-slate-300">
+              <div className="my-5 text-center space-y-1 bg-slate-100 py-3 rounded border border-slate-300">
                 {isVale ? (
                   <>
                     <h1 className="text-md font-extrabold uppercase tracking-wide">AUTO DE COBRANÇA REPOSIÇÃO - VALE EQUIPE LOGÍSTICA</h1>
@@ -4280,11 +4735,26 @@ export default function PendingRequestsTab() {
                   </>
                 ) : (
                   <>
-                    <h1 className="text-md font-extrabold uppercase tracking-wide">RECIBO DE COMPROVAÇÃO DE ENTREGA DE PRODUTO</h1>
-                    <p className="text-[10px] uppercase font-bold text-blue-700">CONTROLE DE COMPENSAÇÃO FÍSICA SSTR (ANOMALIA DE CONFORMIDADE)</p>
+                    <h1 className="text-md font-extrabold uppercase tracking-wide">RECIBO DE COMPROVAÇÃO DE ENTREGA DE PRODUTO (PDV)</h1>
+                    <p className="text-[10px] uppercase font-bold text-blue-700">CONTROLE DE COMPENSAÇÃO FÍSICA SSTR - PAU BRASIL DISTRIBUIDORA AMBEV</p>
                   </>
                 )}
               </div>
+
+              {/* CONTINGENCY ALERT BANNER FOR RECIBO PDV */}
+              {!isVale && !isFaltaSkuCompletoReq(req) && (
+                <div className="my-3 p-3 border-2 border-amber-600 bg-amber-50 rounded text-center font-sans">
+                  <span className="block text-xs font-extrabold uppercase text-amber-900 tracking-wider">
+                    ⚠️ RECIBO GERADO EM CONTINGÊNCIA - SSTR AMBEV
+                  </span>
+                  <p className="text-[10px] font-bold text-amber-800 mt-0.5">
+                    Comprovante impresso em contingência para acerto/conferência física no PDV. Tipo de Processo:{" "}
+                    <strong className="uppercase font-mono text-black">
+                      {isReposicaoReq(req) ? "REPOSIÇÃO (FALTA DE PRODUTO)" : "TROCA / ANOMALIA COMERCIAL"}
+                    </strong>
+                  </p>
+                </div>
+              )}
 
               {/* IS VALE DECLARATION TERM */}
               {isVale && (
@@ -4414,95 +4884,133 @@ export default function PendingRequestsTab() {
 
               {/* PRODUCT LACK LISTING TABLE */}
               <div className="mb-6">
-                <span className="text-slate-500 uppercase font-bold text-[9.5px] block pb-1 mb-2 tracking-wider">Produtos Associados à Reposição / Falta:</span>
+                <div className="flex justify-between items-center pb-1 mb-2">
+                  <span className="text-slate-500 uppercase font-bold text-[9.5px] tracking-wider">Produtos Associados à Reposição / Falta:</span>
+                  <span className="text-[10px] text-indigo-600 font-bold font-mono no-print">✏️ Edição Habilitada (Qtd, Unidade, Preço)</span>
+                </div>
                 <table className="w-full text-xs font-sans border-collapse border border-gray-300 text-left">
                   <thead>
                     <tr className="bg-slate-100 border-b border-gray-300">
                       <th className="p-2.5 border-r border-gray-300">Código Item</th>
                       <th className="p-2.5 border-r border-gray-300">Descrição Comercial do SKU</th>
-                      <th className="p-2.5 border-r border-gray-300 text-center">Quantidade</th>
+                      <th className="p-2.5 border-r border-gray-300 text-center">Quantidade / Unidade</th>
                       <th className="p-2.5 border-r border-gray-300 text-center">Volume Hectolitros</th>
                       {isVale && <th className="p-2.5 text-right">Preço Unit.</th>}
                       {isVale && <th className="p-2.5 text-right">Total R$</th>}
                     </tr>
                   </thead>
                   <tbody>
-                    {printableItems.map((sub, index) => {
-                      const isSwap = !!sub.produtoAhEnviar || !!sub.produtoARecolher;
-                      const entregarInfo = isSwap ? parseProductString(sub.produtoAhEnviar, sub.quantidade) : null;
-                      const recolherInfo = isSwap ? parseProductString(sub.produtoARecolher, sub.quantidade) : null;
-                      
-                      const itemCode = entregarInfo ? entregarInfo.code : sub.item;
-                      const itemDesc = entregarInfo ? entregarInfo.name : sub.descricao;
-                      const itemQty = entregarInfo ? entregarInfo.qty : sub.quantidade;
+                    {(() => {
+                      const itemsToRender = printDocItems.length > 0 ? printDocItems : printableItems;
+                      return itemsToRender.map((sub, index) => {
+                        const isSwap = !!sub.produtoAhEnviar || !!sub.produtoARecolher;
+                        const entregarInfo = isSwap ? parseProductString(sub.produtoAhEnviar, sub.quantidade) : null;
+                        const recolherInfo = isSwap ? parseProductString(sub.produtoARecolher, sub.quantidade) : null;
+                        
+                        const itemCode = entregarInfo ? entregarInfo.code : (sub.item || sub.itemCode || "SKU_GENERIC");
+                        const itemDesc = entregarInfo ? entregarInfo.name : (sub.descricao || sub.productDesc || "PRODUTO SSTR");
+                        const itemQty = Number(sub.quantidade) || 1;
 
-                      const itemUnitPrice = promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 98.50;
-                      
-                      // Check if it is a "Falta de SKU" or "Falta no SKU" or contains "falta" and "sku" (e.g. "Falta de SKU Completo", "Falta de SKU Fechado")
-                      const subMotiveLower = (sub.motivo || "").toLowerCase();
-                      const reqMotiveLower = (req.motivo || "").toLowerCase();
-                      const isFaltaDeSkuItem = 
-                        (subMotiveLower.includes("falta") && subMotiveLower.includes("sku")) ||
-                        (reqMotiveLower.includes("falta") && reqMotiveLower.includes("sku")) ||
-                        subMotiveLower.includes("sku") ||
-                        reqMotiveLower.includes("sku") ||
-                        subMotiveLower.includes("fechado") ||
-                        reqMotiveLower.includes("fechado");
+                        const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
+                        const embalagem = dbProduct?.embalagem || 12;
 
-                      const rawItemUm = promaxRecords.find(r => r.produto === itemCode)?.um || "cx";
-                      const itemUm = isFaltaDeSkuItem ? "sku" : rawItemUm;
-                      
-                      return (
-                        <React.Fragment key={sub.id || index}>
-                          <tr className="border-b border-gray-300">
-                            <td className="p-2.5 border-r border-gray-300 font-mono font-bold">{itemCode}</td>
-                            <td className="p-2.5 border-r border-gray-300 uppercase shrink-0 font-medium font-sans">
-                              {itemDesc || "Item Solicitado no SSTR"}
-                              {isSwap && <span className="font-bold text-amber-600 text-[10px] block font-sans">🔄 SKU COMPENSADO DE INVERSÃO</span>}
-                            </td>
-                            <td className="p-2.5 border-r border-gray-300 text-center font-bold font-mono">
-                              {itemQty} {itemUm}
-                            </td>
-                            <td className="p-2.5 border-r border-gray-300 text-center font-mono">{(sub.hectolitros || 0).toFixed(4)} HL</td>
-                            {isVale && <td className="p-2.5 text-right font-mono">{formatCurrency(itemUnitPrice)}</td>}
-                            {isVale && <td className="p-2.5 text-right font-mono font-bold">{formatCurrency(itemUnitPrice * itemQty)}</td>}
-                          </tr>
-                          
-                          {/* INVERSION SWAP EXPLICIT BLOCK */}
-                          {isSwap && recolherInfo && entregarInfo && (
-                            <tr className="bg-amber-50/45 border-b border-gray-300">
-                              <td colSpan={isVale ? 6 : 4} className="p-2 text-[10.5px] font-sans leading-relaxed pl-6">
-                                <div className="border-l-4 border-amber-500 pl-3.5 space-y-1">
-                                  <p className="text-amber-700 font-bold uppercase text-[9px] tracking-wide">COMPROVAÇÃO DE INVERSÃO LOGÍSTICA:</p>
-                                  <p>⬅️ <strong className="text-slate-700">MERCADORIA RECUSADA / A RECOLHER:</strong> SKU: <strong className="font-mono text-black">#{recolherInfo.code}</strong> - {recolherInfo.name} <span className="font-mono font-bold text-black border-b border-dashed border-black pb-0.5 select-all">(Qtd: {recolherInfo.qty} {isFaltaDeSkuItem ? "sku" : (promaxRecords.find(r => r.produto === recolherInfo.code)?.um || "cx")})</span></p>
-                                  <p>➡️ <strong className="text-slate-700">MERCADORIA CORRETA ENVIADA / A ENTREGAR (A NOTA ORIGINAL):</strong> SKU: <strong className="font-mono text-black">#{entregarInfo.code}</strong> - {entregarInfo.name} <span className="font-mono font-bold text-black border-b border-dashed border-black pb-0.5 select-all">(Qtd: {entregarInfo.qty} {isFaltaDeSkuItem ? "sku" : (promaxRecords.find(r => r.produto === entregarInfo.code)?.um || "cx")})</span></p>
+                        const baseBoxPrice = Number(sub.customUnitPrice) || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 98.50;
+                        const isUnd = (sub.unidadeMedida || "").toLowerCase() === "und";
+
+                        // Calculate unit price and total price accounting for UND vs CX/SKU
+                        const actualUnitPrice = isUnd ? (baseBoxPrice / embalagem) : baseBoxPrice;
+                        const itemTotalValue = itemQty * actualUnitPrice;
+
+                        return (
+                          <React.Fragment key={sub.id || index}>
+                            <tr className="border-b border-gray-300">
+                              <td className="p-2.5 border-r border-gray-300 font-mono font-bold">{itemCode}</td>
+                              <td className="p-2.5 border-r border-gray-300 uppercase shrink-0 font-medium font-sans">
+                                {itemDesc}
+                                {isSwap && <span className="font-bold text-amber-600 text-[10px] block font-sans">🔄 SKU COMPENSADO DE INVERSÃO</span>}
+                              </td>
+                              <td className="p-2.5 border-r border-gray-300 text-center font-bold font-mono">
+                                <div className="flex items-center justify-center gap-1">
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    value={itemQty}
+                                    onChange={(e) => handleUpdatePrintDocItem(index, "quantidade", Number(e.target.value))}
+                                    className="w-16 text-center border border-gray-300 rounded font-mono font-bold bg-amber-50/50 hover:bg-amber-100 focus:bg-white text-xs py-0.5 no-print-border"
+                                  />
+                                  <select
+                                    value={sub.unidadeMedida || "cx"}
+                                    onChange={(e) => handleUpdatePrintDocItem(index, "unidadeMedida", e.target.value)}
+                                    className="bg-amber-50 border border-gray-300 rounded text-[10px] font-mono font-bold py-0.5 px-1 no-print-border uppercase"
+                                  >
+                                    <option value="cx">CX / SKU</option>
+                                    <option value="und">UND</option>
+                                  </select>
                                 </div>
                               </td>
+                              <td className="p-2.5 border-r border-gray-300 text-center font-mono font-bold text-indigo-950">
+                                {(Number(sub.hectolitros) || 0).toFixed(4)} HL
+                              </td>
+                              {isVale && (
+                                <td className="p-2.5 text-right font-mono">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={baseBoxPrice}
+                                    onChange={(e) => handleUpdatePrintDocItem(index, "customUnitPrice", Number(e.target.value))}
+                                    className="w-20 text-right border border-gray-300 rounded font-mono text-xs py-0.5 px-1 bg-amber-50/50 hover:bg-amber-100 focus:bg-white no-print-border"
+                                  />
+                                </td>
+                              )}
+                              {isVale && <td className="p-2.5 text-right font-mono font-bold">{formatCurrency(itemTotalValue)}</td>}
                             </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
+                            
+                            {/* INVERSION SWAP EXPLICIT BLOCK */}
+                            {isSwap && recolherInfo && entregarInfo && (
+                              <tr className="bg-amber-50/45 border-b border-gray-300">
+                                <td colSpan={isVale ? 6 : 4} className="p-2 text-[10.5px] font-sans leading-relaxed pl-6">
+                                  <div className="border-l-4 border-amber-500 pl-3.5 space-y-1">
+                                    <p className="text-amber-700 font-bold uppercase text-[9px] tracking-wide">COMPROVAÇÃO DE INVERSÃO LOGÍSTICA:</p>
+                                    <p>⬅️ <strong className="text-slate-700">MERCADORIA RECUSADA / A RECOLHER:</strong> SKU: <strong className="font-mono text-black">#{recolherInfo.code}</strong> - {recolherInfo.name} <span className="font-mono font-bold text-black border-b border-dashed border-black pb-0.5 select-all">(Qtd: {recolherInfo.qty})</span></p>
+                                    <p>➡️ <strong className="text-slate-700">MERCADORIA CORRETA ENVIADA / A ENTREGAR (A NOTA ORIGINAL):</strong> SKU: <strong className="font-mono text-black">#{entregarInfo.code}</strong> - {entregarInfo.name} <span className="font-mono font-bold text-black border-b border-dashed border-black pb-0.5 select-all">(Qtd: {entregarInfo.qty})</span></p>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      });
+                    })()}
                   </tbody>
                   <tfoot>
-                    <tr className="bg-slate-50 font-bold border-t border-gray-400">
-                      <td colSpan={2} className="p-2.5 text-right">TOTAIS DA CARGA COMPENSADA:</td>
-                      <td className="p-2.5 text-center font-mono">
-                        {printableItems.reduce((s, c) => s + c.quantidade, 0)} {
-                          (() => {
-                            const requestMotiveLower = (req.motivo || "").toLowerCase();
-                            const hasFaltaDeSkuOverall = (requestMotiveLower.includes("falta") && requestMotiveLower.includes("sku")) || 
-                              printableItems.some(item => {
-                                const mLower = (item.motivo || "").toLowerCase();
-                                return mLower.includes("falta") && mLower.includes("sku");
-                              });
-                            return hasFaltaDeSkuOverall ? "sku" : "cx";
-                          })()
-                        }
-                      </td>
-                      <td className="p-2.5 text-center font-mono">{(req.hectolitros || printableItems.reduce((s, c) => s + (c.hectolitros || 0), 0)).toFixed(4)} HL</td>
-                      {isVale && <td colSpan={2} className="p-2.5 text-right font-mono text-rose-700">{formatCurrency(totalPricingValue)}</td>}
-                    </tr>
+                    {(() => {
+                      const itemsToRender = printDocItems.length > 0 ? printDocItems : printableItems;
+                      const totalQty = itemsToRender.reduce((s, c) => s + Number(c.quantidade || 0), 0);
+                      const totalHl = itemsToRender.reduce((s, c) => s + Number(c.hectolitros || 0), 0);
+                      const totalVal = itemsToRender.reduce((sum, sub) => {
+                        const itemCode = sub.item || sub.itemCode || "";
+                        const itemQty = Number(sub.quantidade) || 0;
+                        const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
+                        const embalagem = dbProduct?.embalagem || 12;
+                        const baseBoxPrice = Number(sub.customUnitPrice) || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 98.50;
+                        const isUnd = (sub.unidadeMedida || "").toLowerCase() === "und";
+                        const actualUnitPrice = isUnd ? (baseBoxPrice / embalagem) : baseBoxPrice;
+                        return sum + (itemQty * actualUnitPrice);
+                      }, 0);
+
+                      const umLabel = itemsToRender.every(it => (it.unidadeMedida || "").toLowerCase() === "und") ? "und" : "cx / sku";
+
+                      return (
+                        <tr className="bg-slate-50 font-bold border-t border-gray-400">
+                          <td colSpan={2} className="p-2.5 text-right">TOTAIS DA CARGA COMPENSADA:</td>
+                          <td className="p-2.5 text-center font-mono">
+                            {totalQty} {umLabel}
+                          </td>
+                          <td className="p-2.5 text-center font-mono text-indigo-950 font-black">{totalHl.toFixed(4)} HL</td>
+                          {isVale && <td colSpan={2} className="p-2.5 text-right font-mono text-rose-700">{formatCurrency(totalVal)}</td>}
+                        </tr>
+                      );
+                    })()}
                   </tfoot>
                 </table>
               </div>
@@ -4535,7 +5043,48 @@ export default function PendingRequestsTab() {
 
                 {/* DYNAMIC VALUE DIVISION BOX IN CASE OF VALES */}
                 {isVale && (() => {
-                  const { count, crew, individualValue } = getValeSplitInfo();
+                  const itemsToRender = printDocItems.length > 0 ? printDocItems : printableItems;
+                  const currentDocTotalVal = itemsToRender.reduce((sum, sub) => {
+                    const itemCode = sub.item || sub.itemCode || "";
+                    const itemQty = Number(sub.quantidade) || 0;
+                    const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
+                    const embalagem = dbProduct?.embalagem || 12;
+                    const baseBoxPrice = Number(sub.customUnitPrice) || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 98.50;
+                    const isUnd = (sub.unidadeMedida || "").toLowerCase() === "und";
+                    const actualUnitPrice = isUnd ? (baseBoxPrice / embalagem) : baseBoxPrice;
+                    return sum + (itemQty * actualUnitPrice);
+                  }, 0);
+
+                  const driverName = cast.faltaMotorista || "Motorista";
+                  const driverCpf = cast.faltaMotoristaCpf || "";
+                  
+                  let h1Name = cast.faltaAjudante1 || "";
+                  let h1Cpf = cast.faltaAjudante1Cpf || "";
+                  let h2Name = cast.faltaAjudante2 || "";
+                  let h2Cpf = cast.faltaAjudante2Cpf || "";
+
+                  if (!h1Name && cast.faltaAjudantes && cast.faltaAjudantes.trim().length > 0 && cast.faltaAjudantes.toUpperCase() !== "NÃO DECLARADOS") {
+                    const parts = cast.faltaAjudantes.split(",").map((s: string) => s.trim());
+                    if (parts[0]) h1Name = parts[0];
+                    if (parts[1]) h2Name = parts[1];
+                  }
+
+                  let count = 1;
+                  const crew: Array<{ role: string; name: string; cpf?: string }> = [
+                    { role: "Motorista", name: driverName, cpf: driverCpf }
+                  ];
+
+                  if (h1Name && h1Name.trim().length > 0) {
+                    count++;
+                    crew.push({ role: "Ajudante 1", name: h1Name, cpf: h1Cpf });
+                  }
+                  if (h2Name && h2Name.trim().length > 0) {
+                    count++;
+                    crew.push({ role: "Ajudante 2", name: h2Name, cpf: h2Cpf });
+                  }
+
+                  const individualValue = currentDocTotalVal / count;
+
                   return (
                     <div className="mt-2.5 p-2 bg-rose-50 border border-rose-200 rounded text-xs text-left font-sans">
                       <span className="text-rose-900 uppercase font-extrabold text-[8.5px] block border-b border-rose-200/50 pb-0.5 mb-1 tracking-wider">

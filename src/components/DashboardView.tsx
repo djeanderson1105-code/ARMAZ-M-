@@ -3,6 +3,7 @@ import { ExchangeRecord, SectorAnalytics, REPRESENTATIVOS_SETOR } from "../types
 import { getApiUrl } from "../utils/apiUrl";
 import { parseSectorAnalytics } from "../utils/csvParser";
 import { calculateHL, getHectoFactor } from "../utils/hectoFactors";
+import { isRecordReposicao, isRecordTroca } from "../utils/processTypes";
 import ConsolidatedView from "./ConsolidatedView";
 import { 
   TrendingUp, 
@@ -86,6 +87,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
   // Filter mode: "mes" (mês a mês) or "dias" (entre dias)
   const [filterMode, setFilterMode] = useState<"mes" | "dias">("mes");
   
+  // Process Type Filter state: "todos" | "reposicao" | "troca"
+  const [processTypeFilter, setProcessTypeFilter] = useState<"todos" | "reposicao" | "troca">("todos");
+
   // States for dynamic filters
   const [semesterFilter, setSemesterFilter] = useState<"1H" | "2H" | "all">("1H");
   const [selectedMonthYear, setSelectedMonthYear] = useState<string>("todos");
@@ -184,9 +188,94 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
     return Array.from(list).sort();
   }, [records]);
 
-  // Filter records dynamically based on selected date & motivo/reason & GV
+  // Process breakdown metrics for Dashboard Geral (Reposição vs. Troca)
+  const processSummaryDashboard = useMemo(() => {
+    let repVal = 0;
+    let repCount = 0;
+    let repHl = 0;
+    let trocaVal = 0;
+    let trocaCount = 0;
+    let trocaHl = 0;
+
+    records.forEach(r => {
+      // Reason & GV & Date filters check (without processTypeFilter itself)
+      const matchReason = selectedReason === "todos" || (r.justificativa || "").trim() === selectedReason.trim();
+      if (!matchReason) return;
+
+      if (selectedGv !== "todos") {
+        const s = (r.setorVenda || "").trim();
+        const rep = REPRESENTATIVOS_SETOR[s];
+        const recordGv = rep ? rep.gv.toUpperCase() : "OUTROS";
+        if (recordGv !== selectedGv.toUpperCase()) return;
+      }
+
+      if (semesterFilter !== "all" && r.dataSolicitacao) {
+        const parts = r.dataSolicitacao.split("/");
+        if (parts.length === 3) {
+          const m = parseInt(parts[1], 10);
+          if (semesterFilter === "1H" && (m < 1 || m > 6)) return;
+          if (semesterFilter === "2H" && (m < 7 || m > 12)) return;
+        } else {
+          return;
+        }
+      }
+
+      if (filterMode === "mes") {
+        if (selectedMonthYear !== "todos" && r.dataSolicitacao) {
+          const parts = r.dataSolicitacao.split("/");
+          if (parts.length === 3) {
+            const my = `${parts[1]}/${parts[2]}`;
+            if (my !== selectedMonthYear) return;
+          } else {
+            return;
+          }
+        }
+      } else {
+        if (startDateStr || endDateStr) {
+          const recDate = parseToDate(r.dataSolicitacao);
+          if (!recDate) return;
+          if (startDateStr && recDate < new Date(startDateStr + "T00:00:00")) return;
+          if (endDateStr && recDate > new Date(endDateStr + "T23:59:59")) return;
+        }
+      }
+
+      const hl = r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
+
+      if (isRecordReposicao(r)) {
+        repVal += r.valorTotal || 0;
+        repCount++;
+        repHl += hl;
+      } else {
+        trocaVal += r.valorTotal || 0;
+        trocaCount++;
+        trocaHl += hl;
+      }
+    });
+
+    return {
+      repVal,
+      repCount,
+      repHl,
+      trocaVal,
+      trocaCount,
+      trocaHl,
+      totalVal: repVal + trocaVal,
+      totalCount: repCount + trocaCount,
+      totalHl: repHl + trocaHl
+    };
+  }, [records, filterMode, selectedMonthYear, startDateStr, endDateStr, selectedReason, selectedGv, semesterFilter]);
+
+  // Filter records dynamically based on selected date & motivo/reason & GV & process type
   const filteredRecords = useMemo(() => {
     return records.filter(r => {
+      // 0. Process Type match (Reposição vs. Troca)
+      if (processTypeFilter === "reposicao" && !isRecordReposicao(r)) {
+        return false;
+      }
+      if (processTypeFilter === "troca" && !isRecordTroca(r)) {
+        return false;
+      }
+
       // 1. Reason match
       const matchReason = selectedReason === "todos" || (r.justificativa || "").trim() === selectedReason.trim();
       if (!matchReason) return false;
@@ -240,7 +329,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
         return true;
       }
     });
-  }, [records, filterMode, selectedMonthYear, startDateStr, endDateStr, selectedReason, selectedGv, semesterFilter]);
+  }, [records, filterMode, selectedMonthYear, startDateStr, endDateStr, selectedReason, selectedGv, semesterFilter, processTypeFilter]);
 
   // Calculate high level stats on filtered records
   const stats = useMemo(() => {
@@ -728,7 +817,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
       <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl space-y-4">
         
         {/* Switch layout & title */}
-        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
           <div className="flex items-start space-x-3">
             <div className="p-3 bg-blue-950/60 rounded-xl border border-blue-800/40 text-blue-400 shadow-inner">
               <Filter className="w-5 h-5" />
@@ -744,30 +833,69 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
             </div>
           </div>
 
-          {/* Toggle Button for Filter Mode */}
-          <div className="inline-flex p-1 bg-slate-950 rounded-xl border border-slate-800 self-start">
-            <button
-              onClick={() => setFilterMode("mes")}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                filterMode === "mes"
-                  ? "bg-blue-600 text-white shadow-md font-bold"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              <Calendar className="w-3.5 h-3.5" />
-              <span>Filtro Mês a Mês</span>
-            </button>
-            <button
-              onClick={() => setFilterMode("dias")}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                filterMode === "dias"
-                  ? "bg-blue-600 text-white shadow-md font-bold"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              <TrendingUp className="w-3.5 h-3.5" />
-              <span>Filtro Entre Dias</span>
-            </button>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Process Type Pill Filter replicated from Auditoria e Rastreamento */}
+            <div className="flex items-center space-x-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+              <button
+                type="button"
+                onClick={() => setProcessTypeFilter("todos")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  processTypeFilter === "todos"
+                    ? "bg-blue-600 text-white shadow-md"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                🌐 Todos
+              </button>
+              <button
+                type="button"
+                onClick={() => setProcessTypeFilter("reposicao")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  processTypeFilter === "reposicao"
+                    ? "bg-indigo-600 text-white shadow-md"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                📦 Reposição (Falta)
+              </button>
+              <button
+                type="button"
+                onClick={() => setProcessTypeFilter("troca")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  processTypeFilter === "troca"
+                    ? "bg-emerald-600 text-white shadow-md"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                🔁 Troca (Outros)
+              </button>
+            </div>
+
+            {/* Toggle Button for Filter Mode */}
+            <div className="inline-flex p-1 bg-slate-950 rounded-xl border border-slate-800">
+              <button
+                onClick={() => setFilterMode("mes")}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                  filterMode === "mes"
+                    ? "bg-blue-600 text-white shadow-md font-bold"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Filtro Mês a Mês</span>
+              </button>
+              <button
+                onClick={() => setFilterMode("dias")}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                  filterMode === "dias"
+                    ? "bg-blue-600 text-white shadow-md font-bold"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <TrendingUp className="w-3.5 h-3.5" />
+                <span>Filtro Entre Dias</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -871,9 +999,25 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
             </select>
           </div>
 
+          {/* Process Type Filter (Reposição vs Troca) */}
+          <div className="md:col-span-2 flex flex-col space-y-1.5">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono flex items-center gap-1">
+              📦 Tipo de Processo
+            </label>
+            <select
+              value={processTypeFilter}
+              onChange={(e) => setProcessTypeFilter(e.target.value as any)}
+              className="bg-slate-950 text-slate-100 hover:bg-slate-900 border border-slate-800 font-mono text-xs rounded-xl px-3 py-2.5 focus:outline-hidden focus:ring-1 focus:ring-blue-500 transition-all cursor-pointer w-full"
+            >
+              <option value="todos">🌐 Todos os Processos</option>
+              <option value="reposicao">📦 Reposição (Falta de Produto)</option>
+              <option value="troca">🔁 Troca (Outros Motivos)</option>
+            </select>
+          </div>
+
           {/* Clear Button */}
-          <div className="md:col-span-1">
-            {(semesterFilter !== "1H" || selectedMonthYear !== "todos" || startDateStr !== "" || endDateStr !== "" || selectedReason !== "todos" || selectedGv !== "todos") ? (
+          <div className="md:col-span-2 lg:col-span-1">
+            {(semesterFilter !== "1H" || selectedMonthYear !== "todos" || startDateStr !== "" || endDateStr !== "" || selectedReason !== "todos" || selectedGv !== "todos" || processTypeFilter !== "todos") ? (
               <button
                 onClick={() => {
                   setSemesterFilter("1H");
@@ -882,6 +1026,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                   setEndDateStr("");
                   setSelectedReason("todos");
                   setSelectedGv("todos");
+                  setProcessTypeFilter("todos");
                 }}
                 className="w-full py-2.5 bg-rose-950/60 hover:bg-rose-900/80 border border-rose-800/40 text-rose-300 text-xs font-semibold rounded-xl flex items-center justify-center space-x-1.5 transition-colors cursor-pointer"
               >
@@ -893,6 +1038,98 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                 Sem filtros
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Process Type Quick Selector Cards (Reposição vs Troca) */}
+        <div className="pt-3 border-t border-slate-800/80 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold font-mono uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Classificação de Processos (Reposição vs. Troca)</span>
+            </span>
+            {processTypeFilter !== "todos" && (
+              <button
+                onClick={() => setProcessTypeFilter("todos")}
+                className="text-[10px] font-mono text-indigo-400 hover:text-indigo-300 underline font-bold cursor-pointer"
+              >
+                Exibindo: {processTypeFilter === "reposicao" ? "REPOSIÇÃO (Falta)" : "TROCAS (Demais Motivos)"} (Limpar)
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* Card 1: Todos */}
+            <button
+              type="button"
+              onClick={() => setProcessTypeFilter("todos")}
+              className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                processTypeFilter === "todos"
+                  ? "bg-blue-950/80 border-blue-500 ring-1 ring-blue-500 shadow-lg"
+                  : "bg-slate-950/60 hover:bg-slate-950 border-slate-800"
+              }`}
+            >
+              <div className="flex justify-between items-center">
+                <span className="text-[10px] font-mono text-blue-400 font-bold uppercase">🌐 Todos os Processos</span>
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                  {processSummaryDashboard.totalCount} reg.
+                </span>
+              </div>
+              <p className="text-base font-black font-mono text-white mt-1">
+                {formatCurrency(processSummaryDashboard.totalVal)}
+              </p>
+              <span className="text-[9.5px] text-slate-400 block mt-0.5 font-sans leading-tight">
+                {processSummaryDashboard.totalHl.toFixed(1)} HL • Visão Consolidada do Sistema
+              </span>
+            </button>
+
+            {/* Card 2: Reposição */}
+            <button
+              type="button"
+              onClick={() => setProcessTypeFilter(processTypeFilter === "reposicao" ? "todos" : "reposicao")}
+              className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                processTypeFilter === "reposicao"
+                  ? "bg-indigo-950/80 border-indigo-500 ring-1 ring-indigo-500 shadow-lg"
+                  : "bg-slate-950/60 hover:bg-slate-950 border-slate-800"
+              }`}
+            >
+              <div className="flex justify-between items-center">
+                <span className="text-[10px] font-mono text-indigo-400 font-bold uppercase">📦 Reposição (Falta de Produto)</span>
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                  {processSummaryDashboard.repCount} reg.
+                </span>
+              </div>
+              <p className="text-base font-black font-mono text-white mt-1">
+                {formatCurrency(processSummaryDashboard.repVal)}
+              </p>
+              <span className="text-[9.5px] text-slate-400 block mt-0.5 font-sans leading-tight">
+                {processSummaryDashboard.repHl.toFixed(1)} HL • Relatório 03.18.05 Informa / Falta no Entrega
+              </span>
+            </button>
+
+            {/* Card 3: Trocas */}
+            <button
+              type="button"
+              onClick={() => setProcessTypeFilter(processTypeFilter === "troca" ? "todos" : "troca")}
+              className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                processTypeFilter === "troca"
+                  ? "bg-emerald-950/80 border-emerald-500 ring-1 ring-emerald-500 shadow-lg"
+                  : "bg-slate-950/60 hover:bg-slate-950 border-slate-800"
+              }`}
+            >
+              <div className="flex justify-between items-center">
+                <span className="text-[10px] font-mono text-emerald-400 font-bold uppercase">🔁 Troca (Outros Motivos)</span>
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                  {processSummaryDashboard.trocaCount} reg.
+                </span>
+              </div>
+              <p className="text-base font-black font-mono text-white mt-1">
+                {formatCurrency(processSummaryDashboard.trocaVal)}
+              </p>
+              <span className="text-[9.5px] text-slate-400 block mt-0.5 font-sans leading-tight">
+                {processSummaryDashboard.trocaHl.toFixed(1)} HL • Avaria, Inversão, Vencimento, Vasilhame, Qualidade
+              </span>
+            </button>
           </div>
         </div>
 

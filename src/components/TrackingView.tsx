@@ -2,6 +2,7 @@ import React, { useState, useMemo } from "react";
 import { ExchangeRecord, REPRESENTATIVOS_SETOR } from "../types";
 import { Search, Eye, Filter, CheckCircle2, AlertCircle, HelpCircle, X, ExternalLink, RefreshCw, UserCheck, Calendar, AlertTriangle, Layers, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, DollarSign, ClipboardList, Percent, TrendingUp, Package, Tag } from "lucide-react";
 import { calculateHL } from "../utils/hectoFactors";
+import { isRecordReposicao, isRecordTroca } from "../utils/processTypes";
 
 interface TrackingViewProps {
   records: ExchangeRecord[];
@@ -18,6 +19,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
   const [selectedSector, setSelectedSector] = useState<string>(filteredSector || "todos");
   const [selectedReason, setSelectedReason] = useState<string>("todos");
   const [selectedGv, setSelectedGv] = useState<string>("todos");
+  const [processTypeFilter, setProcessTypeFilter] = useState<"todos" | "reposicao" | "troca">("todos");
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [activeDetailRecord, setActiveDetailRecord] = useState<ExchangeRecord | null>(null);
@@ -49,7 +51,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
   // Reset page to 1 whenever filters or sorting change
   React.useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, searchField, selectedStatus, selectedSector, selectedReason, selectedGv, startDate, endDate, viewMode, sortBy, sortOrder]);
+  }, [searchTerm, searchField, selectedStatus, selectedSector, selectedReason, selectedGv, processTypeFilter, startDate, endDate, viewMode, sortBy, sortOrder]);
 
   // Helper to convert DD/MM/YYYY to YYYY-MM-DD for comparison
   const convertToISODate = (ptDateStr: string): string | null => {
@@ -297,7 +299,15 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
         matchGv = recordGv === selectedGv.toUpperCase();
       }
 
-      return matchSearch && matchStatus && matchSector && matchDate && matchReason && matchGv;
+      // 7. Process type match (Reposição vs Troca)
+      let matchProcessType = true;
+      if (processTypeFilter === "reposicao") {
+        matchProcessType = isRecordReposicao(r);
+      } else if (processTypeFilter === "troca") {
+        matchProcessType = isRecordTroca(r);
+      }
+
+      return matchSearch && matchStatus && matchSector && matchDate && matchReason && matchGv && matchProcessType;
     });
 
     // Sort dynamically by selected option (date, value, hecto) and direction (asc/desc)
@@ -334,7 +344,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
 
       return sortOrder === "desc" ? -comparison : comparison;
     });
-  }, [records, searchTerm, searchField, selectedStatus, selectedSector, selectedReason, selectedGv, startDate, endDate, sortBy, sortOrder]);
+  }, [records, searchTerm, searchField, selectedStatus, selectedSector, selectedReason, selectedGv, processTypeFilter, startDate, endDate, sortBy, sortOrder]);
 
   // Grouped solicitations memo based on currently filtered records
   const groupedSolicitations = useMemo(() => {
@@ -485,7 +495,14 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
         matchGv = recordGv === selectedGv.toUpperCase();
       }
 
-      if (matchSearch && matchSector && matchDate && matchReason && matchGv) {
+      let matchProcessType = true;
+      if (processTypeFilter === "reposicao") {
+        matchProcessType = isRecordReposicao(r);
+      } else if (processTypeFilter === "troca") {
+        matchProcessType = isRecordTroca(r);
+      }
+
+      if (matchSearch && matchSector && matchDate && matchReason && matchGv && matchProcessType) {
         const statusClean = r.status.toLowerCase().trim();
         const val = r.valorTotal || 0;
         const hl = r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
@@ -1194,14 +1211,67 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
         </div>
 
         {/* Tier 2: Advanced Granular Filters Grid */}
-        <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-850/70">
-          <p className="text-[10px] uppercase font-bold text-slate-500 tracking-widest font-mono mb-3 flex items-center gap-1.5">
-            <Filter className="w-3 h-3 text-slate-400" />
-            <span>Filtros de Auditoria & Pesquisa Avançada</span>
-          </p>
+        <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-850/70 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-850/60 pb-2">
+            <p className="text-[10px] uppercase font-bold text-slate-400 tracking-widest font-mono flex items-center gap-1.5">
+              <Filter className="w-3 h-3 text-slate-400" />
+              <span>Filtros de Auditoria & Pesquisa Avançada</span>
+            </p>
+
+            {/* Quick Pill Filter for Reposição vs Troca */}
+            <div className="flex items-center space-x-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
+              <button
+                type="button"
+                onClick={() => setProcessTypeFilter("todos")}
+                className={`px-2.5 py-1 rounded text-[10px] font-bold font-mono transition-all cursor-pointer ${
+                  processTypeFilter === "todos"
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                🌐 Todos
+              </button>
+              <button
+                type="button"
+                onClick={() => setProcessTypeFilter("reposicao")}
+                className={`px-2.5 py-1 rounded text-[10px] font-bold font-mono transition-all cursor-pointer ${
+                  processTypeFilter === "reposicao"
+                    ? "bg-indigo-600 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                📦 Reposição (Falta)
+              </button>
+              <button
+                type="button"
+                onClick={() => setProcessTypeFilter("troca")}
+                className={`px-2.5 py-1 rounded text-[10px] font-bold font-mono transition-all cursor-pointer ${
+                  processTypeFilter === "troca"
+                    ? "bg-emerald-600 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                🔁 Troca (Outros)
+              </button>
+            </div>
+          </div>
           
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
             
+            {/* Process Type dropdown */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider font-mono block">Tipo de Processo</label>
+              <select
+                value={processTypeFilter}
+                onChange={(e) => setProcessTypeFilter(e.target.value as any)}
+                className="w-full bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-300 focus:outline-hidden focus:ring-1 focus:ring-blue-500 font-mono cursor-pointer transition-colors"
+              >
+                <option value="todos">🌐 Todos os Processos</option>
+                <option value="reposicao">📦 Reposição (Falta)</option>
+                <option value="troca">🔁 Troca (Outros Motivos)</option>
+              </select>
+            </div>
+
             {/* Sector filter */}
             <div className="space-y-1.5">
               <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider font-mono block">Setor de Venda</label>
@@ -1265,7 +1335,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
 
             {/* GV filter */}
             <div className="space-y-1.5">
-              <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider font-mono block">Gerência de Vendas (GV)</label>
+              <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider font-mono block">Gerência (GV)</label>
               <select
                 value={selectedGv}
                 onChange={(e) => setSelectedGv(e.target.value)}
@@ -1840,9 +1910,22 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
                             <div className="space-y-3">
                               <div className="flex justify-between items-start">
                                 <div className="space-y-1">
-                                  <span className="px-2 py-0.5 bg-slate-900 text-slate-300 text-[10px] font-bold rounded font-mono border border-slate-850">
-                                    SOLICITAÇÃO #{sol.solicitacao}
-                                  </span>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="px-2 py-0.5 bg-slate-900 text-slate-300 text-[10px] font-bold rounded font-mono border border-slate-850">
+                                      SOLICITAÇÃO #{sol.solicitacao}
+                                    </span>
+                                    {sol.records[0] && (
+                                      isRecordReposicao(sol.records[0]) ? (
+                                        <span className="px-2 py-0.5 bg-indigo-950 text-indigo-300 text-[10px] font-bold rounded font-mono border border-indigo-800/60">
+                                          📦 Reposição
+                                        </span>
+                                      ) : (
+                                        <span className="px-2 py-0.5 bg-emerald-950 text-emerald-300 text-[10px] font-bold rounded font-mono border border-emerald-800/60">
+                                          🔁 Troca
+                                        </span>
+                                      )
+                                    )}
+                                  </div>
                                   <p className="text-[10px] text-slate-500 font-mono mt-1">
                                     Data: {sol.dataSolicitacao}
                                   </p>
@@ -1971,6 +2054,17 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
                                   <span className="px-2 py-0.5 bg-slate-950 text-blue-400 text-[10px] font-bold rounded font-mono border border-slate-850 shrink-0">
                                     SETOR {g.setorVenda}
                                   </span>
+                                  {firstRec && (
+                                    isRecordReposicao(firstRec) ? (
+                                      <span className="px-2 py-0.5 bg-indigo-950/90 text-indigo-300 text-[10px] font-bold rounded font-mono border border-indigo-800/60 shrink-0">
+                                        📦 Reposição (Falta)
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 bg-emerald-950/90 text-emerald-300 text-[10px] font-bold rounded font-mono border border-emerald-800/60 shrink-0">
+                                        🔁 Troca (Outros)
+                                      </span>
+                                    )
+                                  )}
                                   {isDuplicate && (
                                     <span className="px-2 py-0.5 bg-red-950/80 text-red-400 text-[10px] font-bold rounded font-mono border border-red-900/40 animate-pulse flex items-center space-x-1 shrink-0">
                                       <AlertTriangle className="w-3 h-3 text-red-455 shrink-0" />

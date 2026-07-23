@@ -29,6 +29,30 @@ import { getProductsDatabase } from "../data/products";
 import { DEFAULT_LISTA_CREW, DEFAULT_REPRESENTATIVOS_SETOR, DEFAULT_MOTORISTAS_ROTAS } from "../types";
 import { getAuth } from "firebase/auth";
 
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return null as any;
+  }
+  if (typeof data !== "object") {
+    return data;
+  }
+  if (data instanceof Date) {
+    return data as any;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter(item => item !== undefined)
+      .map(item => sanitizeForFirestore(item)) as any;
+  }
+  const cleanObj: Record<string, any> = {};
+  for (const [key, val] of Object.entries(data)) {
+    if (val !== undefined) {
+      cleanObj[key] = sanitizeForFirestore(val);
+    }
+  }
+  return cleanObj as any;
+}
+
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
@@ -113,7 +137,7 @@ const originalRemoveItem = localStorage.removeItem;
 // In-RAM fallback cache for extremely restrictive environments (Safari Private browsing, restricted iframe sandbox)
 const memoryStorage = new Map<string, string>();
 
-function safeGetItem(key: string): string | null {
+export function safeGetItem(key: string): string | null {
   try {
     return originalGetItem.call(localStorage, key);
   } catch (e) {
@@ -121,16 +145,23 @@ function safeGetItem(key: string): string | null {
   }
 }
 
-function safeSetItem(key: string, value: string) {
+export function safeSetItem(key: string, value: string) {
   try {
-    originalSetItem.call(localStorage, key, value);
+    let processedValue = value;
+    if (
+      key === "sstr_representative_pending_requests" ||
+      key === "sstr_vales_historico_reg"
+    ) {
+      processedValue = extractImagesToIDB(value);
+    }
+    originalSetItem.call(localStorage, key, processedValue);
   } catch (e) {
     console.warn(`[STORAGE-WARN] Failed to write key "${key}" to native localStorage. Using in-memory fallback:`, e);
     memoryStorage.set(key, value);
   }
 }
 
-function safeRemoveItem(key: string) {
+export function safeRemoveItem(key: string) {
   try {
     originalRemoveItem.call(localStorage, key);
   } catch (e) {
@@ -210,7 +241,7 @@ async function syncArrayToFirestore(collectionName: string, oldList: any[], newL
     for (const op of chunk) {
       const docRef = doc(firestoreDb, collectionName, op.id);
       if (op.type === "set") {
-        batch.set(docRef, op.data);
+        batch.set(docRef, sanitizeForFirestore(op.data));
       } else {
         batch.delete(docRef);
       }
@@ -261,7 +292,7 @@ async function syncObjectToFirestore(collectionName: string, oldObj: Record<stri
     for (const op of chunk) {
       const docRef = doc(firestoreDb, collectionName, op.id);
       if (op.type === "set") {
-        batch.set(docRef, op.data);
+        batch.set(docRef, sanitizeForFirestore(op.data));
       } else {
         batch.delete(docRef);
       }
@@ -291,7 +322,7 @@ async function syncExchangeRecordsConsolidated(newList: any[]) {
     
     for (let i = 0; i < chunks.length; i++) {
       const chunkRef = doc(firestoreDb, "exchangeRecords_chunks", `chunk_${i}`);
-      batch.set(chunkRef, { data: chunks[i] });
+      batch.set(chunkRef, sanitizeForFirestore({ data: chunks[i] }));
     }
     
     // Clean up old potential chunks
@@ -474,7 +505,7 @@ async function logChange(key: string, oldList: any[], newList: any[]) {
     
     const createLogEntry = async (action: "CRIACAO" | "EDICAO" | "EXCLUSAO", details: string, itemData: any) => {
       try {
-        await addDoc(logsCol, {
+        await addDoc(logsCol, sanitizeForFirestore({
           usuario: operator,
           action,
           tabela: COLLECTION_MAP[key]?.name || key,
@@ -482,7 +513,7 @@ async function logChange(key: string, oldList: any[], newList: any[]) {
           timestamp: Date.now(),
           detalhes: details,
           dados: itemData
-        });
+        }));
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, "sstr_logs");
       }
@@ -760,7 +791,7 @@ async function seedFirestoreBaselines() {
         chunk.forEach(item => {
           const id = getItemId(item);
           if (id) {
-            batch.set(doc(firestoreDb, colName, id), item);
+            batch.set(doc(firestoreDb, colName, id), sanitizeForFirestore(item));
           }
         });
         try {
@@ -776,7 +807,7 @@ async function seedFirestoreBaselines() {
   const seedObjectInFirestore = async (colName: string, obj: Record<string, any>) => {
     const batch = writeBatch(firestoreDb);
     for (const [key, val] of Object.entries(obj)) {
-      batch.set(doc(firestoreDb, colName, key), val);
+      batch.set(doc(firestoreDb, colName, key), sanitizeForFirestore(val));
     }
     try {
       await batch.commit();
@@ -797,6 +828,29 @@ async function seedFirestoreBaselines() {
 
   isSyncingFromFirestore = false;
   console.log("Seeding process completed successfully!");
+}
+
+// Granular Document-Level Write Helpers for Instant Real-Time Operations (Task 4)
+export async function setFirestoreDoc(collectionName: string, id: string, data: any) {
+  try {
+    const docRef = doc(firestoreDb, collectionName, id);
+    await setDoc(docRef, sanitizeForFirestore(data));
+    console.log(`[GRANULAR-WRITE] Updated document "${id}" in Firestore collection "${collectionName}".`);
+  } catch (err) {
+    console.error(`[GRANULAR-WRITE-ERROR] Failed to write doc "${id}" to "${collectionName}":`, err);
+    handleFirestoreError(err, OperationType.WRITE, collectionName);
+  }
+}
+
+export async function deleteFirestoreDoc(collectionName: string, id: string) {
+  try {
+    const docRef = doc(firestoreDb, collectionName, id);
+    await deleteDoc(docRef);
+    console.log(`[GRANULAR-DELETE] Deleted document "${id}" from Firestore collection "${collectionName}".`);
+  } catch (err) {
+    console.error(`[GRANULAR-DELETE-ERROR] Failed to delete doc "${id}" from "${collectionName}":`, err);
+    handleFirestoreError(err, OperationType.DELETE, collectionName);
+  }
 }
 
 export function startPolling() {

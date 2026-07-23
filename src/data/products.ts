@@ -1,9 +1,12 @@
+import { safeSetItem } from "../utils/apiSync";
+
 export interface ProductInfo {
   codigo: string;
   descricao: string;
   fator?: number;
   valor?: number;
   fatorHecto: number;
+  embalagem?: number;
 }
 
 const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
@@ -384,7 +387,7 @@ export const getProductsDatabase = (): ProductInfo[] => {
         };
       });
       if (updated) {
-        localStorage.setItem("sstr_products_database", JSON.stringify(migrated));
+        safeSetItem("sstr_products_database", JSON.stringify(migrated));
       }
       cachedProducts = migrated;
       return migrated;
@@ -398,7 +401,7 @@ export const getProductsDatabase = (): ProductInfo[] => {
     fator: p.fator !== undefined ? p.fator : extractFatorFromDescricao(p.descricao),
     valor: p.valor !== undefined ? p.valor : 98.50
   }));
-  localStorage.setItem("sstr_products_database", JSON.stringify(mappedDefaults));
+  safeSetItem("sstr_products_database", JSON.stringify(mappedDefaults));
   cachedProducts = mappedDefaults;
   return mappedDefaults;
 };
