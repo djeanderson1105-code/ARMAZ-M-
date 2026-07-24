@@ -73,7 +73,7 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
     hora: findIndex(["hora"]),
     status: findIndex(["statussolicitacao"]) !== -1 ? findIndex(["statussolicitacao"]) : findIndex(["status", "soli"]),
     dataAcao: findIndex(["dataacao"]) !== -1 ? findIndex(["dataacao"]) : findIndex(["data", "acao"]),
-    usuarioAcao: findIndex(["usuarioacao"]) !== -1 ? findIndex(["usuarioacao"]) : findIndex(["user", "acao"]),
+    usuarioAcao: findIndex(["usuarioacao"]) !== -1 ? findIndex(["usuarioacao"]) : (findIndex(["user", "acao"]) !== -1 ? findIndex(["user", "acao"]) : (findIndex(["usuario"]) !== -1 ? findIndex(["usuario"]) : (findIndex(["user"]) !== -1 ? findIndex(["user"]) : 10))),
     mapa: findIndex(["mapareposicao"]) !== -1 ? findIndex(["mapareposicao"]) : findIndex(["mapa"]),
     nf: findIndex(["notafiscalserie"]) !== -1 ? findIndex(["notafiscalserie"]) : findIndex(["nota", "serie"]),
     statusNf: findIndex(["statusnf"]),

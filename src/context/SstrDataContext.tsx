@@ -25,6 +25,8 @@ export interface SstrDataContextType {
   motoristasList: Record<string, any>;
   vales: ValeEntry[];
   products: ProductInfo[];
+  shiftMode: "dia" | "noite";
+  setShiftMode: (mode: "dia" | "noite") => void;
   
   // Status flags
   isInitialLoading: boolean;
@@ -62,6 +64,14 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [motoristasList, setMotoristasList] = useState<Record<string, any>>({});
   const [vales, setVales] = useState<ValeEntry[]>([]);
   const [products, setProducts] = useState<ProductInfo[]>([]);
+  const [shiftMode, setShiftModeState] = useState<"dia" | "noite">(() => {
+    return (safeGetItem("sstr_shift_mode") as "dia" | "noite") || "dia";
+  });
+
+  const setShiftMode = (mode: "dia" | "noite") => {
+    setShiftModeState(mode);
+    safeSetItem("sstr_shift_mode", mode);
+  };
 
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isHeavyLoading, setIsHeavyLoading] = useState(true);
@@ -424,6 +434,8 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
         motoristasList,
         vales,
         products,
+        shiftMode,
+        setShiftMode,
         isInitialLoading,
         isHeavyLoading,
         savePendingRequest,

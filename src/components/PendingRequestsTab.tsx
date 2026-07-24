@@ -37,7 +37,9 @@ import {
   PlusCircle,
   Plus,
   Copy,
-  Sliders
+  Sliders,
+  RotateCcw,
+  Undo2
 } from "lucide-react";
 
 // Helper to check if a request or any of its items is a "Falta de SKU Fechado / Completo"
@@ -161,45 +163,69 @@ const isSwapRequest = (req: PendingRequest): boolean => {
 
 // Pricing helper to determine standard request pricing based on platform registered data and promax database
 const getRequestValue = (req: PendingRequest, promaxRecords: ExchangeRecord[] = []): number => {
-  if (req.valorTotal !== undefined && req.valorTotal > 0) return req.valorTotal;
-
   if (req.items && req.items.length > 0) {
     const total = req.items.reduce((sum, current) => {
+      const itemCode = current.item || current.itemCode || "";
+      const cleanCode = itemCode.replace(/^0+/, "");
+      const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === cleanCode);
+      const isUnd = (current.unidadeMedida || "").toLowerCase() === "und";
+      const embalagem = dbProduct?.fator || current.fatorEmbalagem || 12;
+
+      // 1. Check Product Database price (if > 0)
+      if (dbProduct && dbProduct.valor !== undefined && dbProduct.valor > 0) {
+        const boxPrice = dbProduct.valor;
+        const actualUnitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
+        return sum + (actualUnitPrice * current.quantidade);
+      }
+
+      // 2. Check Promax records price
+      const promaxMatch = promaxRecords.find(r => r.produto === itemCode || r.produto === cleanCode);
+      if (promaxMatch && promaxMatch.valorUnitario && promaxMatch.valorUnitario > 0) {
+        const boxPrice = promaxMatch.valorUnitario;
+        const actualUnitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
+        return sum + (actualUnitPrice * current.quantidade);
+      }
+
+      // 3. Fallback to custom/draft stored prices (ignoring legacy hardcoded 98.50 if dbProduct/promax exist)
+      if (current.customUnitPrice !== undefined && current.customUnitPrice > 0 && current.customUnitPrice !== 98.50) {
+        return sum + (current.customUnitPrice * current.quantidade);
+      }
+      if (current.precoCalculated !== undefined && current.precoCalculated > 0 && current.precoCalculated !== 98.50) {
+        return sum + current.precoCalculated;
+      }
+      if (current.precoSugerido !== undefined && current.precoSugerido > 0 && current.precoSugerido !== 98.50) {
+        const unitVal = isUnd ? (current.precoSugerido / embalagem) : current.precoSugerido;
+        return sum + (unitVal * current.quantidade);
+      }
+
+      // 4. Last resort stored price
       if (current.precoCalculated !== undefined && current.precoCalculated > 0) {
         return sum + current.precoCalculated;
       }
-      if (current.precoSugerido !== undefined && current.precoSugerido > 0) {
-        const isUnd = (current.unidadeMedida || "").toLowerCase() === "und";
-        const unitVal = isUnd
-          ? (current.precoSugerido / (current.fatorEmbalagem || 12))
-          : current.precoSugerido;
-        return sum + (unitVal * current.quantidade);
-      }
-      if (current.customUnitPrice !== undefined && current.customUnitPrice > 0) {
-        return sum + (current.customUnitPrice * current.quantidade);
-      }
-      const itemCode = current.item || current.itemCode || "";
-      const promaxMatch = promaxRecords.find(r => r.produto === itemCode || r.produto === itemCode.replace(/^0+/, ""));
-      if (promaxMatch && promaxMatch.valorUnitario && promaxMatch.valorUnitario > 0) {
-        return sum + (promaxMatch.valorUnitario * current.quantidade);
-      }
-      const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
-      const itemUnitPrice = dbProduct && dbProduct.valor !== undefined ? dbProduct.valor : 0;
-      return sum + (itemUnitPrice * current.quantidade);
+
+      return sum;
     }, 0);
+
     if (total > 0) return total;
   }
 
   if (req.item) {
     const itemCode = req.item;
-    const promaxMatch = promaxRecords.find(r => r.produto === itemCode || r.produto === itemCode.replace(/^0+/, ""));
-    if (promaxMatch && promaxMatch.valorUnitario && promaxMatch.valorUnitario > 0) {
-      return promaxMatch.valorUnitario * (req.quantidade || 1);
+    const cleanCode = itemCode.replace(/^0+/, "");
+    const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === cleanCode);
+    const qty = req.quantidade || 1;
+
+    if (dbProduct && dbProduct.valor !== undefined && dbProduct.valor > 0) {
+      return dbProduct.valor * qty;
     }
-    const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
-    const itemUnitPrice = dbProduct && dbProduct.valor !== undefined ? dbProduct.valor : 0;
-    return itemUnitPrice * (req.quantidade || 1);
+
+    const promaxMatch = promaxRecords.find(r => r.produto === itemCode || r.produto === cleanCode);
+    if (promaxMatch && promaxMatch.valorUnitario && promaxMatch.valorUnitario > 0) {
+      return promaxMatch.valorUnitario * qty;
+    }
   }
+
+  if (req.valorTotal !== undefined && req.valorTotal > 0 && req.valorTotal !== 98.50) return req.valorTotal;
 
   return 0;
 };
@@ -391,6 +417,10 @@ export default function PendingRequestsTab() {
 
   // States for physical settlement ("Dar Baixa" with signed receipt attachment)
   const [baixandoFalta, setBaixandoFalta] = useState<PendingRequest | null>(null);
+
+  // States for Promax Contingency confirmation and settlement modal
+  const [confirmContingenciaReq, setConfirmContingenciaReq] = useState<PendingRequest | null>(null);
+  const [contingenciaConfirmChecked, setContingenciaConfirmChecked] = useState(false);
   const [baixaReciboFile, setBaixaReciboFile] = useState<{ name: string; type: string; dataUrl: string } | null>(null);
   const [baixaObservacao, setBaixaObservacao] = useState("");
   const [baixaError, setBaixaError] = useState("");
@@ -559,20 +589,45 @@ export default function PendingRequestsTab() {
     }
   };
 
-  // Settle Promax Contingency Alert
-  const handleBaixaContingencia = async (reqId: string) => {
+  // Open confirmation modal to settle Promax Contingency Alert
+  const handleBaixaContingencia = (reqId: string) => {
     const req = requests.find(r => r.id === reqId);
     if (!req) return;
+    setConfirmContingenciaReq(req);
+    setContingenciaConfirmChecked(false);
+  };
+
+  // Execute settlement after user confirmation
+  const executeBaixaContingencia = async (reqId: string) => {
+    const req = requests.find(r => r.id === reqId);
+    if (!req) return;
+    const loggedManager = sessionStorage.getItem("sstr_current_manager_name") || "Gestor";
     const now = new Date();
     const dataFormatada = `${now.toLocaleDateString("pt-BR")} às ${now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
-    await savePendingRequest({
+    const updatedReq: PendingRequest = {
       ...req,
       emContingencia: false,
       contingenciaBaixada: true,
       contingenciaBaixadaDate: dataFormatada,
-      contingenciaBaixadaUser: "Gestor"
-    });
-    alert("✅ Sucesso! Foi dada baixa na contingência deste registro no Promax.");
+      contingenciaBaixadaUser: loggedManager
+    };
+    await savePendingRequest(updatedReq);
+  };
+
+  // Undo settlement / Revert Contingency
+  const handleDesfazerBaixaContingencia = async (reqId: string) => {
+    const req = requests.find(r => r.id === reqId);
+    if (!req) return;
+
+    const updatedReq: PendingRequest = {
+      ...req,
+      emContingencia: true,
+      contingenciaBaixada: false,
+      contingenciaBaixadaDate: undefined,
+      contingenciaBaixadaUser: undefined
+    };
+
+    await savePendingRequest(updatedReq);
   };
 
   // Delete an approved item / request from Espelho do Dia and Approved list
@@ -888,8 +943,10 @@ export default function PendingRequestsTab() {
       }
 
       const embalagem = productDef.fator || 12;
-      const closedBoxPrice = productDef.valor || 98.50;
-      const unitPrice = closedBoxPrice / embalagem;
+      const closedBoxPrice = (productDef.valor && productDef.valor > 0)
+        ? productDef.valor
+        : (promaxRecords.find(r => r.produto === reqItem.trim())?.valorUnitario || 0);
+      const unitPrice = embalagem > 0 ? closedBoxPrice / embalagem : closedBoxPrice;
 
       const factor = productDef.fatorHecto || 0.0800;
       const calculatedHl = reqUnidade === "und"
@@ -1005,8 +1062,10 @@ export default function PendingRequestsTab() {
         }
 
         const embalagem = productDef.fator || 12;
-        const closedBoxPrice = productDef.valor || 98.50;
-        const unitPrice = closedBoxPrice / embalagem;
+        const closedBoxPrice = (productDef.valor && productDef.valor > 0)
+          ? productDef.valor
+          : (promaxRecords.find(r => r.produto === reqItem.trim())?.valorUnitario || 0);
+        const unitPrice = embalagem > 0 ? closedBoxPrice / embalagem : closedBoxPrice;
 
         const factor = productDef.fatorHecto || 0.0800;
         const calculatedHl = reqUnidade === "und"
@@ -2530,19 +2589,21 @@ export default function PendingRequestsTab() {
 
         <button
           onClick={() => setActiveTab("faltas_inversoes")}
-          className={`w-full px-3.5 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 relative cursor-pointer truncate ${
+          className={`w-full px-3.5 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === "faltas_inversoes"
               ? "bg-indigo-600 text-white shadow-lg shadow-indigo-900/20"
-              : "bg-slate-900 text-slate-400 hover:text-slate-205 hover:bg-slate-850 border border-slate-850"
+              : "bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-850 border border-slate-850"
           }`}
           title="Faltas de carregar ou entregar não faturadas"
         >
           <Layers className="w-3.5 h-3.5 text-indigo-350 shrink-0" />
-          <span className="truncate">Faltas/Inversões ({lackActiveCount})</span>
-          {lackActiveCount > 0 && (
-            <span className="px-1.5 py-0.5 bg-rose-600 text-[8.5px] font-mono text-white rounded-full absolute -top-1 -right-1 font-bold animate-pulse">
+          <span className="truncate">Faltas/Inversões</span>
+          {lackActiveCount > 0 ? (
+            <span className="px-1.5 py-0.5 bg-rose-600 text-[9px] font-mono text-white rounded-full font-bold shrink-0 animate-pulse">
               {lackActiveCount}
             </span>
+          ) : (
+            <span className="text-[10px] text-slate-500 font-mono">(0)</span>
           )}
         </button>
 
@@ -3649,6 +3710,14 @@ export default function PendingRequestsTab() {
               const pdvDb = getPdvDatabase();
               const clientDetails = getClientDetails(req.nb, pdvDb, promaxRecords);
               
+              const matchedPromax = promaxRecords.find(r => 
+                (req.nf && r.nf && (r.nf === req.nf || r.nf.endsWith(req.nf))) || 
+                (req.solicitacao && r.solicitacao && r.solicitacao === req.solicitacao) ||
+                (req.mapa && r.mapa && r.mapa === req.mapa) ||
+                (req.nb && r.codigoCliente && r.codigoCliente === req.nb)
+              );
+              const promaxUser = req.usuarioAcao || matchedPromax?.usuarioAcao;
+              
               return (
                 <div 
                   key={req.id} 
@@ -3775,9 +3844,20 @@ export default function PendingRequestsTab() {
                     )}
 
                     {req.contingenciaBaixada && (
-                      <div className="p-2 bg-emerald-950/60 border border-emerald-900/50 rounded-xl flex items-center gap-2 text-emerald-300 text-[10px] font-mono text-left">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        <span>Contingência baixada em {req.contingenciaBaixadaDate}</span>
+                      <div className="p-2.5 bg-emerald-950/80 border border-emerald-800/60 rounded-xl flex items-center justify-between gap-2 text-emerald-200 text-xs font-sans text-left shadow">
+                        <div className="flex items-center gap-2 text-[10.5px] font-bold text-emerald-300">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>Contingência baixada em {req.contingenciaBaixadaDate} {req.contingenciaBaixadaUser ? `por ${req.contingenciaBaixadaUser}` : ""}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDesfazerBaixaContingencia(req.id)}
+                          className="px-2.5 py-1 bg-rose-950 hover:bg-rose-900 border border-rose-800/60 text-rose-300 hover:text-white rounded-lg text-[9.5px] font-bold transition-all cursor-pointer flex items-center gap-1 shrink-0"
+                          title="Desfazer a baixa e reverter o registro para o alerta de contingência"
+                        >
+                          <RotateCcw className="w-3 h-3 text-rose-400" />
+                          <span>Desfazer Baixa</span>
+                        </button>
                       </div>
                     )}
 
@@ -3963,21 +4043,20 @@ export default function PendingRequestsTab() {
                       </div>
 
                       <div className="flex items-center justify-between text-[9px] text-slate-400 pt-0.5">
-                        <span className="truncate max-w-[180px] font-medium text-slate-300" title={req.pdfFilePath || `${NETWORK_REGISTROS_PATH}\\${generatePdfFilename(req.mapa, req.nb, req.nf, req.data)}`}>
-                          📂 {req.pdfFilePath || `${NETWORK_REGISTROS_PATH}\\${generatePdfFilename(req.mapa, req.nb, req.nf, req.data)}`}
+                        <span className="truncate max-w-[200px] font-medium text-slate-300" title={NETWORK_REGISTROS_PATH}>
+                          📂 {NETWORK_REGISTROS_PATH}
                         </span>
                         <button
                           type="button"
                           onClick={() => {
-                            const fullPath = req.pdfFilePath || `${NETWORK_REGISTROS_PATH}\\${generatePdfFilename(req.mapa, req.nb, req.nf, req.data)}`;
-                            navigator.clipboard.writeText(fullPath);
-                            alert("✅ Caminho da pasta compartilhada copiado:\n" + fullPath);
+                            navigator.clipboard.writeText(NETWORK_REGISTROS_PATH);
+                            alert("✅ Caminho da pasta de registros copiado:\n" + NETWORK_REGISTROS_PATH);
                           }}
                           className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded text-emerald-400 hover:text-white cursor-pointer transition-colors flex items-center gap-1 shrink-0 text-[9px] font-bold"
-                          title="Copiar caminho para colar no Explorador de Arquivos"
+                          title="Copiar caminho da pasta para colar no Explorador de Arquivos"
                         >
                           <Copy className="w-3 h-3" />
-                          <span>Copiar</span>
+                          <span>Copiar Pasta</span>
                         </button>
                       </div>
                     </div>
@@ -4166,20 +4245,39 @@ export default function PendingRequestsTab() {
                             Aguardando Correção pelo RN
                           </div>
                         ) : (
-                          <div className="flex items-center justify-between gap-2 w-full pt-1 border-t border-slate-850/50">
-                            <div className="py-1 px-2.5 bg-slate-950 border border-slate-850/60 text-slate-500 rounded-lg text-[9.5px] font-mono shrink-0">
-                              Lançado por: <strong className="text-slate-350">{req.cadastroUser}</strong>
+                          <div className="flex flex-col gap-2 w-full pt-2 border-t border-slate-850/80">
+                            <div className="p-2.5 bg-slate-950 border border-slate-850 rounded-xl space-y-1.5 text-[10px] font-mono text-left">
+                              <div className="flex flex-wrap items-center justify-between gap-1">
+                                <span className="text-slate-400">
+                                  👤 Cadastrado por (Plataforma): <strong className="text-indigo-300 font-bold">{req.cadastroUser || "Usuário Não Identificado"}</strong>
+                                </span>
+                                <span className="text-slate-400">
+                                  🕒 <strong className="text-slate-200">{req.cadastroDate || req.data || "Sem Data/Hora"}</strong>
+                                </span>
+                              </div>
+                              {promaxUser ? (
+                                <div className="text-[9.5px] text-emerald-400 font-bold flex items-center gap-1 pt-1 border-t border-slate-900">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                  <span>Usuário Promax (Col K / 03.18.05): <strong className="text-white bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-800/40">{promaxUser}</strong></span>
+                                </div>
+                              ) : (
+                                <div className="text-[9px] text-slate-500 pt-1 border-t border-slate-900">
+                                  🖥️ Usuário Promax (Col K): <span className="text-slate-400 italic">Pendente / Aguardando Importação 03.18.05</span>
+                                </div>
+                              )}
                             </div>
 
                             {!isFaltaSkuCompletoReq(req) && (
-                              <button
-                                onClick={() => setSelectedPrintDoc({ type: "recibo", request: req })}
-                                className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
-                                title="Gerar Recibo PDV em Contingência para este cadastro aprovado"
-                              >
-                                <Printer className="w-3.5 h-3.5 text-amber-400" />
-                                <span>Recibo PDV ⚠️</span>
-                              </button>
+                              <div className="flex justify-end">
+                                <button
+                                  onClick={() => setSelectedPrintDoc({ type: "recibo", request: req })}
+                                  className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
+                                  title="Gerar Recibo PDV em Contingência para este cadastro aprovado"
+                                >
+                                  <Printer className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>Recibo PDV ⚠️</span>
+                                </button>
+                              </div>
                             )}
                           </div>
                         )}
@@ -5110,9 +5208,9 @@ export default function PendingRequestsTab() {
                         const itemQty = Number(sub.quantidade) || 1;
 
                         const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
-                        const embalagem = dbProduct?.embalagem || 12;
+                        const embalagem = dbProduct?.embalagem || dbProduct?.fator || 12;
 
-                        const baseBoxPrice = Number(sub.customUnitPrice) || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 98.50;
+                        const baseBoxPrice = Number(sub.customUnitPrice) || dbProduct?.valor || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 0;
                         const isUnd = (sub.unidadeMedida || "").toLowerCase() === "und";
 
                         // Calculate unit price and total price accounting for UND vs CX/SKU
@@ -5655,6 +5753,104 @@ export default function PendingRequestsTab() {
           </div>
         );
       })()}
+
+      {/* PROMAX CONTINGENCY CONFIRMATION MODAL */}
+      {confirmContingenciaReq && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in no-print">
+          <div className="bg-slate-900 border border-amber-500/50 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl text-left">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-amber-400 font-extrabold text-sm font-mono">
+                <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+                <span>CONFIRMAR BAIXA DE CONTINGÊNCIA PROMAX</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmContingenciaReq(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2 text-xs font-mono">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Setor / Rota:</span>
+                <strong className="text-white">{confirmContingenciaReq.setor}</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">NF-e Original:</span>
+                <strong className="text-amber-300">{confirmContingenciaReq.nf}</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Código NB PDV:</span>
+                <strong className="text-white">{confirmContingenciaReq.nb}</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Motivo:</span>
+                <strong className="text-indigo-400">{confirmContingenciaReq.motivo || "Falta / Inversão"}</strong>
+              </div>
+              <div className="flex justify-between border-t border-slate-900 pt-2 mt-1">
+                <span className="text-slate-400">Cadastrado por (Plataforma):</span>
+                <strong className="text-indigo-300">{confirmContingenciaReq.cadastroUser || "Gestor"}</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Data e Hora de Cadastro:</span>
+                <strong className="text-slate-300">{confirmContingenciaReq.cadastroDate || confirmContingenciaReq.data}</strong>
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-955/40 border border-amber-500/30 rounded-xl text-amber-200 text-xs leading-relaxed font-sans space-y-1.5">
+              <p className="font-bold text-amber-300 flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Confirmação de Registro no Promax ERP</span>
+              </p>
+              <p className="text-[11.5px] text-slate-200">
+                Para baixar esta contingência, confirma que o cadastro da troca/reposição foi verificado e efetuado com sucesso no sistema <strong>Promax ERP</strong>?
+              </p>
+            </div>
+
+            <label className="flex items-start gap-3 p-3.5 bg-slate-950 rounded-xl border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+              <input
+                type="checkbox"
+                checked={contingenciaConfirmChecked}
+                onChange={(e) => setContingenciaConfirmChecked(e.target.checked)}
+                className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-amber-500 cursor-pointer shrink-0"
+              />
+              <span className="text-xs text-slate-200 font-medium leading-snug">
+                Confirmado: O cadastro referente a este registro foi efetuado no Promax ERP e pode ter a baixa de contingência concluída.
+              </span>
+            </label>
+
+            <div className="flex justify-end gap-3 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setConfirmContingenciaReq(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={!contingenciaConfirmChecked}
+                onClick={() => {
+                  if (confirmContingenciaReq) {
+                    executeBaixaContingencia(confirmContingenciaReq.id);
+                    setConfirmContingenciaReq(null);
+                  }
+                }}
+                className={`px-5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all shadow-lg ${
+                  contingenciaConfirmChecked
+                    ? "bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer shadow-amber-900/30"
+                    : "bg-slate-800 text-slate-500 cursor-not-allowed opacity-50"
+                }`}
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Confirmar e Baixar Contingência</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

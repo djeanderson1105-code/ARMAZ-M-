@@ -6,6 +6,67 @@
   --font-mono: "JetBrains Mono", monospace;
 }
 
+/* Versão Dia - Light mode operational theme */
+.shift-mode-dia {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+.shift-mode-dia .bg-slate-950 {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+.shift-mode-dia .bg-slate-900,
+.shift-mode-dia .bg-slate-900\/95,
+.shift-mode-dia .bg-slate-900\/80,
+.shift-mode-dia .bg-slate-900\/65 {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+.shift-mode-dia .bg-slate-850,
+.shift-mode-dia .bg-slate-800,
+.shift-mode-dia .bg-slate-850\/80,
+.shift-mode-dia .bg-slate-850\/60 {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+  border-color: #94a3b8 !important;
+}
+
+.shift-mode-dia .text-white,
+.shift-mode-dia .text-slate-100,
+.shift-mode-dia .text-slate-200,
+.shift-mode-dia .text-slate-300 {
+  color: #0f172a !important;
+}
+
+.shift-mode-dia .text-slate-400,
+.shift-mode-dia .text-slate-450,
+.shift-mode-dia .text-slate-500,
+.shift-mode-dia .text-slate-550 {
+  color: #334155 !important;
+}
+
+.shift-mode-dia .border-slate-800,
+.shift-mode-dia .border-slate-850,
+.shift-mode-dia .border-slate-900,
+.shift-mode-dia .border-slate-950 {
+  border-color: #cbd5e1 !important;
+}
+
+.shift-mode-dia input[type="text"],
+.shift-mode-dia input[type="number"],
+.shift-mode-dia input[type="date"],
+.shift-mode-dia select,
+.shift-mode-dia textarea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
 @layer utilities {
   /* Print utilities for clean PDF extraction */
   @media print {

@@ -38,7 +38,9 @@ import {
   Award,
   Monitor,
   Laptop,
-  Info
+  Info,
+  Sun,
+  Moon
 } from "lucide-react";
 
 import { SstrDataProvider, useSstrData } from "./context/SstrDataContext";
@@ -52,7 +54,9 @@ function MainApp() {
     batches, 
     saveRecordsAndBatches, 
     isInitialLoading, 
-    isHeavyLoading 
+    isHeavyLoading,
+    shiftMode,
+    setShiftMode
   } = useSstrData();
 
   const [activePortal, setActivePortal] = useState<"gestor" | "representante">("representante");
@@ -210,7 +214,7 @@ function MainApp() {
 
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans transition-colors duration-300 relative">
+    <div className={`min-h-screen flex flex-col font-sans transition-colors duration-300 relative ${shiftMode === "dia" ? "shift-mode-dia bg-slate-100 text-slate-900" : "shift-mode-noite bg-slate-950 text-slate-100"}`}>
       
       {/* Toast Notification Container */}
       {toastMessage && (
@@ -254,8 +258,38 @@ function MainApp() {
             </div>
           </div>
 
-          {/* Modes selector and gestor login session info */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+          {/* Modes selector, Turno / Versão Switcher and gestor login session info */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full md:w-auto">
+            {/* Versão Dia / Versão Noite Selector */}
+            <div className="bg-slate-950 p-1 rounded-xl border border-slate-800/90 flex items-center space-x-1 shadow-inner shrink-0">
+              <button
+                type="button"
+                onClick={() => setShiftMode("dia")}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                  shiftMode === "dia"
+                    ? "bg-amber-500 text-slate-950 shadow-md font-black"
+                    : "text-slate-400 hover:text-amber-300 hover:bg-slate-900"
+                }`}
+                title="Versão Operacional do Dia (Operação Diurna)"
+              >
+                <Sun className={`w-3.5 h-3.5 ${shiftMode === "dia" ? "text-slate-950" : "text-amber-400"}`} />
+                <span>Versão Dia</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShiftMode("noite")}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                  shiftMode === "noite"
+                    ? "bg-indigo-600 text-white shadow-md font-black"
+                    : "text-slate-400 hover:text-indigo-300 hover:bg-slate-900"
+                }`}
+                title="Versão Operacional da Noite (Carregamento & Noturno)"
+              >
+                <Moon className={`w-3.5 h-3.5 ${shiftMode === "noite" ? "text-white" : "text-indigo-400"}`} />
+                <span>Versão Noite</span>
+              </button>
+            </div>
+
             {/* Quick Access modes (Gestor Administrative vs Acesso Representante via Linktree) */}
             <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center space-x-1.5 shadow-inner">
               <button

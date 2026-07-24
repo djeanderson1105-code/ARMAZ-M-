@@ -357,7 +357,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       const matchingProductRecord = records.find(r => r.produto === req.item);
       const unitPrice = productMatch && productMatch.valor !== undefined && productMatch.valor > 0
         ? productMatch.valor
-        : (matchingProductRecord && matchingProductRecord.valorUnitario > 0 ? matchingProductRecord.valorUnitario : 98.50);
+        : (matchingProductRecord && matchingProductRecord.valorUnitario > 0 ? matchingProductRecord.valorUnitario : 0);
       const totalPrice = Number((unitPrice * (req.quantidade || 1)).toFixed(2));
 
       const newExchange: ExchangeRecord = {
@@ -413,7 +413,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
         const matchingProductRecord = records.find(r => r.produto === subItem.item);
         const unitPrice = productMatch && productMatch.valor !== undefined && productMatch.valor > 0
           ? productMatch.valor
-          : (matchingProductRecord && matchingProductRecord.valorUnitario > 0 ? matchingProductRecord.valorUnitario : 98.50);
+          : (matchingProductRecord && matchingProductRecord.valorUnitario > 0 ? matchingProductRecord.valorUnitario : 0);
         const totalPrice = Number((unitPrice * subItem.quantidade).toFixed(2));
 
         let finalJust = subItem.motivo || "Produto Avariado";
@@ -1070,11 +1070,13 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       let val = 0;
       if (r.items && r.items.length > 0) {
         val = r.items.reduce((itemSum, current) => {
-          const itemUnitPrice = records.find(p => p.produto === current.item)?.valorUnitario || 98.50;
+          const dbP = PRODUCT_DATABASE.find(p => p.codigo === current.item);
+          const itemUnitPrice = (dbP && dbP.valor && dbP.valor > 0) ? dbP.valor : (records.find(p => p.produto === current.item)?.valorUnitario || 0);
           return itemSum + (itemUnitPrice * current.quantidade);
         }, 0);
       } else if (r.item) {
-        const itemUnitPrice = records.find(p => p.produto === r.item)?.valorUnitario || 98.50;
+        const dbP = PRODUCT_DATABASE.find(p => p.codigo === r.item);
+        const itemUnitPrice = (dbP && dbP.valor && dbP.valor > 0) ? dbP.valor : (records.find(p => p.produto === r.item)?.valorUnitario || 0);
         val = itemUnitPrice * (r.quantidade || 1);
       }
       return val;
@@ -1572,6 +1574,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       pdfFilename: expectedFilename,
       pdfFilePath: expectedFullPath,
       cadastroUser: roleContext === "rn" ? `Representante Setor ${selectedSector}` : `Motorista / Rota ${selectedSector}`,
+      cadastroDate: dataFormatada,
       emContingencia: isContingencia,
       contingenciaBaixada: false,
       valorTotal: calcTotalVal > 0 ? calcTotalVal : undefined,
@@ -2164,6 +2167,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                       ].map(pil => (
                         <button
                           key={pil.id}
+                          type="button"
                           onClick={() => setStatusFilter(pil.id)}
                           className={`px-2.5 py-1 rounded text-[9.5px] font-semibold transition-all cursor-pointer whitespace-nowrap ${
                             statusFilter === pil.id
@@ -2652,7 +2656,8 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                       <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
                         {draftItems.map((dItem) => {
                           const matchingRecord = records.find(r => r.produto === dItem.itemCode);
-                          const unitPrice = matchingRecord?.valorUnitario || 98.50;
+                          const dbP = PRODUCT_DATABASE.find(p => p.codigo === item.itemCode);
+                          const unitPrice = (dbP && dbP.valor && dbP.valor > 0) ? dbP.valor : (matchingRecord?.valorUnitario || 0);
                           const totalPriceValue = unitPrice * dItem.quantidade;
 
                           return (
@@ -2709,7 +2714,8 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                             {new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(
                               draftItems.reduce((sum, item) => {
                                 const matchingRec = records.find(r => r.produto === item.itemCode);
-                                const uPr = matchingRec?.valorUnitario || 98.50;
+                                const dbP = PRODUCT_DATABASE.find(p => p.codigo === item.itemCode);
+                                const uPr = (dbP && dbP.valor && dbP.valor > 0) ? dbP.valor : (matchingRec?.valorUnitario || 0);
                                 return sum + (uPr * item.quantidade);
                               }, 0)
                             )}
@@ -3465,7 +3471,8 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                     {selectedApprovedDetail.items.map((subItem, sIdx) => {
                       const prodInfo = PRODUCT_DATABASE.find(p => p.codigo === subItem.item);
                       const fullDescr = prodInfo ? prodInfo.descricao : (subItem.descricao || "Item SSTR Reposição");
-                      const itemUnitPrice = records.find(r => r.produto === subItem.item)?.valorUnitario || 98.50;
+                      const dbP = PRODUCT_DATABASE.find(p => p.codigo === subItem.item);
+                      const itemUnitPrice = (dbP && dbP.valor && dbP.valor > 0) ? dbP.valor : (records.find(r => r.produto === subItem.item)?.valorUnitario || 0);
                       const itemTotalPrice = itemUnitPrice * subItem.quantidade;
 
                       return (
@@ -3504,7 +3511,8 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                       <span className="text-[7.5px] text-slate-500 block leading-tight uppercase">VALOR TOTAL PREVISTO</span>
                       <span className="text-blue-400">
                         R$ {selectedApprovedDetail.items.reduce((sum, current) => {
-                          const itemUnitPrice = records.find(r => r.produto === current.item)?.valorUnitario || 98.50;
+                          const dbP = PRODUCT_DATABASE.find(p => p.codigo === current.item);
+                          const itemUnitPrice = (dbP && dbP.valor && dbP.valor > 0) ? dbP.valor : (records.find(r => r.produto === current.item)?.valorUnitario || 0);
                           return sum + (itemUnitPrice * current.quantidade);
                         }, 0).toLocaleString("pt-BR", {minimumFractionDigits: 2})}
                       </span>

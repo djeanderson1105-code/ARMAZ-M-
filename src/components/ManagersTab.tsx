@@ -52,6 +52,7 @@ export default function ManagersTab() {
   const { 
     pendingRequests: requests, 
     savePendingRequest, 
+    saveProductsList,
     crewList, 
     saveCrewMember, 
     deleteCrewMember,
@@ -381,6 +382,9 @@ export default function ManagersTab() {
         return acc;
       }, 0);
 
+      const loggedManager = sessionStorage.getItem("sstr_current_manager_name") || "Gestor";
+      const cadastroUserStr = loggedManager.toLowerCase().includes("gestor") ? loggedManager : `Gestor (${loggedManager})`;
+
       const newRequest: PendingRequest = {
         id: `pending_req_${Date.now()}`,
         timestamp: Date.now(),
@@ -393,7 +397,7 @@ export default function ManagersTab() {
         observacao: reqObservacao.trim(),
         statusPromax: "pendente",
         notified: false,
-        cadastroUser: "Gestor (Dashboard)",
+        cadastroUser: cadastroUserStr,
         cadastroDate: dataFormatada,
         dataEntrega: reqDataEntrega.trim() || undefined,
         emContingencia: isContingencia,
@@ -716,7 +720,7 @@ export default function ManagersTab() {
   const [newProductCodigo, setNewProductCodigo] = useState("");
   const [newProductDescricao, setNewProductDescricao] = useState("");
   const [newProductFator, setNewProductFator] = useState("12");
-  const [newProductValor, setNewProductValor] = useState("98.50");
+  const [newProductValor, setNewProductValor] = useState("0");
   const [newProductFatorHecto, setNewProductFatorHecto] = useState("0.05");
   const [editingProductCodigo, setEditingProductCodigo] = useState<string | null>(null);
   const [confirmDeleteProduct, setConfirmDeleteProduct] = useState<string | null>(null);
@@ -1825,7 +1829,7 @@ export default function ManagersTab() {
   };
 
   // Products handlers
-  const handleProductImportText = (text: string) => {
+  const handleProductImportText = async (text: string) => {
     setError(null);
     setSuccess(null);
     if (!text.trim()) {
@@ -1888,14 +1892,14 @@ export default function ManagersTab() {
             continue;
           }
           
-          let fator = 12;
-          let valor = 98.50;
+          let fator = extractFatorFromDescricao(descricao);
+          let valor = 0;
           let fatorHecto = 0.05;
           
           const existing = productMap.get(codigo);
           if (existing) {
-            fator = existing.fator !== undefined ? existing.fator : 12;
-            valor = existing.valor !== undefined ? existing.valor : 98.50;
+            fator = existing.fator !== undefined ? existing.fator : fator;
+            valor = existing.valor !== undefined ? existing.valor : 0;
             fatorHecto = existing.fatorHecto;
           } else {
             const descLower = descricao.toLowerCase();
@@ -1930,21 +1934,34 @@ export default function ManagersTab() {
             }
           }
           
+          // Column C (index 2): FATOR
           if (parts.length >= 3 && parts[2]) {
-            const parsedFator = parseInt(parts[2], 10);
-            if (!isNaN(parsedFator)) {
+            const rawFator = parts[2].replace(/\D/g, "");
+            const parsedFator = parseInt(rawFator, 10);
+            if (!isNaN(parsedFator) && parsedFator > 0) {
               fator = parsedFator;
             }
           }
+
+          // Column D (index 3): VALOR
           if (parts.length >= 4 && parts[3]) {
-            const parsedValor = parseFloat(parts[3].replace(",", "."));
-            if (!isNaN(parsedValor)) {
+            let rawValStr = parts[3].replace(/R\$\s*/gi, "").replace(/\s/g, "").trim();
+            if (rawValStr.includes(",") && rawValStr.includes(".")) {
+              rawValStr = rawValStr.replace(/\./g, "").replace(",", ".");
+            } else if (rawValStr.includes(",")) {
+              rawValStr = rawValStr.replace(",", ".");
+            }
+            const parsedValor = parseFloat(rawValStr);
+            if (!isNaN(parsedValor) && parsedValor >= 0) {
               valor = parsedValor;
             }
           }
+
+          // Column E (index 4): FATOR HECTO
           if (parts.length >= 5 && parts[4]) {
-            const parsedFatorHecto = parseFloat(parts[4].replace(",", "."));
-            if (!isNaN(parsedFatorHecto)) {
+            let rawHectoStr = parts[4].replace(",", ".").replace(/\s/g, "").trim();
+            const parsedFatorHecto = parseFloat(rawHectoStr);
+            if (!isNaN(parsedFatorHecto) && parsedFatorHecto >= 0) {
               fatorHecto = parsedFatorHecto;
             }
           }
@@ -1963,7 +1980,7 @@ export default function ManagersTab() {
       
       const updatedList = Array.from(productMap.values());
       setProductsList(updatedList);
-      localStorage.setItem("sstr_products_database", JSON.stringify(updatedList));
+      await saveProductsList(updatedList);
       clearProductsCache();
       window.dispatchEvent(new Event("storage"));
       
@@ -4655,7 +4672,7 @@ export default function ManagersTab() {
                         <td className="p-3 font-mono text-indigo-400 font-semibold text-[11px]">#{p.codigo}</td>
                         <td className="p-3 font-sans font-medium text-slate-200 uppercase text-[11px]">{p.descricao}</td>
                         <td className="p-3 font-mono text-center text-slate-350">{p.fator !== undefined ? p.fator : 12}</td>
-                        <td className="p-3 font-mono text-center text-emerald-400 font-semibold">R$ {(p.valor !== undefined ? p.valor : 98.50).toFixed(2)}</td>
+                        <td className="p-3 font-mono text-center text-emerald-400 font-semibold">R$ {(p.valor !== undefined ? p.valor : 0).toFixed(2)}</td>
                         <td className="p-3 font-mono text-center text-slate-300 font-semibold">{p.fatorHecto.toFixed(4)} HL</td>
                         <td className="p-3">
                           <div className="flex items-center justify-center gap-1.5">
@@ -4664,7 +4681,7 @@ export default function ManagersTab() {
                                 setNewProductCodigo(p.codigo);
                                 setNewProductDescricao(p.descricao);
                                 setNewProductFator(p.fator !== undefined ? p.fator.toString() : "12");
-                                setNewProductValor(p.valor !== undefined ? p.valor.toString() : "98.50");
+                                setNewProductValor(p.valor !== undefined ? p.valor.toString() : "0");
                                 setNewProductFatorHecto(p.fatorHecto.toString());
                                 setEditingProductCodigo(p.codigo);
                                 document.getElementById("gestor-produtos-sub-con")?.scrollIntoView({ behavior: 'smooth' });
