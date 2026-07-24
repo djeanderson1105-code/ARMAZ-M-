@@ -314,12 +314,20 @@ export interface PendingRequest {
   faltaAjudante2?: string;
   faltaAjudante2Cpf?: string;
   mapaDataAnomalia?: string;
+  dataEntrega?: string; // Delivery / alignment date informed in manager registration
   dataEntregaRecibo?: string;
   observacaoRecibo?: string;
   municipioRecibo?: string;
   nomeRecibo?: string;
   documentoRecibo?: string;
   enderecoRecibo?: string;
+
+  // Contingency tracking fields (Promax next month)
+  emContingencia?: boolean;
+  contingenciaBaixada?: boolean;
+  contingenciaBaixadaDate?: string;
+  contingenciaBaixadaUser?: string;
+  valorTotal?: number;
 }
 
 export interface CrewMember {

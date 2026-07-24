@@ -109,6 +109,7 @@ export default function ManagersTab() {
   const [reqNf, setReqNf] = useState("");
   const [reqNb, setReqNb] = useState("");
   const [reqMapa, setReqMapa] = useState("");
+  const [reqDataEntrega, setReqDataEntrega] = useState("");
   const [reqMotiveType, setReqMotiveType] = useState<string>("Produto Avariado");
   const [reqMotiveText, setReqMotiveText] = useState("");
   const [reqFotoUrl, setReqFotoUrl] = useState("");
@@ -363,6 +364,23 @@ export default function ManagersTab() {
         if (found) driverCpf = found.cpf;
       }
 
+      // Calculate contingency status and total value
+      const isFaltaSkuCompletoOrInversao = 
+        reqMotiveType.toLowerCase().includes("falta de sku completo") || 
+        reqMotiveType.toLowerCase().includes("falta de sku fechado") || 
+        reqMotiveType.toLowerCase().includes("invers");
+      const isContingencia = !isFaltaSkuCompletoOrInversao;
+
+      const calcTotalVal = finalDrafts.reduce((acc, curr) => {
+        if (curr.precoCalculated !== undefined && curr.precoCalculated > 0) return acc + curr.precoCalculated;
+        if (curr.precoSugerido !== undefined && curr.precoSugerido > 0) {
+          const isUnd = curr.unidadeMedida === 'und';
+          const unitVal = isUnd ? (curr.precoSugerido / (curr.fatorEmbalagem || 12)) : curr.precoSugerido;
+          return acc + (unitVal * curr.quantidade);
+        }
+        return acc;
+      }, 0);
+
       const newRequest: PendingRequest = {
         id: `pending_req_${Date.now()}`,
         timestamp: Date.now(),
@@ -377,6 +395,10 @@ export default function ManagersTab() {
         notified: false,
         cadastroUser: "Gestor (Dashboard)",
         cadastroDate: dataFormatada,
+        dataEntrega: reqDataEntrega.trim() || undefined,
+        emContingencia: isContingencia,
+        contingenciaBaixada: false,
+        valorTotal: calcTotalVal > 0 ? calcTotalVal : undefined,
         
         // Shortage fields
         ...(reqMotorista ? { faltaMotorista: reqMotorista } : {}),
@@ -1075,6 +1097,10 @@ export default function ManagersTab() {
 
       if (req.items && req.items.length > 0) {
         for (const item of req.items) {
+          const isFaltaSkuCompleto = (item.motivo || req.motivo || "").toLowerCase().includes("completo") || (item.motivo || req.motivo || "").toLowerCase().includes("fechado");
+          const rawUm = (item.unidadeMedida || req.unidadeMedida || "").toLowerCase();
+          const isSkuUnit = rawUm === "sku" || isFaltaSkuCompleto;
+
           flattened.push({
             requestId: req.id,
             cadastroDate: req.cadastroDate || "",
@@ -1086,12 +1112,17 @@ export default function ManagersTab() {
             productCode: item.item || item.itemCode,
             productDesc: item.descricao || item.itemDesc || "Produto sem descrição",
             quantidade: item.quantidade,
+            unidadeType: isSkuUnit ? "SKU" : "UND",
             solicitante: req.setor,
             nf: req.nf,
             mapa: req.mapa
           });
         }
       } else if (req.item) {
+        const isFaltaSkuCompleto = (req.motivo || "").toLowerCase().includes("completo") || (req.motivo || "").toLowerCase().includes("fechado");
+        const rawUm = (req.unidadeMedida || "").toLowerCase();
+        const isSkuUnit = rawUm === "sku" || isFaltaSkuCompleto;
+
         flattened.push({
           requestId: req.id,
           cadastroDate: req.cadastroDate || "",
@@ -1103,6 +1134,7 @@ export default function ManagersTab() {
           productCode: req.item,
           productDesc: req.descricaoProduto || "Produto sem descrição",
           quantidade: req.quantidade || 0,
+          unidadeType: isSkuUnit ? "SKU" : "UND",
           solicitante: req.setor,
           nf: req.nf,
           mapa: req.mapa
@@ -2200,7 +2232,7 @@ export default function ManagersTab() {
                   <th className="p-2 border border-slate-300 text-left">NB</th>
                   <th className="p-2 border border-slate-300 text-left">Razão Social / Cliente</th>
                   <th className="p-2 border border-slate-300 text-left">Produto (SKU - Descrição)</th>
-                  <th className="p-2 border border-slate-300 text-center">Qtd</th>
+                  <th className="p-2 border border-slate-300 text-center">Qtd / Medida</th>
                   <th className="p-2 border border-slate-300 text-left">Cidade</th>
                   <th className="p-2 border border-slate-300 text-left">N.F. / Mapa</th>
                   <th className="p-2 border border-slate-300 text-left">Setor</th>
@@ -2224,7 +2256,9 @@ export default function ManagersTab() {
                       <td className="p-2 border border-slate-300">
                         <strong className="font-mono text-slate-900">#{item.productCode}</strong> - <span className="uppercase text-slate-750">{item.productDesc}</span>
                       </td>
-                      <td className="p-2 border border-slate-300 text-center font-extrabold text-slate-900">{item.quantidade}</td>
+                      <td className="p-2 border border-slate-300 text-center font-mono font-bold text-slate-900">
+                        {item.quantidade} <span className="text-[9px] font-semibold text-slate-600 block">({item.unidadeType === "SKU" ? "SKU Fechado" : "Unidade (UND)"})</span>
+                      </td>
                       <td className="p-2 border border-slate-300 uppercase font-mono">{item.municipio}</td>
                       <td className="p-2 border border-slate-300 font-mono">
                         <p>NF: {item.nf || "N/A"}</p>
@@ -3665,6 +3699,19 @@ export default function ManagersTab() {
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
+
+                {/* Data de Entrega / Previsão */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-amber-400 uppercase font-mono block">
+                    Data de Entrega / Previsão <span className="text-amber-400">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={reqDataEntrega}
+                    onChange={(e) => setReqDataEntrega(e.target.value)}
+                    className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -4738,7 +4785,7 @@ export default function ManagersTab() {
                     <th className="p-3">NB</th>
                     <th className="p-3">CLIENTE / CIDADE</th>
                     <th className="p-3">PRODUTO (SKU)</th>
-                    <th className="p-3 text-center">QUANTIDADE</th>
+                    <th className="p-3 text-center">QUANTIDADE / UNIDADE</th>
                     <th className="p-3">MAPA / NF</th>
                     <th className="p-3">CANAL</th>
                     <th className="p-3">HORÁRIO APROV.</th>
@@ -4768,7 +4815,16 @@ export default function ManagersTab() {
                           <p className="font-bold text-slate-300">{item.productDesc}</p>
                           <p className="text-[10px] text-slate-500 font-mono">SKU: #{item.productCode}</p>
                         </td>
-                        <td className="p-3 text-center font-extrabold text-white text-sm font-mono">{item.quantidade}</td>
+                        <td className="p-3 text-center font-mono">
+                          <span className="font-extrabold text-white text-sm block">{item.quantidade}</span>
+                          <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded inline-block mt-0.5 ${
+                            item.unidadeType === "SKU"
+                              ? "bg-purple-950/80 border border-purple-800/60 text-purple-300"
+                              : "bg-blue-950/80 border border-blue-800/60 text-blue-300"
+                          }`}>
+                            {item.unidadeType === "SKU" ? "📦 SKU Fechado" : "🧪 Unidade (UND)"}
+                          </span>
+                        </td>
                         <td className="p-3 font-mono text-[10.5px]">
                           <p className="text-slate-300">NF: {item.nf || "N/A"}</p>
                           <p className="text-slate-500 text-[9px]">MAPA: {item.mapa || "N/A"}</p>

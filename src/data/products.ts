@@ -358,7 +358,7 @@ export const getProductsDatabase = (): ProductInfo[] => {
     return DEFAULT_PRODUCT_DATABASE.map(p => ({
       ...p,
       fator: p.fator !== undefined ? p.fator : extractFatorFromDescricao(p.descricao),
-      valor: p.valor !== undefined ? p.valor : 98.50
+      valor: p.valor !== undefined ? p.valor : 0
     }));
   }
   const saved = localStorage.getItem("sstr_products_database");
@@ -373,8 +373,9 @@ export const getProductsDatabase = (): ProductInfo[] => {
           fator = extractFatorFromDescricao(p.descricao);
           isModified = true;
         }
-        if (valor === undefined) {
-          valor = 98.50;
+        if (valor === 98.50) {
+          // Reset legacy hardcoded 98.50 fallback to allow real prices from platform/promax
+          valor = 0;
           isModified = true;
         }
         if (isModified) {
@@ -383,7 +384,7 @@ export const getProductsDatabase = (): ProductInfo[] => {
         return {
           ...p,
           fator,
-          valor
+          valor: valor || 0
         };
       });
       if (updated) {
@@ -399,7 +400,7 @@ export const getProductsDatabase = (): ProductInfo[] => {
   const mappedDefaults = DEFAULT_PRODUCT_DATABASE.map(p => ({
     ...p,
     fator: p.fator !== undefined ? p.fator : extractFatorFromDescricao(p.descricao),
-    valor: p.valor !== undefined ? p.valor : 98.50
+    valor: p.valor !== undefined ? p.valor : 0
   }));
   safeSetItem("sstr_products_database", JSON.stringify(mappedDefaults));
   cachedProducts = mappedDefaults;

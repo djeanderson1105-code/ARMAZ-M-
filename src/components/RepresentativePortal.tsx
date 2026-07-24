@@ -1539,6 +1539,23 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     const expectedFilename = generatePdfFilename(cleanMapa, cleanNb, cleanNf, dataFormatada);
     const expectedFullPath = `${NETWORK_REGISTROS_PATH}\\${expectedFilename}`;
 
+    // Calculate contingency status and total value
+    const isFaltaSkuCompletoOrInversao = 
+      formMotiveType.toLowerCase().includes("falta de sku completo") || 
+      formMotiveType.toLowerCase().includes("falta de sku fechado") || 
+      formMotiveType.toLowerCase().includes("invers");
+    const isContingencia = !isFaltaSkuCompletoOrInversao;
+
+    const calcTotalVal = currentDrafts.reduce((acc, curr) => {
+      if (curr.precoCalculated !== undefined && curr.precoCalculated > 0) return acc + curr.precoCalculated;
+      if (curr.precoSugerido !== undefined && curr.precoSugerido > 0) {
+        const isUnd = curr.unidadeMedida === 'und';
+        const unitVal = isUnd ? (curr.precoSugerido / (curr.fatorEmbalagem || 12)) : curr.precoSugerido;
+        return acc + (unitVal * curr.quantidade);
+      }
+      return acc;
+    }, 0);
+
     // Create Request with complete item array and multi-sku attributes
     const newRequest: PendingRequest = {
       id: `pending_req_${Date.now()}`,
@@ -1555,6 +1572,9 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       pdfFilename: expectedFilename,
       pdfFilePath: expectedFullPath,
       cadastroUser: roleContext === "rn" ? `Representante Setor ${selectedSector}` : `Motorista / Rota ${selectedSector}`,
+      emContingencia: isContingencia,
+      contingenciaBaixada: false,
+      valorTotal: calcTotalVal > 0 ? calcTotalVal : undefined,
       
       // Fallbacks on top-level properties for compatibility with older display cards
       item: firstItem.itemCode,
@@ -3689,33 +3709,47 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                   <p className="text-[8px] text-slate-500 font-bold uppercase">Descrição dos Itens:</p>
                   <div className="space-y-2">
                     {receiptRequest.items && receiptRequest.items.length > 0 ? (
-                      receiptRequest.items.map((subItem, idx) => (
-                        <div key={idx} className="border-b border-slate-100 pb-1.5 last:border-0 last:pb-0">
-                          <div className="flex justify-between items-start gap-1 font-bold text-slate-900">
-                            <span className="break-words max-w-[75%] text-[9px]">
-                              {subItem.item} - {subItem.descricao || PRODUCT_DATABASE.find(p => p.codigo === subItem.item)?.descricao || "Produto"}
-                            </span>
-                            <span className="shrink-0 text-right">{subItem.quantidade} cx</span>
+                      receiptRequest.items.map((subItem, idx) => {
+                        const isFaltaSku = (subItem.motivo || receiptRequest.motivo || "").toLowerCase().includes("completo") || (subItem.motivo || receiptRequest.motivo || "").toLowerCase().includes("fechado");
+                        const rawUm = String(subItem.unidadeMedida || "").toLowerCase();
+                        const unitStr = (rawUm === "sku" || isFaltaSku) ? "sku" : "und";
+
+                        return (
+                          <div key={idx} className="border-b border-slate-100 pb-1.5 last:border-0 last:pb-0">
+                            <div className="flex justify-between items-start gap-1 font-bold text-slate-900">
+                              <span className="break-words max-w-[75%] text-[9px]">
+                                {subItem.item} - {subItem.descricao || PRODUCT_DATABASE.find(p => p.codigo === subItem.item)?.descricao || "Produto"}
+                              </span>
+                              <span className="shrink-0 text-right">{subItem.quantidade} {unitStr}</span>
+                            </div>
+                            <div className="flex justify-between text-[8px] text-slate-500 font-sans mt-0.5">
+                              <span>Motivo: {subItem.motivo || receiptRequest.motivo}</span>
+                              {subItem.hectolitros ? <span>Volume: {subItem.hectolitros.toFixed(4)} HL</span> : null}
+                            </div>
                           </div>
-                          <div className="flex justify-between text-[8px] text-slate-500 font-sans mt-0.5">
-                            <span>Motivo: {subItem.motivo || receiptRequest.motivo}</span>
-                            {subItem.hectolitros ? <span>Volume: {subItem.hectolitros.toFixed(4)} HL</span> : null}
-                          </div>
-                        </div>
-                      ))
+                        );
+                      })
                     ) : (
                       /* Legacy compatibility single SKU item */
-                      <div className="pb-1">
-                        <div className="flex justify-between font-bold text-slate-900">
-                          <span className="break-words max-w-[75%] text-[9px]">
-                            {receiptRequest.item} - {PRODUCT_DATABASE.find(p => p.codigo === receiptRequest.item)?.descricao || "Produto"}
-                          </span>
-                          <span>{receiptRequest.quantidade} cx</span>
-                        </div>
-                        <p className="text-[8px] text-slate-500 font-sans mt-0.5">
-                          Motivo: {receiptRequest.motivo || "Avaria"}
-                        </p>
-                      </div>
+                      (() => {
+                        const isFaltaSku = (receiptRequest.motivo || "").toLowerCase().includes("completo") || (receiptRequest.motivo || "").toLowerCase().includes("fechado");
+                        const rawUm = String(receiptRequest.unidadeMedida || "").toLowerCase();
+                        const unitStr = (rawUm === "sku" || isFaltaSku) ? "sku" : "und";
+
+                        return (
+                          <div className="pb-1">
+                            <div className="flex justify-between font-bold text-slate-900">
+                              <span className="break-words max-w-[75%] text-[9px]">
+                                {receiptRequest.item} - {PRODUCT_DATABASE.find(p => p.codigo === receiptRequest.item)?.descricao || "Produto"}
+                              </span>
+                              <span>{receiptRequest.quantidade} {unitStr}</span>
+                            </div>
+                            <p className="text-[8px] text-slate-500 font-sans mt-0.5">
+                              Motivo: {receiptRequest.motivo || "Avaria"}
+                            </p>
+                          </div>
+                        );
+                      })()
                     )}
                   </div>
                 </div>
@@ -3728,9 +3762,14 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                   <p className="flex justify-between">
                     <span className="font-bold text-slate-900">TOTAL PRODUTOS:</span>
                     <span className="font-bold text-slate-900">
-                      {receiptRequest.items && receiptRequest.items.length > 0 
-                        ? receiptRequest.items.reduce((sum, curr) => sum + curr.quantidade, 0)
-                        : receiptRequest.quantidade} cx
+                      {(() => {
+                        const totalQty = receiptRequest.items && receiptRequest.items.length > 0 
+                          ? receiptRequest.items.reduce((sum, curr) => sum + curr.quantidade, 0)
+                          : receiptRequest.quantidade;
+                        const hasSku = receiptRequest.items?.some(it => (it.motivo || receiptRequest.motivo || "").toLowerCase().includes("completo") || (it.motivo || receiptRequest.motivo || "").toLowerCase().includes("fechado") || String(it.unidadeMedida || "").toLowerCase() === "sku")
+                          || (receiptRequest.motivo || "").toLowerCase().includes("completo") || (receiptRequest.motivo || "").toLowerCase().includes("fechado") || String(receiptRequest.unidadeMedida || "").toLowerCase() === "sku";
+                        return `${totalQty} ${hasSku ? "sku(s)" : "und"}`;
+                      })()}
                     </span>
                   </p>
                   <p className="flex justify-between">
