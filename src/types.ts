@@ -328,6 +328,9 @@ export interface PendingRequest {
   contingenciaBaixadaDate?: string;
   contingenciaBaixadaUser?: string;
   valorTotal?: number;
+  placaVeiculo?: string;
+  itemPlates?: Record<string, string>;
+  lembreteNotificacao?: boolean;
 }
 
 export interface CrewMember {

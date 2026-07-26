@@ -406,6 +406,79 @@ export default function PendingRequestsTab() {
     return new Date().toLocaleDateString("pt-BR");
   });
   const [isPrintingEspelho, setIsPrintingEspelho] = useState(false);
+  const [espelhoPlates, setEspelhoPlates] = useState<Record<string, string>>({});
+  const [espelhoCityInputs, setEspelhoCityInputs] = useState<Record<string, string>>({});
+  const [espelhoStatusFilter, setEspelhoStatusFilter] = useState<"todos" | "pendentes" | "carregados">("todos");
+
+  // States for returning a card back to PENDENTE status via modal
+  const [returnToPendingModalReq, setReturnToPendingModalReq] = useState<PendingRequest | null>(null);
+  const [returnNewDeliveryDate, setReturnNewDeliveryDate] = useState<string>("");
+
+  const handleOpenReturnModal = (req: PendingRequest) => {
+    const defaultDate = new Date();
+    defaultDate.setDate(defaultDate.getDate() + 1);
+    const formattedDefault = defaultDate.toISOString().split("T")[0];
+
+    let initial = formattedDefault;
+    if (req.dataEntrega) {
+      if (req.dataEntrega.includes("/")) {
+        const [d, m, y] = req.dataEntrega.split("/");
+        if (d && m && y && y.length === 4) {
+          initial = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+        }
+      } else if (req.dataEntrega.includes("-")) {
+        initial = req.dataEntrega;
+      }
+    }
+
+    setReturnNewDeliveryDate(initial);
+    setReturnToPendingModalReq(req);
+  };
+
+  const executeReturnToPending = async () => {
+    if (!returnToPendingModalReq) return;
+
+    let formattedDisplayDate = returnNewDeliveryDate.trim();
+    if (returnNewDeliveryDate.includes("-")) {
+      const [y, m, d] = returnNewDeliveryDate.trim().split("-");
+      if (y && m && d) {
+        formattedDisplayDate = `${d.padStart(2, "0")}/${m.padStart(2, "0")}/${y}`;
+      }
+    }
+
+    const updatedReq: PendingRequest = {
+      ...returnToPendingModalReq,
+      statusPromax: "pendente",
+      dataEntrega: formattedDisplayDate,
+      faltaBaixa: false,
+      faltaBaixaDate: undefined,
+      faltaBaixaUser: undefined,
+      faltaBaixaObs: undefined,
+      contingenciaBaixada: false,
+      contingenciaBaixadaDate: undefined,
+      contingenciaBaixadaUser: undefined,
+      cadastroUser: undefined,
+      cadastroDate: undefined,
+      rejeitadoObs: undefined,
+      reprovadoUser: undefined,
+      reprovadoDate: undefined,
+      notified: false,
+      lembreteNotificacao: true,
+      observacao: (returnToPendingModalReq.observacao || "") + ` [Retornado p/ Pendente em ${new Date().toLocaleDateString("pt-BR")}]`
+    };
+
+    await savePendingRequest(updatedReq);
+    setReturnToPendingModalReq(null);
+    setActiveTab("pendente");
+  };
+
+  const handleOpenPrintEspelho = () => {
+    if (espelhoFiltrado.length === 0) {
+      alert("Nenhum registro encontrado para a visualização de impressão do Espelho.");
+      return;
+    }
+    setIsPrintingEspelho(true);
+  };
 
   // Faltas & Inversões specific filters
   const [lackFilterStatus, setLackFilterStatus] = useState<"todos" | "abertos" | "baixados">("abertos");
@@ -1503,6 +1576,8 @@ export default function PendingRequestsTab() {
           const isFaltaSkuCompleto = (item.motivo || req.motivo || "").toLowerCase().includes("completo") || (item.motivo || req.motivo || "").toLowerCase().includes("fechado");
           const rawUm = (item.unidadeMedida || req.unidadeMedida || "").toLowerCase();
           const isSkuUnit = rawUm === "sku" || isFaltaSkuCompleto;
+          const prodCode = item.item || item.itemCode;
+          const itemPlate = (cast.itemPlates && cast.itemPlates[prodCode]) || req.placaVeiculo || cast.placa || "";
 
           flattened.push({
             requestId: req.id,
@@ -1512,19 +1587,21 @@ export default function PendingRequestsTab() {
             razaoSocial: pdv.razaoSocial,
             nomeFantasia: pdv.nomeFantasia,
             municipio: displayMunicipio,
-            productCode: item.item || item.itemCode,
+            productCode: prodCode,
             productDesc: item.descricao || item.itemDesc || "Produto sem descrição",
             quantidade: item.quantidade,
             unidadeType: isSkuUnit ? "SKU" : "UND",
             solicitante: req.setor,
             nf: req.nf,
-            mapa: req.mapa
+            mapa: req.mapa,
+            placaVeiculo: itemPlate
           });
         }
       } else if (req.item) {
         const isFaltaSkuCompleto = (req.motivo || "").toLowerCase().includes("completo") || (req.motivo || "").toLowerCase().includes("fechado");
         const rawUm = (req.unidadeMedida || "").toLowerCase();
         const isSkuUnit = rawUm === "sku" || isFaltaSkuCompleto;
+        const itemPlate = (cast.itemPlates && cast.itemPlates[req.item]) || req.placaVeiculo || cast.placa || "";
 
         flattened.push({
           requestId: req.id,
@@ -1540,16 +1617,20 @@ export default function PendingRequestsTab() {
           unidadeType: isSkuUnit ? "SKU" : "UND",
           solicitante: req.setor,
           nf: req.nf,
-          mapa: req.mapa
+          mapa: req.mapa,
+          placaVeiculo: itemPlate
         });
       }
     }
 
-    return flattened;
+    return flattened.sort((a, b) =>
+      (a.municipio || "").localeCompare(b.municipio || "", "pt-BR", { sensitivity: "base" }) ||
+      (a.razaoSocial || "").localeCompare(b.razaoSocial || "", "pt-BR", { sensitivity: "base" })
+    );
   }, [requests, promaxRecords]);
 
-  // Filtered Approved Replacements Memo (based on selected date and search text)
-  const espelhoFiltrado = useMemo(() => {
+  // Filtered Approved Replacements Base Memo (based on selected date and search text)
+  const espelhoFiltradoBase = useMemo(() => {
     return approvedReplacements.filter((item: any) => {
       // Date filter
       const matchesDate = item.dateOnly === filterEspelhoDate;
@@ -1566,8 +1647,151 @@ export default function PendingRequestsTab() {
         (item.productDesc || "").toLowerCase().includes(q) ||
         (item.municipio || "").toLowerCase().includes(q)
       );
-    });
+    }).sort((a: any, b: any) =>
+      (a.municipio || "").localeCompare(b.municipio || "", "pt-BR", { sensitivity: "base" }) ||
+      (a.razaoSocial || "").localeCompare(b.razaoSocial || "", "pt-BR", { sensitivity: "base" })
+    );
   }, [approvedReplacements, filterEspelhoDate, searchEspelho]);
+
+  // Filtered list according to espelhoStatusFilter and sorted by city alphabetically
+  const espelhoFiltrado = useMemo(() => {
+    return espelhoFiltradoBase.filter((item: any) => {
+      const itemKey = `${item.requestId}_${item.productCode}`;
+      const currentPlate = espelhoPlates[itemKey] !== undefined 
+        ? espelhoPlates[itemKey] 
+        : (item.placaVeiculo || item.placa || "");
+      const isCarregado = Boolean(currentPlate && currentPlate.trim());
+
+      if (espelhoStatusFilter === "pendentes") return !isCarregado;
+      if (espelhoStatusFilter === "carregados") return isCarregado;
+      return true;
+    }).sort((a: any, b: any) =>
+      (a.municipio || "").localeCompare(b.municipio || "", "pt-BR", { sensitivity: "base" }) ||
+      (a.razaoSocial || "").localeCompare(b.razaoSocial || "", "pt-BR", { sensitivity: "base" })
+    );
+  }, [espelhoFiltradoBase, espelhoPlates, espelhoStatusFilter]);
+
+  // Unique cities for the FILTERED Espelho view and their item count
+  const espelhoCidadesDoDia = useMemo(() => {
+    const cityMap = new Map<string, { count: number; items: any[] }>();
+    espelhoFiltrado.forEach(item => {
+      const city = (item.municipio || "OUTRAS").toUpperCase().trim();
+      const existing = cityMap.get(city) || { count: 0, items: [] };
+      existing.count += 1;
+      existing.items.push(item);
+      cityMap.set(city, existing);
+    });
+    return Array.from(cityMap.entries()).map(([city, data]) => ({
+      city,
+      count: data.count,
+      items: data.items
+    })).sort((a, b) => a.city.localeCompare(b.city, "pt-BR", { sensitivity: "base" }));
+  }, [espelhoFiltrado]);
+
+  // Counts for pending vs loaded items
+  const espelhoCounts = useMemo(() => {
+    let pendentes = 0;
+    let carregados = 0;
+    espelhoFiltradoBase.forEach(item => {
+      const itemKey = `${item.requestId}_${item.productCode}`;
+      const currentPlate = espelhoPlates[itemKey] !== undefined 
+        ? espelhoPlates[itemKey] 
+        : (item.placaVeiculo || item.placa || "");
+      if (currentPlate && currentPlate.trim()) {
+        carregados++;
+      } else {
+        pendentes++;
+      }
+    });
+    return { total: espelhoFiltradoBase.length, pendentes, carregados };
+  }, [espelhoFiltradoBase, espelhoPlates]);
+
+  // Helper to calculate request/item age in days
+  const getItemAgeInDays = (item: any, req?: any): number => {
+    let reqDate: Date | null = null;
+    if (req) {
+      reqDate = getReqDate(req);
+    }
+    if (!reqDate && item.cadastroDate) {
+      const parts = item.cadastroDate.split(" ")[0].split("/");
+      if (parts.length === 3) {
+        reqDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+      }
+    }
+    if (!reqDate && item.dateOnly) {
+      const parts = item.dateOnly.split("/");
+      if (parts.length === 3) {
+        reqDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+      }
+    }
+    if (!reqDate) return 0;
+    
+    const diffMs = Date.now() - reqDate.getTime();
+    return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+  };
+
+  // Delayed items loaded in Espelho do Dia for over 1 week (>7 days) without baixa
+  const delayedCarregados = useMemo(() => {
+    return approvedReplacements.filter(item => {
+      const req = requests.find(r => r.id === item.requestId);
+      const isBaixado = !!(req as any)?.faltaBaixa;
+      if (isBaixado) return false;
+
+      const itemKey = `${item.requestId}_${item.productCode}`;
+      const currentPlate = espelhoPlates[itemKey] !== undefined 
+        ? espelhoPlates[itemKey] 
+        : (item.placaVeiculo || item.placa || "");
+      const isCarregado = !!currentPlate.trim();
+      if (!isCarregado) return false;
+
+      const ageInDays = getItemAgeInDays(item, req);
+      return ageInDays >= 7;
+    });
+  }, [approvedReplacements, requests, espelhoPlates]);
+
+  // Apply license plate to all items of a specific city on the FILTERED view
+  const handleApplyPlateToCity = (cityName: string, plateValue: string) => {
+    const val = plateValue.trim().toUpperCase();
+    if (!val) return;
+    const targetCityUpper = cityName.toUpperCase().trim();
+    
+    // Target strictly items present in the current filtered Espelho list
+    const cityItems = espelhoFiltrado.filter(
+      item => (item.municipio || "OUTRAS").toUpperCase().trim() === targetCityUpper
+    );
+
+    if (cityItems.length === 0) return;
+
+    const newPlates = { ...espelhoPlates };
+    const affectedReqIds = new Set<string>();
+
+    cityItems.forEach(item => {
+      const k = `${item.requestId}_${item.productCode}`;
+      newPlates[k] = val;
+      affectedReqIds.add(item.requestId);
+    });
+
+    setEspelhoPlates(newPlates);
+
+    // Save changes to pending requests state
+    affectedReqIds.forEach(reqId => {
+      const targetReq = requests.find(r => r.id === reqId);
+      if (targetReq) {
+        const existingItemPlates = (targetReq as any).itemPlates || {};
+        const updatedItemPlates = { ...existingItemPlates };
+        
+        cityItems.filter(i => i.requestId === reqId).forEach(i => {
+          updatedItemPlates[i.productCode] = val;
+        });
+
+        savePendingRequest({
+          ...targetReq,
+          placaVeiculo: val,
+          itemPlates: updatedItemPlates
+        });
+      }
+    });
+  };
 
   // Prompt the reminder card once
   useEffect(() => {
@@ -1686,17 +1910,27 @@ export default function PendingRequestsTab() {
         return matchSearch && matchSector;
       } else {
         let matchStatus = req.statusPromax === activeTab;
-        if (activeTab === "reprovado") {
+        if (processTypeFilter === "troca_exceto_sku_fechado") {
+          matchStatus = req.statusPromax === "pendente" || req.statusPromax === "cadastrado";
+        } else if (activeTab === "reprovado") {
           matchStatus = req.statusPromax === "reprovado" || req.statusPromax === "corrigir";
         }
         return matchSearch && matchStatus && matchSector;
       }
     }).sort((a, b) => {
+      const db = getPdvDatabase();
+      const pdvA = getClientDetails(a.nb, db, promaxRecords);
+      const pdvB = getClientDetails(b.nb, db, promaxRecords);
+      const cityA = (a as any).municipioRecibo || pdvA.municipio || "";
+      const cityB = (b as any).municipioRecibo || pdvB.municipio || "";
+      const cityCompare = cityA.localeCompare(cityB, "pt-BR", { sensitivity: "base" });
+      if (cityCompare !== 0) return cityCompare;
+
       const dateA = getReqDate(a)?.getTime() || a.timestamp || 0;
       const dateB = getReqDate(b)?.getTime() || b.timestamp || 0;
       return dateB - dateA;
     });
-  }, [requests, searchTerm, activeTab, sectorFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType, processTypeFilter, historicoBaixasStatusFilter, onlyContingenciaFilter]);
+  }, [requests, searchTerm, activeTab, sectorFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType, processTypeFilter, historicoBaixasStatusFilter, onlyContingenciaFilter, promaxRecords]);
 
   // Process type summary breakdown for dashboard cards (Reposição vs. Troca vs. Contingências)
   const processSummary = useMemo(() => {
@@ -1706,27 +1940,34 @@ export default function PendingRequestsTab() {
     let trocaVal = 0;
     let excetoSkuFechadoCount = 0;
     let excetoSkuFechadoVal = 0;
+    let cadastradosContingenciaCount = 0;
 
     requests.forEach(r => {
-      // Requirement 5: Settled/baixado records stop impacting active operational goals and indicators
-      const isBaixada = !!(r as any).faltaBaixa || r.statusPromax === "cadastrado" || r.statusPromax === "reprovado";
-      if (isBaixada) return;
-
       const val = getRequestValue(r, promaxRecords);
       const isRep = isReposicaoReq(r);
       const isFechado = isFaltaSkuCompletoReq(r);
+      const isReprovado = r.statusPromax === "reprovado";
 
-      if (isRep) {
-        reposicaoCount++;
-        reposicaoVal += val;
-      } else {
-        trocaCount++;
-        trocaVal += val;
+      // Active operational goals (Reposição & Troca)
+      const isBaixadaOrConcluded = !!(r as any).faltaBaixa || r.statusPromax === "cadastrado" || isReprovado;
+      if (!isBaixadaOrConcluded) {
+        if (isRep) {
+          reposicaoCount++;
+          reposicaoVal += val;
+        } else {
+          trocaCount++;
+          trocaVal += val;
+        }
       }
 
-      if (!isFechado) {
+      // RECIBO PDV CONTINGÊNCIA Card:
+      // Accounts for EVERYTHING registered (cadastrado) OR pending in contingency, EVEN IF IN HISTORY/CADASTRO (not reprovado & not Falta SKU Fechado)
+      if (!isReprovado && !isFechado) {
         excetoSkuFechadoCount++;
         excetoSkuFechadoVal += val;
+        if (r.statusPromax === "cadastrado") {
+          cadastradosContingenciaCount++;
+        }
       }
     });
 
@@ -1736,7 +1977,8 @@ export default function PendingRequestsTab() {
       trocaCount,
       trocaVal,
       excetoSkuFechadoCount,
-      excetoSkuFechadoVal
+      excetoSkuFechadoVal,
+      cadastradosContingenciaCount
     };
   }, [requests, promaxRecords]);
 
@@ -2312,7 +2554,9 @@ export default function PendingRequestsTab() {
                   <th className="p-2 border border-slate-300 text-left">Razão Social / Cliente</th>
                   <th className="p-2 border border-slate-300 text-left">Produto (SKU - Descrição)</th>
                   <th className="p-2 border border-slate-300 text-center">Qtd / Medida</th>
-                  <th className="p-2 border border-slate-300 text-left">Cidade</th>
+                  <th className="p-2 border border-slate-300 text-center bg-sky-100 font-extrabold text-sky-950">📍 CIDADE DESTINO</th>
+                  <th className="p-2 border border-slate-300 text-center">Status Encaminhamento</th>
+                  <th className="p-2 border border-slate-300 text-center bg-amber-50">Placa Veículo</th>
                   <th className="p-2 border border-slate-300 text-left">N.F. / Mapa</th>
                   <th className="p-2 border border-slate-300 text-left">Setor</th>
                 </tr>
@@ -2320,32 +2564,55 @@ export default function PendingRequestsTab() {
               <tbody>
                 {espelhoFiltrado.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="p-8 text-center text-slate-500 italic">
+                    <td colSpan={9} className="p-8 text-center text-slate-500 italic">
                       Nenhuma reposição cadastrada/aprovada na data {filterEspelhoDate}.
                     </td>
                   </tr>
                 ) : (
-                  espelhoFiltrado.map((item, idx) => (
-                    <tr key={idx} className="border-b border-slate-300 hover:bg-slate-50">
-                      <td className="p-2 border border-slate-300 font-mono font-bold text-slate-900">{item.nb}</td>
-                      <td className="p-2 border border-slate-300 uppercase">
-                        <p className="font-bold">{item.razaoSocial}</p>
-                        <p className="text-[9px] text-slate-500 font-mono">{item.nomeFantasia}</p>
-                      </td>
-                      <td className="p-2 border border-slate-300">
-                        <strong className="font-mono text-slate-900">#{item.productCode}</strong> - <span className="uppercase text-slate-750">{item.productDesc}</span>
-                      </td>
-                      <td className="p-2 border border-slate-300 text-center font-mono font-bold text-slate-900">
-                        {item.quantidade} <span className="text-[9px] font-semibold text-slate-600 block">({item.unidadeType === "SKU" ? "SKU Fechado" : "Unidade (UND)"})</span>
-                      </td>
-                      <td className="p-2 border border-slate-300 uppercase font-mono">{item.municipio}</td>
-                      <td className="p-2 border border-slate-300 font-mono">
-                        <p>NF: {item.nf || "N/A"}</p>
-                        <p className="text-[9px] text-slate-500">Mapa: {item.mapa || "N/A"}</p>
-                      </td>
-                      <td className="p-2 border border-slate-300 font-mono text-slate-600">{item.solicitante}</td>
-                    </tr>
-                  ))
+                  espelhoFiltrado.map((item, idx) => {
+                    const itemKey = `${item.requestId}_${item.productCode}`;
+                    const currentPlate = espelhoPlates[itemKey] || item.placaVeiculo || item.placa || "";
+                    const isCarregado = Boolean(currentPlate && currentPlate.trim());
+
+                    return (
+                      <tr key={idx} className="border-b border-slate-300 hover:bg-slate-50">
+                        <td className="p-2 border border-slate-300 font-mono font-bold text-slate-900">{item.nb}</td>
+                        <td className="p-2 border border-slate-300 uppercase">
+                          <p className="font-bold">{item.razaoSocial}</p>
+                          <p className="text-[9px] text-slate-500 font-mono">{item.nomeFantasia}</p>
+                        </td>
+                        <td className="p-2 border border-slate-300">
+                          <strong className="font-mono text-slate-900">#{item.productCode}</strong> - <span className="uppercase text-slate-750">{item.productDesc}</span>
+                        </td>
+                        <td className="p-2 border border-slate-300 text-center font-mono font-bold text-slate-900">
+                          {item.quantidade}/{item.unidadeType === "SKU" ? "SKU" : "UND"}
+                        </td>
+                        {/* HIGHLY HIGHLIGHTED CITY NAME FOR PRINT */}
+                        <td className="p-2 border border-slate-400 uppercase font-mono font-black text-xs text-sky-950 bg-sky-100 text-center">
+                          📍 {item.municipio}
+                        </td>
+                        <td className="p-2 border border-slate-300 text-center font-mono text-[10px]">
+                          {isCarregado ? (
+                            <span className="font-extrabold text-blue-900 bg-blue-50 px-1.5 py-0.5 border border-blue-300 rounded block">
+                              ✅ CARREGADO
+                            </span>
+                          ) : (
+                            <span className="font-bold text-amber-800 bg-amber-50 px-1.5 py-0.5 border border-amber-300 rounded block">
+                              ⏳ PENDENTE ENVIOS
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-2 border border-slate-300 text-center font-mono font-bold text-slate-900 uppercase bg-amber-50/50">
+                          {currentPlate || "NÃO ATRIBUÍDA"}
+                        </td>
+                        <td className="p-2 border border-slate-300 font-mono">
+                          <p>NF: {item.nf || "N/A"}</p>
+                          <p className="text-[9px] text-slate-500">Mapa: {item.mapa || "N/A"}</p>
+                        </td>
+                        <td className="p-2 border border-slate-300 font-mono text-slate-600">{item.solicitante}</td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -2565,10 +2832,44 @@ export default function PendingRequestsTab() {
             </p>
             <span className="text-[9.5px] text-slate-400 block mt-1 font-sans leading-tight">
               Aprovados com emissão de Recibo PDV (Exceto Falta SKU Fechado)
+              {processSummary.cadastradosContingenciaCount > 0 && (
+                <span className="block text-emerald-400 font-semibold mt-0.5">
+                  ({processSummary.cadastradosContingenciaCount} cadastrados/histórico incluídos)
+                </span>
+              )}
             </span>
           </button>
         </div>
       </div>
+
+      {/* CRITICAL OPERATIONAL ALERT BANNER FOR CARREGADO ITEMS > 1 WEEK WITHOUT BAIXA */}
+      {delayedCarregados.length > 0 && (
+        <div className="bg-rose-950/90 border-2 border-rose-500/80 p-4 rounded-2xl shadow-xl shadow-rose-950/60 card-3d flex flex-col md:flex-row items-start md:items-center justify-between gap-4 animate-pulse no-print my-2">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-rose-600/30 border border-rose-400/50 rounded-xl text-rose-300 shrink-0 badge-3d">
+              <AlertTriangle className="w-6 h-6 animate-bounce text-rose-400" />
+            </div>
+            <div>
+              <h4 className="text-sm font-extrabold font-mono text-rose-300 uppercase tracking-wide flex items-center gap-2">
+                <span>🚨 ALERTA OPERACIONAL: REPOSIÇÕES CARREGADAS SEM BAIXA (&gt; 1 SEMANA)</span>
+                <span className="px-2.5 py-0.5 bg-rose-600 text-white text-xs font-black rounded-full font-mono shadow-sm">
+                  {delayedCarregados.length} {delayedCarregados.length === 1 ? "item" : "itens"}
+                </span>
+              </h4>
+              <p className="text-xs text-slate-300 mt-1 font-sans leading-relaxed">
+                Atenção! Existem <strong className="text-rose-200">{delayedCarregados.length}</strong> reposições/trocas que já foram carregadas em veículo há mais de 1 semana (≥7 dias) e ainda <strong>não receberam baixa no sistema</strong>.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setActiveTab("espelho")}
+            className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold font-mono rounded-xl border border-rose-400 shadow-md transition-all cursor-pointer btn-3d whitespace-nowrap shrink-0 flex items-center gap-2"
+          >
+            <span>Ver no Espelho do Dia</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* SIX FILTER SUB-TABS (ALIGNED GRID) */}
       <div className="bg-slate-950 p-2 rounded-2xl border border-slate-850/80 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2 no-print">
@@ -3446,13 +3747,13 @@ export default function PendingRequestsTab() {
                     <table className="w-full text-left text-xs divide-y divide-slate-900">
                       <thead>
                         <tr className="bg-slate-900/50 font-mono font-bold text-slate-500 text-[10px] uppercase tracking-wider">
-                          <th className="px-4 py-2.5">SKU / Produto</th>
-                          <th className="px-4 py-2.5">Unidade</th>
-                          <th className="px-4 py-2.5 text-center">Qtd</th>
-                          <th className="px-4 py-2.5 text-right">Valor Unit.</th>
-                          <th className="px-4 py-2.5 text-right">Subtotal</th>
-                          <th className="px-4 py-2.5 pl-6">Motivo</th>
-                          <th className="px-4 py-2.5 text-right">Ação</th>
+                          <th className="px-4 py-2.5 align-middle">SKU / Produto</th>
+                          <th className="px-4 py-2.5 align-middle">Unidade</th>
+                          <th className="px-4 py-2.5 text-center align-middle">Qtd</th>
+                          <th className="px-4 py-2.5 text-right align-middle">Valor Unit.</th>
+                          <th className="px-4 py-2.5 text-right align-middle">Subtotal</th>
+                          <th className="px-4 py-2.5 pl-6 align-middle">Motivo</th>
+                          <th className="px-4 py-2.5 text-right align-middle">Ação</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-900">
@@ -3465,32 +3766,32 @@ export default function PendingRequestsTab() {
 
                           return (
                             <tr key={item.id} className="hover:bg-slate-900/30">
-                              <td className="px-4 py-2.5">
+                              <td className="px-4 py-2.5 align-middle">
                                 <span className="font-mono font-bold text-emerald-400">{item.itemCode}</span>
                                 <span className="text-slate-400 ml-2 block sm:inline truncate max-w-[200px]" title={item.itemDesc}>{item.itemDesc}</span>
                               </td>
-                              <td className="px-4 py-2.5 font-mono text-[10px]">
+                              <td className="px-4 py-2.5 font-mono text-[10px] align-middle">
                                 {isUnd ? (
-                                  <span className="p-1 px-1.5 bg-blue-950/40 border border-blue-900/50 rounded text-blue-400 font-bold">UND</span>
+                                  <span className="p-1 px-1.5 bg-blue-950/40 border border-blue-900/50 rounded text-blue-400 font-bold badge-3d">UND</span>
                                 ) : (
-                                  <span className="p-1 px-1.5 bg-emerald-950/40 border border-emerald-900/50 rounded text-emerald-400 font-bold">SKU</span>
+                                  <span className="p-1 px-1.5 bg-emerald-950/40 border border-emerald-900/50 rounded text-emerald-400 font-bold badge-3d">SKU</span>
                                 )}
                               </td>
-                              <td className="px-4 py-2.5 text-center font-mono font-bold text-slate-200">
+                              <td className="px-4 py-2.5 text-center font-mono font-bold text-slate-200 align-middle">
                                 {item.quantidade}
                               </td>
-                              <td className="px-4 py-2.5 text-right font-mono text-slate-350">
+                              <td className="px-4 py-2.5 text-right font-mono text-slate-350 align-middle">
                                 R$ {valUnit.toFixed(2)}
                               </td>
-                              <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-450">
+                              <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-450 align-middle">
                                 R$ {subtotal.toFixed(2)}
                               </td>
-                              <td className="px-4 py-2.5 pl-6">
+                              <td className="px-4 py-2.5 pl-6 align-middle">
                                 <span className="p-0.5 px-2 bg-slate-900 border border-slate-800 rounded font-bold text-[10px] text-amber-500 font-mono block whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px]" title={item.motivo}>
                                   {item.motivo}
                                 </span>
                               </td>
-                              <td className="px-4 py-2.5 text-right">
+                              <td className="px-4 py-2.5 text-right align-middle">
                                 <button
                                   type="button"
                                   onClick={() => handleRemoveReqDraftItem(item.id)}
@@ -3567,7 +3868,7 @@ export default function PendingRequestsTab() {
                 </p>
               </div>
               <button
-                onClick={() => setIsPrintingEspelho(true)}
+                onClick={handleOpenPrintEspelho}
                 disabled={espelhoFiltrado.length === 0}
                 className={`px-4 py-2 rounded-xl font-mono text-xs font-bold transition-all flex items-center gap-2 uppercase tracking-wider shadow-md ${
                   espelhoFiltrado.length === 0
@@ -3580,10 +3881,10 @@ export default function PendingRequestsTab() {
               </button>
             </div>
 
-            {/* Filters Bar */}
+            {/* Date and Search Bar */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3 bg-slate-950/40 p-4 border border-slate-850 rounded-xl items-end">
               <div className="md:col-span-4 space-y-1">
-                <label className="text-[10px] text-slate-400 font-mono block">Data de Referência (Aprovação/Cadastro)</label>
+                <label className="text-[10px] text-slate-400 font-mono block">Data de Referência (Cadastro)</label>
                 <input
                   type="date"
                   defaultValue={new Date().toISOString().split("T")[0]}
@@ -3614,80 +3915,283 @@ export default function PendingRequestsTab() {
               </div>
             </div>
 
-            {/* Main Table */}
-            <div className="border border-slate-850 rounded-xl overflow-hidden bg-slate-950 font-sans text-xs">
-              <div className="p-3 bg-slate-900/60 border-b border-slate-850 flex justify-between items-center text-[10.5px] font-mono text-slate-400">
-                <span>Registros encontrados na data <strong className="text-white font-bold">{filterEspelhoDate}</strong>:</span>
-                <span className="font-bold text-indigo-400 bg-indigo-950/40 border border-indigo-900/40 px-2 py-0.5 rounded">{espelhoFiltrado.length} Reposições</span>
+            {/* DETAILED ALERT BOX FOR CARREGADO ITEMS > 1 WEEK WITHOUT BAIXA */}
+            {delayedCarregados.length > 0 && (
+              <div className="bg-rose-950/80 border-2 border-rose-600/80 p-4 rounded-xl shadow-md card-3d space-y-2.5">
+                <div className="flex items-center justify-between gap-2 border-b border-rose-800/80 pb-2">
+                  <div className="flex items-center gap-2 text-rose-300 font-mono font-black text-xs uppercase">
+                    <AlertTriangle className="w-4 h-4 animate-bounce text-rose-400" />
+                    <span>⚠️ ATENÇÃO OPERACIONAL: REPOSIÇÕES CARREGADAS HÁ MAIS DE 1 SEMANA PENDENTES DE BAIXA ({delayedCarregados.length})</span>
+                  </div>
+                  <span className="text-[10px] font-mono text-rose-200 font-extrabold bg-rose-800/80 px-2.5 py-0.5 rounded border border-rose-500/60 shadow-sm">
+                    Pendentes &gt; 7 dias
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300 font-sans leading-relaxed">
+                  Os itens listados abaixo foram marcados como <strong>CARREGADOS (com placa do veículo)</strong> há mais de 7 dias e ainda não possuem confirmação de baixa no sistema:
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-1">
+                  {delayedCarregados.map((it, idx) => {
+                    const itemReq = requests.find(r => r.id === it.requestId);
+                    const age = getItemAgeInDays(it, itemReq);
+                    return (
+                      <div key={idx} className="bg-rose-900/50 border border-rose-700/80 p-2.5 rounded-lg text-xs font-mono text-rose-200 space-y-1 shadow-sm">
+                        <div className="flex items-center justify-between font-bold">
+                          <span>NB #{it.nb}</span>
+                          <span className="text-amber-300 bg-amber-950/90 px-1.5 py-0.5 rounded border border-amber-600/60 text-[10px]">
+                            ⏱️ {age} dias
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-bold text-white truncate" title={it.razaoSocial}>{it.razaoSocial}</p>
+                        <div className="text-[10px] text-rose-300 flex items-center justify-between">
+                          <span>📍 {it.municipio}</span>
+                          <span>🚛 {it.placaVeiculo || "Placa atribuída"}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-300 truncate" title={it.productDesc}>
+                          #{it.productCode} - {it.productDesc} ({it.quantidade}/{it.unidadeType})
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* LISTA DE CIDADES DESTINADAS ÀS REPOSIÇÕES DO DIA (ESPELHO FILTRADO) */}
+            <div className="bg-slate-950/80 p-4 border border-slate-800/80 rounded-xl space-y-3 card-3d">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+                <div>
+                  <h4 className="text-xs font-bold font-mono text-sky-400 uppercase tracking-wide flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-sky-400" /> Cidades do Espelho Filtrado ({filterEspelhoDate})
+                  </h4>
+                  <p className="text-[10px] text-slate-400">
+                    Atribua a placa do veículo por cidade para replicar em todas as solicitações da lista filtrada atual. As cidades exibidas correspondem estritamente aos itens do espelho visível.
+                  </p>
+                </div>
+              </div>
+
+              {espelhoCidadesDoDia.length === 0 ? (
+                <p className="text-[11px] text-slate-500 italic font-mono py-1">
+                  Nenhuma cidade com reposições visíveis na lista filtrada para {filterEspelhoDate}.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  {espelhoCidadesDoDia.map(({ city, count, items }) => {
+                    const val = espelhoCityInputs[city] || "";
+                    const assignedCount = items.filter(it => {
+                      const k = `${it.requestId}_${it.productCode}`;
+                      const p = espelhoPlates[k] !== undefined ? espelhoPlates[k] : (it.placaVeiculo || it.placa || "");
+                      return p && p.trim();
+                    }).length;
+
+                    return (
+                      <div key={city} className="bg-slate-900/90 border border-slate-800 p-2.5 rounded-xl space-y-2 flex flex-col justify-between card-3d hover:border-slate-700 transition-all">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-extrabold text-xs text-sky-300 font-mono uppercase bg-sky-950/90 border border-sky-600/60 px-2 py-0.5 rounded badge-3d flex items-center gap-1">
+                            📍 {city}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-300 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800 badge-3d">
+                            {count} {count === 1 ? "item" : "itens"} ({assignedCount}/{count} c/ placa)
+                          </span>
+                        </div>
+
+                        <div className="flex gap-1.5 items-center">
+                          <input
+                            type="text"
+                            placeholder="Placa ex: KLR-8920"
+                            value={val}
+                            onChange={(e) => {
+                              const upper = e.target.value.toUpperCase();
+                              setEspelhoCityInputs(prev => ({ ...prev, [city]: upper }));
+                            }}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-amber-200 font-mono uppercase focus:border-sky-400 focus:outline-none placeholder:text-slate-600 input-3d"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleApplyPlateToCity(city, val)}
+                            className="px-2.5 py-1 bg-sky-600/25 hover:bg-sky-600/40 border border-sky-500/50 text-sky-200 hover:text-white rounded-lg text-[10.5px] font-mono font-bold whitespace-nowrap cursor-pointer transition-colors btn-3d"
+                            title={`Aplicar placa '${val}' para todos os ${count} itens de ${city} no espelho filtrado`}
+                          >
+                            Aplicar
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Main Table Container */}
+            <div className="border border-slate-850 rounded-xl overflow-hidden bg-slate-950 font-sans text-xs card-3d">
+              {/* FILTRO DE STATUS (TODOS / PENDENTES / CARREGADOS) */}
+              <div className="p-3 bg-slate-900/80 border-b border-slate-850 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-[10.5px] font-mono text-slate-400">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-slate-300">Filtro de Envio:</span>
+                  <div className="inline-flex p-0.5 bg-slate-950 border border-slate-800 rounded-lg badge-3d">
+                    <button
+                      type="button"
+                      onClick={() => setEspelhoStatusFilter("todos")}
+                      className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer btn-3d ${
+                        espelhoStatusFilter === "todos"
+                          ? "bg-indigo-600 text-white"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Todos ({espelhoCounts.total})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEspelhoStatusFilter("pendentes")}
+                      className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer btn-3d ${
+                        espelhoStatusFilter === "pendentes"
+                          ? "bg-amber-600 text-white"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      ⏳ Pendentes ({espelhoCounts.pendentes})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEspelhoStatusFilter("carregados")}
+                      className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer btn-3d ${
+                        espelhoStatusFilter === "carregados"
+                          ? "bg-blue-600 text-white"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      ✅ Carregados ({espelhoCounts.carregados})
+                    </button>
+                  </div>
+                </div>
+
+                <span>
+                  Exibindo <strong className="text-white font-bold">{espelhoFiltrado.length}</strong> reposições na data <strong className="text-white font-bold">{filterEspelhoDate}</strong>
+                </span>
               </div>
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-slate-950 text-slate-400 text-[10px] font-bold uppercase border-b border-slate-850">
-                      <th className="p-3">NB</th>
-                      <th className="p-3">CLIENTE / CIDADE</th>
-                      <th className="p-3">PRODUTO (SKU)</th>
-                      <th className="p-3 text-center">QUANTIDADE / UNIDADE</th>
-                      <th className="p-3">MAPA / NF</th>
-                      <th className="p-3">CANAL</th>
-                      <th className="p-3">HORÁRIO APROV.</th>
-                      <th className="p-3 text-center">AÇÃO</th>
+                      <th className="p-3 align-middle">NB</th>
+                      <th className="p-3 align-middle">CLIENTE / CIDADE DESTINO</th>
+                      <th className="p-3 align-middle">PRODUTO (SKU)</th>
+                      <th className="p-3 text-center align-middle">QUANTIDADE / UNIDADE</th>
+                      <th className="p-3 align-middle">STATUS ENCAMINHAMENTO</th>
+                      <th className="p-3 text-amber-400 font-extrabold align-middle">🚛 PLACA VEÍCULO</th>
+                      <th className="p-3 align-middle">MAPA / NF</th>
+                      <th className="p-3 text-center align-middle">AÇÃO</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-850">
                     {espelhoFiltrado.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="p-8 text-center text-slate-500 font-mono text-xs italic">
-                          Nenhuma reposição/troca foi localizada com o status "Aprovada/Cadastrada" para a data {filterEspelhoDate}.
+                        <td colSpan={8} className="p-8 text-center text-slate-500 font-mono text-xs italic align-middle">
+                          Nenhuma reposição/troca encontrada com o filtro selecionado para a data {filterEspelhoDate}.
                         </td>
                       </tr>
                     ) : (
-                      espelhoFiltrado.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-slate-850/20 text-slate-350">
-                          <td className="p-3 font-mono font-bold text-white text-xs">{item.nb}</td>
-                          <td className="p-3 space-y-0.5 uppercase">
-                            <p className="font-bold text-slate-200 text-xs">{item.razaoSocial}</p>
-                            <div className="flex gap-2 items-center text-[10px]">
-                              <span className="text-slate-400 font-mono">{item.nomeFantasia}</span>
-                              <span className="text-slate-500">•</span>
-                              <span className="text-emerald-450 font-semibold">{item.municipio}</span>
-                            </div>
-                          </td>
-                          <td className="p-3 uppercase">
-                            <p className="font-bold text-slate-300">{item.productDesc}</p>
-                            <p className="text-[10px] text-slate-500 font-mono">SKU: #{item.productCode}</p>
-                          </td>
-                          <td className="p-3 text-center font-mono">
-                            <span className="font-extrabold text-white text-sm block">{item.quantidade}</span>
-                            <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded inline-block mt-0.5 ${
-                              item.unidadeType === "SKU"
-                                ? "bg-purple-950/80 border border-purple-800/60 text-purple-300"
-                                : "bg-blue-950/80 border border-blue-800/60 text-blue-300"
-                            }`}>
-                              {item.unidadeType === "SKU" ? "📦 SKU Fechado" : "🧪 Unidade (UND)"}
-                            </span>
-                          </td>
-                          <td className="p-3 font-mono text-[10.5px]">
-                            <p className="text-slate-300">NF: {item.nf || "N/A"}</p>
-                            <p className="text-slate-500 text-[9px]">MAPA: {item.mapa || "N/A"}</p>
-                          </td>
-                          <td className="p-3 font-mono text-[10.5px] text-indigo-400 font-semibold uppercase">{item.solicitante}</td>
-                          <td className="p-3 text-slate-400 font-mono text-[10.5px]">
-                            {item.cadastroDate ? item.cadastroDate.split(" ")[1] || "---" : "---"}
-                          </td>
-                          <td className="p-3 text-center">
-                            <button
-                              onClick={() => handleDeleteApprovedItem(item.requestId, item.productCode)}
-                              className="px-2 py-1 bg-red-950/80 hover:bg-red-900 border border-red-800/60 rounded text-red-300 text-[10px] font-bold font-mono transition-colors cursor-pointer flex items-center justify-center gap-1 mx-auto"
-                              title="Excluir item do Espelho do Dia e do sistema"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                              <span>Excluir</span>
-                            </button>
-                          </td>
-                        </tr>
-                      ))
+                      espelhoFiltrado.map((item, idx) => {
+                        const itemKey = `${item.requestId}_${item.productCode}`;
+                        const currentPlate = espelhoPlates[itemKey] !== undefined ? espelhoPlates[itemKey] : (item.placaVeiculo || item.placa || "");
+                        const isCarregado = Boolean(currentPlate && currentPlate.trim());
+                        const itemReq = requests.find(r => r.id === item.requestId);
+                        const ageInDays = getItemAgeInDays(item, itemReq);
+                        const isDelayedCarregado = isCarregado && !(itemReq as any)?.faltaBaixa && ageInDays >= 7;
+
+                        return (
+                          <tr key={idx} className={`text-slate-350 transition-colors ${isDelayedCarregado ? "bg-rose-950/20 hover:bg-rose-950/30" : "hover:bg-slate-850/30"}`}>
+                            <td className="p-3 font-mono font-bold text-white text-xs align-middle">{item.nb}</td>
+                            <td className="p-3 space-y-1 uppercase align-middle">
+                              <p className="font-bold text-slate-200 text-xs">{item.razaoSocial}</p>
+                              <div className="flex gap-2 items-center text-[10px]">
+                                <span className="text-slate-400 font-mono">{item.nomeFantasia}</span>
+                                <span className="text-slate-500">•</span>
+                                {/* PROMINENTLY HIGHLIGHTED CITY NAME - CYAN/SKY PALETTE */}
+                                <span className="text-sky-300 font-black font-mono text-xs uppercase bg-sky-950 border border-sky-500/80 px-2 py-0.5 rounded shadow-sm inline-flex items-center gap-1 badge-3d">
+                                  📍 {item.municipio}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="p-3 uppercase align-middle">
+                              <p className="font-bold text-slate-300">{item.productDesc}</p>
+                              <p className="text-[10px] text-slate-500 font-mono">SKU: #{item.productCode}</p>
+                            </td>
+                            {/* CONCISE QUANTITY / UNIT FORMAT: 1/SKU or 1/UND */}
+                            <td className="p-3 text-center align-middle font-mono">
+                              <span className="font-black text-amber-300 text-xs bg-slate-900/90 border border-slate-700/80 px-2.5 py-1 rounded badge-3d inline-block shadow-sm">
+                                {item.quantidade}/{item.unidadeType === "SKU" ? "SKU" : "UND"}
+                              </span>
+                            </td>
+                            {/* STATUS ENCAMINHAMENTO */}
+                            <td className="p-3 font-mono align-middle">
+                              <div className="space-y-1">
+                                {isCarregado ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-950/90 border border-blue-500/60 text-blue-300 rounded font-bold text-[10px] badge-3d">
+                                    <CheckCircle2 className="w-3 h-3 text-blue-400" />
+                                    CARREGADO
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-950/90 border border-amber-500/60 text-amber-300 rounded font-bold text-[10px] badge-3d">
+                                    <Clock className="w-3 h-3 text-amber-400 animate-pulse" />
+                                    PENDENTE ENVIOS
+                                  </span>
+                                )}
+                                {isDelayedCarregado && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-rose-950 border border-rose-500 text-rose-300 rounded font-black text-[9.5px] badge-3d animate-pulse block">
+                                    <AlertTriangle className="w-3 h-3 text-rose-400" />
+                                    &gt;7 DIAS SEM BAIXA ({ageInDays}d)
+                                  </span>
+                                )}
+                                <span className="block text-[9.5px] text-slate-400">Setor: {item.solicitante}</span>
+                              </div>
+                            </td>
+                            {/* INDIVIDUAL PLATE INPUT FIELD */}
+                            <td className="p-3 font-mono align-middle">
+                              <div className="space-y-1">
+                                <input
+                                  type="text"
+                                  placeholder="EX: KLR-8920"
+                                  value={currentPlate}
+                                  onChange={(e) => {
+                                    const val = e.target.value.toUpperCase();
+                                    setEspelhoPlates(prev => ({ ...prev, [itemKey]: val }));
+                                    const targetReq = requests.find(r => r.id === item.requestId);
+                                    if (targetReq) {
+                                      const updatedItemPlates = { ...(targetReq as any).itemPlates, [item.productCode]: val };
+                                      savePendingRequest({
+                                        ...targetReq,
+                                        placaVeiculo: val,
+                                        itemPlates: updatedItemPlates
+                                      });
+                                    }
+                                  }}
+                                  className={`w-36 bg-slate-950 border text-xs px-2.5 py-1.5 rounded-lg font-mono uppercase focus:outline-none transition-all input-3d ${
+                                    !currentPlate.trim()
+                                      ? "border-rose-500/80 text-rose-300 placeholder-rose-700/60 bg-rose-950/20"
+                                      : "border-emerald-500/80 text-emerald-300 font-extrabold bg-emerald-950/20"
+                                  }`}
+                                />
+                              </div>
+                            </td>
+                            <td className="p-3 font-mono text-[10.5px] align-middle">
+                              <p className="text-slate-300">NF: {item.nf || "N/A"}</p>
+                              <p className="text-slate-500 text-[9px]">MAPA: {item.mapa || "N/A"}</p>
+                            </td>
+                            <td className="p-3 text-center align-middle">
+                              <button
+                                onClick={() => handleDeleteApprovedItem(item.requestId, item.productCode)}
+                                className="px-2 py-1 bg-red-950/80 hover:bg-red-900 border border-red-800/60 rounded text-red-300 text-[10px] font-bold font-mono transition-colors cursor-pointer flex items-center justify-center gap-1 mx-auto btn-3d"
+                                title="Excluir item do Espelho do Dia e do sistema"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>Excluir</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -3746,7 +4250,6 @@ export default function PendingRequestsTab() {
                         </div>
                       </div>
 
-                      {/* Status / Shortage physical dispatches indicators */}
                       {(activeTab === "faltas_inversoes" || activeTab === "historico_baixas") ? (
                         <div className="flex flex-col items-end gap-1 shrink-0">
                           {cast.faltaBaixa ? (
@@ -4155,8 +4658,8 @@ export default function PendingRequestsTab() {
                           )}
                         </div>
  
-                        {/* Printable Receipts and Driver chargings slips */}
-                        <div className="flex gap-2 pt-1 border-t border-slate-850/50">
+                        {/* Printable Receipts, Driver charging slips, and Return to Pending */}
+                        <div className="flex flex-wrap gap-2 pt-1 border-t border-slate-850/50">
                           {/* Deliver Receipt */}
                           {(() => {
                             const isReqInversion = (req.motivo && (req.motivo.toLowerCase().includes("inver") || req.motivo.toLowerCase().includes("troca"))) || 
@@ -4183,7 +4686,7 @@ export default function PendingRequestsTab() {
                           <button
                             onClick={() => setSelectedPrintDoc({ type: "vale", request: req })}
                             disabled={cast.faltaTipoErro !== "entrega"}
-                            className={`flex-grow py-1.5 rounded-lg text-[9px] font-bold flex items-center justify-center gap-1.5 transition-all ${
+                            className={`flex-1 py-1.5 rounded-lg text-[9px] font-bold flex items-center justify-center gap-1.5 transition-all ${
                               cast.faltaTipoErro === "entrega"
                                 ? "bg-slate-950 hover:bg-slate-850 border border-slate-800 text-amber-500 cursor-pointer"
                                 : "bg-slate-950/20 border border-transparent text-slate-650 cursor-not-allowed"
@@ -4192,6 +4695,16 @@ export default function PendingRequestsTab() {
                           >
                             <Signature className="w-3 h-3" />
                             <span>Vale Motorista</span>
+                          </button>
+
+                          {/* Return to pending option (Icon-only, Yellow) */}
+                          <button
+                            type="button"
+                            onClick={() => handleOpenReturnModal(req)}
+                            className="p-1.5 bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/40 hover:border-amber-400 text-amber-400 rounded-lg transition-all cursor-pointer shrink-0 flex items-center justify-center group"
+                            title="Retornar este card para PENDENTE (redefinir data de entrega com lembrete)"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
                           </button>
                         </div>
                       </div>
@@ -4237,12 +4750,32 @@ export default function PendingRequestsTab() {
                             </button>
                           </div>
                         ) : req.statusPromax === "reprovado" ? (
-                          <div className="py-1.5 px-3 bg-red-955/10 border border-red-900/20 text-red-400 rounded-lg text-[10px] font-mono shrink-0">
-                            Reprovado Definitivo
+                          <div className="flex items-center justify-between gap-2 w-full">
+                            <div className="py-1.5 px-3 bg-red-955/10 border border-red-900/20 text-red-400 rounded-lg text-[10px] font-mono shrink-0">
+                              Reprovado Definitivo
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenReturnModal(req)}
+                              className="p-1.5 bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/40 hover:border-amber-400 text-amber-400 rounded-lg transition-all cursor-pointer shrink-0 flex items-center justify-center group"
+                              title="Retornar este card para PENDENTE (redefinir data de entrega)"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
+                            </button>
                           </div>
                         ) : req.statusPromax === "corrigir" ? (
-                          <div className="py-1.5 px-3 bg-amber-955/10 border border-amber-900/20 text-amber-405 rounded-lg text-[10px] font-mono shrink-0">
-                            Aguardando Correção pelo RN
+                          <div className="flex items-center justify-between gap-2 w-full">
+                            <div className="py-1.5 px-3 bg-amber-955/10 border border-amber-900/20 text-amber-405 rounded-lg text-[10px] font-mono shrink-0">
+                              Aguardando Correção pelo RN
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenReturnModal(req)}
+                              className="p-1.5 bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/40 hover:border-amber-400 text-amber-400 rounded-lg transition-all cursor-pointer shrink-0 flex items-center justify-center group"
+                              title="Retornar este card para PENDENTE (redefinir data de entrega)"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
+                            </button>
                           </div>
                         ) : (
                           <div className="flex flex-col gap-2 w-full pt-2 border-t border-slate-850/80">
@@ -4267,8 +4800,17 @@ export default function PendingRequestsTab() {
                               )}
                             </div>
 
-                            {!isFaltaSkuCompletoReq(req) && (
-                              <div className="flex justify-end">
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenReturnModal(req)}
+                                className="p-1.5 bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/40 hover:border-amber-400 text-amber-400 rounded-lg transition-all cursor-pointer shrink-0 flex items-center justify-center group"
+                                title="Retornar este card para PENDENTE (redefinir data de entrega)"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
+                              </button>
+
+                              {!isFaltaSkuCompletoReq(req) && (
                                 <button
                                   onClick={() => setSelectedPrintDoc({ type: "recibo", request: req })}
                                   className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
@@ -4277,8 +4819,8 @@ export default function PendingRequestsTab() {
                                   <Printer className="w-3.5 h-3.5 text-amber-400" />
                                   <span>Recibo PDV ⚠️</span>
                                 </button>
-                              </div>
-                            )}
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -5846,6 +6388,79 @@ export default function PendingRequestsTab() {
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Confirmar e Baixar Contingência</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal for Returning Request to Pending */}
+      {returnToPendingModalReq && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2 text-amber-400 font-bold text-sm font-mono">
+                <RotateCcw className="w-5 h-5 text-amber-400 shrink-0" />
+                <span>RETORNAR PARA PENDENTE</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReturnToPendingModalReq(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 space-y-2 text-xs font-mono">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Solicitação / ID:</span>
+                <strong className="text-white">{(returnToPendingModalReq as any).solicitacao || returnToPendingModalReq.id}</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">NF-e Original:</span>
+                <strong className="text-amber-300">{returnToPendingModalReq.nf || "N/A"}</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Código NB PDV:</span>
+                <strong className="text-white">{returnToPendingModalReq.nb}</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Setor / Rota:</span>
+                <strong className="text-indigo-300">{returnToPendingModalReq.setor}</strong>
+              </div>
+            </div>
+
+            <div className="space-y-2 font-sans">
+              <label className="block text-xs font-semibold text-slate-300">
+                📅 Nova Data de Entrega Prevista:
+              </label>
+              <input
+                type="date"
+                value={returnNewDeliveryDate}
+                onChange={(e) => setReturnNewDeliveryDate(e.target.value)}
+                className="w-full bg-slate-950 border border-amber-500/50 rounded-xl px-3.5 py-2.5 text-xs text-amber-300 font-mono focus:outline-none focus:border-amber-400 transition-colors"
+              />
+              <p className="text-[10px] text-amber-400/80 italic font-mono flex items-center gap-1">
+                <span>🔔</span> O sistema enviará um lembrete automático 1 dia antes desta data.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setReturnToPendingModalReq(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={executeReturnToPending}
+                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg shadow-amber-900/30 cursor-pointer"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Confirmar e Retornar</span>
               </button>
             </div>
           </div>

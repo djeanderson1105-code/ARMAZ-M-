@@ -39,7 +39,7 @@ import {
   PendingRequest,
   RequestItem
 } from "../types";
-import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, getProductsDatabase, clearProductsCache } from "../data/products";
+import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, getProductsDatabase, clearProductsCache, extractFatorFromDescricao } from "../data/products";
 import { getPdvDatabase, registerNewPdv, registerMultiplePdvs, clearPdvCache } from "../data/pdvData";
 
 interface ManagerUser {
@@ -2274,7 +2274,7 @@ export default function ManagersTab() {
                         <strong className="font-mono text-slate-900">#{item.productCode}</strong> - <span className="uppercase text-slate-750">{item.productDesc}</span>
                       </td>
                       <td className="p-2 border border-slate-300 text-center font-mono font-bold text-slate-900">
-                        {item.quantidade} <span className="text-[9px] font-semibold text-slate-600 block">({item.unidadeType === "SKU" ? "SKU Fechado" : "Unidade (UND)"})</span>
+                        {item.quantidade}/{item.unidadeType === "SKU" ? "SKU" : "UND"}
                       </td>
                       <td className="p-2 border border-slate-300 uppercase font-mono">{item.municipio}</td>
                       <td className="p-2 border border-slate-300 font-mono">
@@ -4819,41 +4819,36 @@ export default function ManagersTab() {
                   ) : (
                     espelhoFiltrado.map((item, idx) => (
                       <tr key={idx} className="hover:bg-slate-850/20 text-slate-350">
-                        <td className="p-3 font-mono font-bold text-white text-xs">{item.nb}</td>
-                        <td className="p-3 space-y-0.5 uppercase">
+                        <td className="p-3 font-mono font-bold text-white text-xs align-middle">{item.nb}</td>
+                        <td className="p-3 space-y-0.5 uppercase align-middle">
                           <p className="font-bold text-slate-200 text-xs">{item.razaoSocial}</p>
                           <div className="flex gap-2 items-center text-[10px]">
                             <span className="text-slate-400 font-mono">{item.nomeFantasia}</span>
                             <span className="text-slate-500">•</span>
-                            <span className="text-emerald-450 font-semibold">{item.municipio}</span>
+                            <span className="text-sky-300 font-bold font-mono text-xs uppercase bg-sky-950 border border-sky-500/80 px-2 py-0.5 rounded badge-3d flex items-center gap-1">📍 {item.municipio}</span>
                           </div>
                         </td>
-                        <td className="p-3 uppercase">
+                        <td className="p-3 uppercase align-middle">
                           <p className="font-bold text-slate-300">{item.productDesc}</p>
                           <p className="text-[10px] text-slate-500 font-mono">SKU: #{item.productCode}</p>
                         </td>
-                        <td className="p-3 text-center font-mono">
-                          <span className="font-extrabold text-white text-sm block">{item.quantidade}</span>
-                          <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded inline-block mt-0.5 ${
-                            item.unidadeType === "SKU"
-                              ? "bg-purple-950/80 border border-purple-800/60 text-purple-300"
-                              : "bg-blue-950/80 border border-blue-800/60 text-blue-300"
-                          }`}>
-                            {item.unidadeType === "SKU" ? "📦 SKU Fechado" : "🧪 Unidade (UND)"}
+                        <td className="p-3 text-center align-middle font-mono">
+                          <span className="font-black text-amber-300 text-xs bg-slate-900/90 border border-slate-700/80 px-2.5 py-1 rounded badge-3d inline-block shadow-sm">
+                            {item.quantidade}/{item.unidadeType === "SKU" ? "SKU" : "UND"}
                           </span>
                         </td>
-                        <td className="p-3 font-mono text-[10.5px]">
+                        <td className="p-3 font-mono text-[10.5px] align-middle">
                           <p className="text-slate-300">NF: {item.nf || "N/A"}</p>
                           <p className="text-slate-500 text-[9px]">MAPA: {item.mapa || "N/A"}</p>
                         </td>
-                        <td className="p-3 font-mono text-[10.5px] text-indigo-400 font-semibold uppercase">{item.solicitante}</td>
-                        <td className="p-3 text-slate-400 font-mono text-[10.5px]">
+                        <td className="p-3 font-mono text-[10.5px] text-indigo-400 font-semibold uppercase align-middle">{item.solicitante}</td>
+                        <td className="p-3 text-slate-400 font-mono text-[10.5px] align-middle">
                           {item.cadastroDate ? item.cadastroDate.split(" ")[1] || "---" : "---"}
                         </td>
-                        <td className="p-3 text-center">
+                        <td className="p-3 text-center align-middle">
                           <button
                             onClick={() => handleDeleteApprovedItemInManagers(item.requestId, item.productCode)}
-                            className="px-2 py-1 bg-red-950/80 hover:bg-red-900 border border-red-800/60 rounded text-red-300 text-[10px] font-bold font-mono transition-colors cursor-pointer flex items-center justify-center gap-1 mx-auto"
+                            className="px-2 py-1 bg-red-950/80 hover:bg-red-900 border border-red-800/60 rounded text-red-300 text-[10px] font-bold font-mono transition-colors cursor-pointer flex items-center justify-center gap-1 mx-auto btn-3d"
                             title="Excluir item do Espelho do Dia e do sistema"
                           >
                             <Trash2 className="w-3 h-3" />

@@ -191,7 +191,10 @@ export default function SstrOperationalAssistant({ records }: SstrOperationalAss
               errorCarregamento: "Se for identificado erro de carregamento pelo armazém, a entrega do SKU em falta será programada para a próxima data de entrega regular do PDV.",
               errorDescarregamento: "Se for identificado erro de descarregamento e não for localizado o produto físico, gera-se um vale no valor proporcional do SKU extraviado para rateio solidário entre a equipe da rota correspondente.",
               reportId: "03.18.05",
-              validationStep: "Importar relatório 03.18.05 para cruzar registros do Promax, analisando na guia 'Duplicatas' do SSTR para identificar desvios. Se houver duplicatas ou desvios, a solicitação é reprovada."
+              validationStep: "Importar relatório 03.18.05 para cruzar registros do Promax, analisando na guia 'Duplicatas' do SSTR para identificar desvios. Se houver duplicatas ou desvios, a solicitação é reprovada.",
+              cadastroENotificacoes: "RNs e Motoristas cadastram trocas e reposições no SSTR. As notificações popup de aprovação, reprovação ou solicitação de correção são enviadas em tempo real e de forma estritamente segmentada ao setor/rota do RN ou Motorista.",
+              retornoPendentes: "Retornar solicitações para PENDENTE é um privilégio exclusivo de Gestores e Controle Operacional. Nas telas de RNs e Motoristas o botão de retorno é ocultado.",
+              impressaoEEspelho: "O Espelho de Reposições destaca a Cidade Destino (📍 CIDADE DESTINO), agrupa os itens por cidade para atribuição de placa em lote, mostra o status (✅ CARREGADO com placa vs ⏳ PENDENTE ENVIOS sem placa), possui filtro por status e permite a impressão do relatório oficial de expedição."
             }
           }
         })
@@ -682,10 +685,28 @@ Detalhes do erro: ${err?.message || "Servidor offline"}`,
 
                         {/* FLOW STEP 5 */}
                         <div className="relative font-sans">
-                          <span className="absolute -left-[25px] top-0 w-4 h-4 rounded-full bg-emerald-600 border border-slate-950 flex items-center justify-center text-[8px] font-bold text-white">5</span>
-                          <strong className="text-emerald-400 text-[11.5px] uppercase tracking-wide block">ATUAÇÃO DO REPRESENTANTE (RN) EM CAMPO</strong>
+                          <span className="absolute -left-[25px] top-0 w-4 h-4 rounded-full bg-sky-600 border border-slate-950 flex items-center justify-center text-[8px] font-bold text-white shadow-sm">5</span>
+                          <strong className="text-sky-400 text-[11.5px] uppercase tracking-wide block">CADASTRO & NOTIFICAÇÕES SEGMENTADAS (RNs E MOTORISTAS)</strong>
                           <p className="text-slate-400 leading-relaxed mt-0.5">
-                            O Representante de Negócios (RN) pode monitorar os status em tempo real das solicitações de seus clientes no portal. Ele também pode abrir novas solicitações de trocas identificadas em visitas de rota que por algum motivo não tenham sido lançadas previamente pelo motorista.
+                            Representantes de Negócios (RN) e Motoristas registram solicitações com NB, Cliente, Cidade, SKU, Nota Fiscal e Mapa. O sistema envia notificações pop-up direcionadas de aprovação ou recusa <strong>exclusivamente para o RN/Motorista do setor/rota correspondente</strong>.
+                          </p>
+                        </div>
+
+                        {/* FLOW STEP 6 */}
+                        <div className="relative font-sans">
+                          <span className="absolute -left-[25px] top-0 w-4 h-4 rounded-full bg-amber-600 border border-slate-950 flex items-center justify-center text-[8px] font-bold text-white shadow-sm">6</span>
+                          <strong className="text-amber-400 text-[11.5px] uppercase tracking-wide block">CONTROLE DE RETORNO A PENDENTE (EXCLUSIVO GESTORES)</strong>
+                          <p className="text-slate-400 leading-relaxed mt-0.5 font-mono">
+                            O direito de retornar um card (Aprovado/Reprovado/Corrigir) de volta ao status <strong className="text-white bg-slate-900 px-1 py-0.5 rounded">PENDENTE</strong> é <strong>estritamente restrito a usuários do Controle Operacional / Gestores</strong>. Nas visões de RNs e Motoristas, a opção de retorno é ocultada para assegurar a rastreabilidade auditável.
+                          </p>
+                        </div>
+
+                        {/* FLOW STEP 7 */}
+                        <div className="relative font-sans">
+                          <span className="absolute -left-[25px] top-0 w-4 h-4 rounded-full bg-indigo-600 border border-slate-950 flex items-center justify-center text-[8px] font-bold text-white shadow-sm">7</span>
+                          <strong className="text-indigo-300 text-[11.5px] uppercase tracking-wide block">ORDENAÇÃO ALFABÉTICA POR CIDADE, ESPELHO FILTRADO E PLACAS</strong>
+                          <p className="text-slate-400 leading-relaxed mt-0.5">
+                            Todas as solicitações e o Espelho do Dia são <strong>ordenados por cidade em ordem alfabética</strong>. O colaborador atribui a placa do veículo diretamente para as cidades que surgem no espelho do dia <strong>estritamente de acordo com o filtro ativo</strong> (data, palavra-chave e status de envio), replicando em lote para os itens visíveis com emissão de relatório impresso.
                           </p>
                         </div>
 

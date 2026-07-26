@@ -267,43 +267,69 @@ export default function ConsolidatedView({
   // Monthly points coordinates
   const monthlyPoints = useMemo(() => {
     if (monthlyTimelineData.length === 0) return [];
-    const maxSpent = Math.max(...monthlyTimelineData.map(d => d.totalSpent)) || 1;
-    const maxHL = Math.max(...monthlyTimelineData.map(d => d.totalHL)) || 1;
+    const monthlyMetaSpent = 12000;
+    const totalSpentAll = records.reduce((acc, r) => acc + (r.valorTotal || 0), 0);
+    const totalHLAllCalc = records.reduce((acc, r) => acc + calculateHL(r.produto, r.quantidade), 0);
+    const avgCostPerHL = totalHLAllCalc > 0 ? totalSpentAll / totalHLAllCalc : 120;
+    const monthlyMetaHL = 12000 / (avgCostPerHL || 120);
+
+    const maxSpent = Math.max(...monthlyTimelineData.map(d => d.totalSpent), monthlyMetaSpent, 1) * 1.12;
+    const maxHL = Math.max(...monthlyTimelineData.map(d => d.totalHL), monthlyMetaHL, 1) * 1.12;
     
     return monthlyTimelineData.map((d) => {
       // Space Jan (01) through Dec (12) perfectly across 5% to 95%
       const mNum = parseInt(d.monthId, 10);
       const x = 5 + ((mNum - 1) / 11) * 90;
       const ySpent = 90 - (d.totalSpent / maxSpent) * 75; 
+      const ySpentMeta = 90 - (monthlyMetaSpent / maxSpent) * 75;
       const yHL = 90 - (d.totalHL / maxHL) * 75;
+      const yHLMeta = 90 - (monthlyMetaHL / maxHL) * 75;
       return {
         ...d,
         x,
         ySpent,
-        yHL
+        ySpentMeta,
+        yHL,
+        yHLMeta,
+        metaSpent: monthlyMetaSpent,
+        metaHL: monthlyMetaHL
       };
     });
-  }, [monthlyTimelineData]);
+  }, [monthlyTimelineData, records]);
 
   // Daily points coordinates
   const dailyPoints = useMemo(() => {
     if (dailyTimelineData.length === 0) return [];
-    const maxSpent = Math.max(...dailyTimelineData.map(d => d.totalSpent)) || 1;
-    const maxHL = Math.max(...dailyTimelineData.map(d => d.totalHL)) || 1;
+    const totalDaysInMonth = dailyTimelineData.length || 30;
+    const dailyMetaSpent = 12000 / totalDaysInMonth;
+    const totalSpentAll = records.reduce((acc, r) => acc + (r.valorTotal || 0), 0);
+    const totalHLAllCalc = records.reduce((acc, r) => acc + calculateHL(r.produto, r.quantidade), 0);
+    const avgCostPerHL = totalHLAllCalc > 0 ? totalSpentAll / totalHLAllCalc : 120;
+    const monthlyMetaHL = 12000 / (avgCostPerHL || 120);
+    const dailyMetaHL = monthlyMetaHL / totalDaysInMonth;
+
+    const maxSpent = Math.max(...dailyTimelineData.map(d => d.totalSpent), dailyMetaSpent, 1) * 1.12;
+    const maxHL = Math.max(...dailyTimelineData.map(d => d.totalHL), dailyMetaHL, 1) * 1.12;
     
     return dailyTimelineData.map((d) => {
       // Space Day 1 through Day 31 perfectly across 5% to 95%
       const x = 5 + ((d.day - 1) / 30) * 90;
       const ySpent = 90 - (d.totalSpent / maxSpent) * 75; 
+      const ySpentMeta = 90 - (dailyMetaSpent / maxSpent) * 75;
       const yHL = 90 - (d.totalHL / maxHL) * 75;
+      const yHLMeta = 90 - (dailyMetaHL / maxHL) * 75;
       return {
         ...d,
         x,
         ySpent,
-        yHL
+        ySpentMeta,
+        yHL,
+        yHLMeta,
+        metaSpent: dailyMetaSpent,
+        metaHL: dailyMetaHL
       };
     });
-  }, [dailyTimelineData]);
+  }, [dailyTimelineData, records]);
 
   // Quick helper to determine peak day in selected month for highlighting
   const peakDayInfo = useMemo(() => {
@@ -1398,42 +1424,60 @@ export default function ConsolidatedView({
 
       {/* 3. Custom SVG Linear trend Line Chart */}
       <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl space-y-4 relative">
-        {selectedMonthYear === "todos" && (
-          <div className="bg-blue-950/30 border border-blue-900/40 rounded-xl p-3.5 flex flex-col items-center justify-center gap-3.5 text-center font-mono text-[10px] text-blue-300 no-print">
-            <div className="flex items-center justify-center gap-2 flex-wrap">
-              <span className="w-1.5 h-1.5 bg-blue-400 rounded-full shrink-0 animate-ping"></span>
-              <span className="font-bold">Análise Geral Ativa:</span>
-              <span>Selecione um mês abaixo ou clique nos pontos do gráfico para detalhar as oscilações diárias:</span>
-            </div>
-            <div className="flex flex-wrap gap-1.5 items-center justify-center w-full">
-              {[
-                { id: "01", label: "Jan" },
-                { id: "02", label: "Fev" },
-                { id: "03", label: "Mar" },
-                { id: "04", label: "Abr" },
-                { id: "05", label: "Mai" },
-                { id: "06", label: "Jun" },
-                { id: "07", label: "Jul" },
-                { id: "08", label: "Ago" },
-                { id: "09", label: "Set" },
-                { id: "10", label: "Out" },
-                { id: "11", label: "Nov" },
-                { id: "12", label: "Dez" }
-              ].map(m => (
+        {/* ALWAYS-VISIBLE MONTH SELECTOR BAR (No shifts or disappearing when a month is clicked) */}
+        <div className="bg-blue-950/20 border border-blue-900/40 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2.5 font-mono text-[10px] text-blue-300 no-print">
+          <div className="flex items-center gap-2 font-bold text-slate-200">
+            <Calendar className="w-4 h-4 text-blue-400" />
+            <span>Mês de Análise:</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5 items-center justify-end">
+            <button
+              onClick={() => {
+                setSelectedMonthYear("todos");
+                setHoveredNode(null);
+              }}
+              className={`px-2.5 py-1 rounded-lg text-[9.5px] font-bold font-sans transition-all cursor-pointer ${
+                selectedMonthYear === "todos"
+                  ? "bg-blue-600 text-white border border-blue-400 shadow-md"
+                  : "bg-slate-950/80 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white"
+              }`}
+            >
+              Ano Inteiro (Todos)
+            </button>
+            {[
+              { id: "01", label: "Jan" },
+              { id: "02", label: "Fev" },
+              { id: "03", label: "Mar" },
+              { id: "04", label: "Abr" },
+              { id: "05", label: "Mai" },
+              { id: "06", label: "Jun" },
+              { id: "07", label: "Jul" },
+              { id: "08", label: "Ago" },
+              { id: "09", label: "Set" },
+              { id: "10", label: "Out" },
+              { id: "11", label: "Nov" },
+              { id: "12", label: "Dez" }
+            ].map(m => {
+              const isSelected = selectedMonthYear !== "todos" && selectedMonth === m.id;
+              return (
                 <button
                   key={m.id}
                   onClick={() => {
                     setSelectedMonthYear(`${m.id}/${activeYear}`);
                     setFilterMode("mes");
                   }}
-                  className="px-2.5 py-1 bg-slate-950/80 hover:bg-blue-800 border border-slate-800 hover:border-blue-700 text-blue-400 hover:text-white rounded-lg text-[9px] font-bold font-sans transition-all cursor-pointer"
+                  className={`px-2.5 py-1 rounded-lg text-[9.5px] font-bold font-sans transition-all cursor-pointer ${
+                    isSelected
+                      ? "bg-blue-600 text-white border border-blue-400 shadow-md scale-105"
+                      : "bg-slate-950/80 hover:bg-blue-900/60 border border-slate-800 hover:border-blue-700 text-blue-400 hover:text-white"
+                  }`}
                 >
                   {m.label}
                 </button>
-              ))}
-            </div>
+              );
+            })}
           </div>
-        )}
+        </div>
 
         <div className="flex justify-between items-center flex-wrap gap-4">
           <div className="space-y-1">
@@ -1457,7 +1501,7 @@ export default function ConsolidatedView({
               }
               {selectedMonthYear === "todos" && (
                 <span className="text-[10px] font-bold font-mono text-amber-500 bg-amber-950/60 border border-amber-900/40 px-2.5 py-0.5 rounded-md animate-pulse ml-2">
-                  Selecione o mês
+                  Visão Anual
                 </span>
               )}
             </h3>
@@ -1483,7 +1527,20 @@ export default function ConsolidatedView({
               </button>
             )}
 
-            {/* REAL INTERACTIVE METRIC SELECTOR (FIXES THE HECTOLITER FILTER UNABLE TO CLICK BUG!) */}
+            {/* Legend for Real vs Meta lines */}
+            <div className="flex items-center gap-2.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-[10px] font-mono shadow-sm">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-1.5 bg-blue-500 rounded-full inline-block shadow-sm"></span>
+                <span className="text-slate-200 font-bold">Real</span>
+              </div>
+              <span className="text-slate-700">|</span>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-0.5 border-t-2 border-dashed border-emerald-400 inline-block"></span>
+                <span className="text-emerald-400 font-bold">Meta</span>
+              </div>
+            </div>
+
+            {/* REAL INTERACTIVE METRIC SELECTOR */}
             <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
               <button
                 onClick={() => setChartMetric("cost")}
@@ -1508,6 +1565,22 @@ export default function ConsolidatedView({
                 <span>Volume (HL)</span>
               </button>
             </div>
+
+            {/* CANTO SUPERIOR DIREITO: INFORMAÇÃO DESTACADA DA META */}
+            <div className="bg-emerald-950/80 border-2 border-emerald-500/80 text-emerald-300 px-3 py-1.5 rounded-xl font-mono text-xs font-black shadow-md flex items-center gap-2">
+              <span className="w-2.5 h-0.5 border-t-2 border-dashed border-emerald-400 inline-block"></span>
+              <span>
+                {timelineViewMode === "days" ? (
+                  chartMetric === "cost"
+                    ? `META DIÁRIA: ${formatCurrency(points[0]?.metaSpent || (12000 / 30))}/dia (Mês: R$ 12.000)`
+                    : `META DIÁRIA: ${(points[0]?.metaHL || (100 / 30)).toFixed(2)} HL/dia`
+                ) : (
+                  chartMetric === "cost"
+                    ? `META MENSAL: ${formatCurrency(12000)}/mês`
+                    : `META MENSAL: ${(points[0]?.metaHL || 100).toFixed(2)} HL/mês`
+                )}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -1530,7 +1603,7 @@ export default function ConsolidatedView({
               {/* Dynamic Overlay Floating Tooltip (Anti-flicker: absolutely positioned left/right opposite of the mouse) */}
               {hoveredNode && (
                 <div 
-                  className={`absolute top-2 bg-slate-950/95 border border-slate-800 p-3 rounded-xl shadow-2xl z-20 font-mono text-[10px] space-y-1 text-slate-300 min-w-[170px] pointer-events-none transition-all duration-200 ${
+                  className={`absolute top-2 bg-slate-950/95 border border-slate-800 p-3 rounded-xl shadow-2xl z-20 font-mono text-[10px] space-y-1.5 text-slate-300 min-w-[190px] pointer-events-none transition-all duration-200 ${
                     hoveredNode.x > 50 ? "left-4" : "right-4"
                   }`}
                 >
@@ -1557,14 +1630,52 @@ export default function ConsolidatedView({
                       <span className="bg-red-900 text-red-200 text-[8px] px-1.5 py-0.5 rounded font-sans uppercase font-bold">Pico</span>
                     )}
                   </div>
+
                   <div className="flex justify-between gap-4 mt-1">
-                    <span className="text-slate-500">Custo:</span>
-                    <span className="text-blue-400 font-bold">{formatCurrency(hoveredNode.totalSpent)}</span>
+                    <span className="text-blue-400 font-bold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 bg-blue-400 rounded-full inline-block"></span>
+                      Real ({chartMetric === "cost" ? "R$" : "HL"}):
+                    </span>
+                    <span className="text-white font-bold">
+                      {chartMetric === "cost" ? formatCurrency(hoveredNode.totalSpent) : `${hoveredNode.totalHL.toFixed(3)} HL`}
+                    </span>
                   </div>
+
                   <div className="flex justify-between gap-4">
-                    <span className="text-slate-500">Volume:</span>
-                    <span className="text-indigo-400 font-semibold">{hoveredNode.totalHL.toFixed(3)} HL</span>
+                    <span className="text-emerald-400 font-bold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full inline-block"></span>
+                      Meta ({chartMetric === "cost" ? "R$" : "HL"}):
+                    </span>
+                    <span className="text-emerald-300 font-semibold">
+                      {chartMetric === "cost" ? formatCurrency(hoveredNode.metaSpent) : `${hoveredNode.metaHL.toFixed(3)} HL`}
+                    </span>
                   </div>
+
+                  <div className="flex justify-between gap-4 border-t border-slate-800/80 pt-1 text-[9px]">
+                    <span className="text-slate-400">Status:</span>
+                    {chartMetric === "cost" ? (
+                      hoveredNode.totalSpent > hoveredNode.metaSpent ? (
+                        <span className="text-rose-400 font-extrabold">
+                          ⚠️ +{formatCurrency(hoveredNode.totalSpent - hoveredNode.metaSpent)} (Acima)
+                        </span>
+                      ) : (
+                        <span className="text-emerald-400 font-bold">
+                          ✓ Dentro da meta
+                        </span>
+                      )
+                    ) : (
+                      hoveredNode.totalHL > hoveredNode.metaHL ? (
+                        <span className="text-rose-400 font-extrabold">
+                          ⚠️ +{(hoveredNode.totalHL - hoveredNode.metaHL).toFixed(3)} HL (Acima)
+                        </span>
+                      ) : (
+                        <span className="text-emerald-400 font-bold">
+                          ✓ Dentro da meta
+                        </span>
+                      )
+                    )}
+                  </div>
+
                   <div className="flex justify-between gap-4">
                     <span className="text-slate-500">Ocorrências:</span>
                     <span className="text-slate-300">{hoveredNode.count} trocas</span>
@@ -1618,7 +1729,7 @@ export default function ConsolidatedView({
                   </linearGradient>
                 </defs>
 
-                {/* Shaded Area under Curve - beautifully bound inside horizontal padding */}
+                {/* Shaded Area under Curve */}
                 {chartMetric === "cost" ? (
                   <path
                     d={`M${points[0]?.x || 5} 90 ${points.map(p => `L${p.x} ${p.ySpent}`).join(" ")} L${points[points.length - 1]?.x || 95} 90 Z`}
@@ -1633,13 +1744,38 @@ export default function ConsolidatedView({
                   />
                 )}
                 
-                {/* Visual Stroke Line (vectorEffect="non-scaling-stroke" guarantees pristine focus & symmetry across any scaling) */}
+                {/* 1. LINHA DA META (DASHED EMERALD LINE) */}
+                {chartMetric === "cost" ? (
+                  <path
+                    d={points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.ySpentMeta}`).join(" ")}
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth="1.8"
+                    strokeDasharray="4,3"
+                    strokeLinecap="round"
+                    vectorEffect="non-scaling-stroke"
+                    className="transition-all duration-300"
+                  />
+                ) : (
+                  <path
+                    d={points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.yHLMeta}`).join(" ")}
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth="1.8"
+                    strokeDasharray="4,3"
+                    strokeLinecap="round"
+                    vectorEffect="non-scaling-stroke"
+                    className="transition-all duration-300"
+                  />
+                )}
+
+                {/* 2. LINHA DO REAL (SOLID BLUE/INDIGO LINE) */}
                 {chartMetric === "cost" ? (
                   <path
                     d={points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.ySpent}`).join(" ")}
                     fill="none"
                     stroke="#3b82f6"
-                    strokeWidth="1.6"
+                    strokeWidth="2.2"
                     strokeLinecap="round"
                     vectorEffect="non-scaling-stroke"
                     className="transition-all duration-300"
@@ -1649,7 +1785,7 @@ export default function ConsolidatedView({
                     d={points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.yHL}`).join(" ")}
                     fill="none"
                     stroke="#818cf8"
-                    strokeWidth="1.6"
+                    strokeWidth="2.2"
                     strokeLinecap="round"
                     vectorEffect="non-scaling-stroke"
                     className="transition-all duration-300"
@@ -1657,8 +1793,24 @@ export default function ConsolidatedView({
                 )}
               </svg>
 
-              {/* Precise HTML absolute overlay matching inner content area padding (Prone-free, perfectly round & crisp circles) */}
+              {/* Precise HTML absolute overlay matching inner content area padding */}
               <div className="absolute inset-4 pointer-events-none">
+                {/* Meta Line Nodes (Small Emerald Markers) */}
+                {points.map((p, idx) => {
+                  const yMetaVal = chartMetric === "cost" ? p.ySpentMeta : p.yHLMeta;
+                  return (
+                    <div
+                      key={`meta-${idx}`}
+                      style={{
+                        left: `${p.x}%`,
+                        top: `${yMetaVal}%`,
+                      }}
+                      className="absolute -translate-x-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-emerald-400 ring-2 ring-slate-950 opacity-90 pointer-events-none"
+                    />
+                  );
+                })}
+
+                {/* Real Line Nodes (Interactive Circles) */}
                 {points.map((p, idx) => {
                   const yVal = chartMetric === "cost" ? p.ySpent : p.yHL;
                   const isPeak = timelineViewMode === "days" && peakDayInfo?.day === p.day;
@@ -1671,7 +1823,7 @@ export default function ConsolidatedView({
                         left: `${p.x}%`,
                         top: `${yVal}%`,
                       }}
-                      className={`absolute -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full cursor-pointer transition-all duration-150 pointer-events-auto hover:scale-150 flex items-center justify-center ${
+                      className={`absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full cursor-pointer transition-all duration-150 pointer-events-auto hover:scale-150 flex items-center justify-center ${
                         isActiveHovered
                           ? isPeak ? "bg-red-400 ring-4 ring-red-500/30" : "bg-blue-400 ring-4 ring-blue-500/30"
                           : isPeak
@@ -1689,7 +1841,7 @@ export default function ConsolidatedView({
                         }
                       }}
                     >
-                      {/* Quiet white center for critical peak day dot (no motion and stops disappearing behavior) */}
+                      {/* Quiet white center for critical peak day dot */}
                       {isPeak && (
                         <span className="w-1 h-1 bg-white rounded-full animate-none"></span>
                       )}
@@ -1752,8 +1904,12 @@ export default function ConsolidatedView({
                       )}
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-slate-500">Gasto:</span>
+                      <span className="text-slate-400 font-bold">Real:</span>
                       <span className="text-blue-400 font-bold">{formatCurrency(d.totalSpent)}</span>
+                    </div>
+                    <div className="flex justify-between text-[8px]">
+                      <span className="text-slate-500">Meta:</span>
+                      <span className="text-emerald-400 font-semibold">{formatCurrency((d as any).metaSpent || (timelineViewMode === "months" ? 12000 : 12000 / (dailyTimelineData.length || 30)))}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Volume:</span>

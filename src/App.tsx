@@ -260,36 +260,6 @@ function MainApp() {
 
           {/* Modes selector, Turno / Versão Switcher and gestor login session info */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full md:w-auto">
-            {/* Versão Dia / Versão Noite Selector */}
-            <div className="bg-slate-950 p-1 rounded-xl border border-slate-800/90 flex items-center space-x-1 shadow-inner shrink-0">
-              <button
-                type="button"
-                onClick={() => setShiftMode("dia")}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                  shiftMode === "dia"
-                    ? "bg-amber-500 text-slate-950 shadow-md font-black"
-                    : "text-slate-400 hover:text-amber-300 hover:bg-slate-900"
-                }`}
-                title="Versão Operacional do Dia (Operação Diurna)"
-              >
-                <Sun className={`w-3.5 h-3.5 ${shiftMode === "dia" ? "text-slate-950" : "text-amber-400"}`} />
-                <span>Versão Dia</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setShiftMode("noite")}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                  shiftMode === "noite"
-                    ? "bg-indigo-600 text-white shadow-md font-black"
-                    : "text-slate-400 hover:text-indigo-300 hover:bg-slate-900"
-                }`}
-                title="Versão Operacional da Noite (Carregamento & Noturno)"
-              >
-                <Moon className={`w-3.5 h-3.5 ${shiftMode === "noite" ? "text-white" : "text-indigo-400"}`} />
-                <span>Versão Noite</span>
-              </button>
-            </div>
-
             {/* Quick Access modes (Gestor Administrative vs Acesso Representante via Linktree) */}
             <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center space-x-1.5 shadow-inner">
               <button
@@ -328,22 +298,42 @@ function MainApp() {
                   onClick={() => {
                     setIsManagerLoggedIn(false);
                     setCurrentManagerName("");
-                    sessionStorage.removeItem("is_sstr_manager_authenticated");
-                    sessionStorage.removeItem("sstr_current_manager_name");
-                    localStorage.removeItem("is_sstr_manager_authenticated");
-                    localStorage.removeItem("sstr_current_manager_name");
-                    setActivePortal("representante");
                   }}
-                  className="px-3 py-1.5 bg-rose-950/30 hover:bg-rose-900/80 border border-rose-900/40 hover:border-rose-600 text-rose-350 hover:text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer select-none shrink-0"
-                  title="Sair do Painel de Gestão"
+                  className="px-2.5 py-1.5 bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-900/60 text-[10px] font-mono rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                  title="Sair da sessão do gestor"
                 >
-                  <LogOut className="w-3.5 h-3.5" />
+                  <LogOut className="w-3 h-3" />
                   <span>Sair</span>
                 </button>
               </div>
             )}
-          </div>
 
+            {/* Versão Dia / Versão Noite Selector - Top Right Button */}
+            <div className="bg-slate-950 p-1 rounded-xl border border-slate-800/90 flex items-center space-x-1 shadow-inner shrink-0 ml-auto sm:ml-0">
+              <button
+                type="button"
+                onClick={() => setShiftMode(shiftMode === "dia" ? "noite" : "dia")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono flex items-center gap-1.5 transition-all cursor-pointer shadow-md border ${
+                  shiftMode === "dia"
+                    ? "bg-amber-400 text-slate-950 border-amber-300 font-black"
+                    : "bg-slate-900 text-indigo-300 border-indigo-900 hover:bg-slate-850 font-black"
+                }`}
+                title="Clique para alternar entre Versão Dia (Tema Claro) e Versão Noite (Tema Escuro)"
+              >
+                {shiftMode === "dia" ? (
+                  <>
+                    <Sun className="w-3.5 h-3.5 text-slate-950 fill-amber-900" />
+                    <span>Versão Dia ☀️</span>
+                  </>
+                ) : (
+                  <>
+                    <Moon className="w-3.5 h-3.5 text-indigo-300 fill-indigo-300" />
+                    <span>Versão Noite 🌙</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 

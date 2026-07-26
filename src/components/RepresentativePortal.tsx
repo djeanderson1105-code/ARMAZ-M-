@@ -31,7 +31,8 @@ import {
   User,
   Calendar,
   Copy,
-  FolderOpen
+  FolderOpen,
+  RotateCcw
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
@@ -960,20 +961,27 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     return [...offlineSector, ...pendingSector];
   }, [pendingRequests, offlineQueue, selectedSector]);
 
-  // Find newly approved requests for this sector that haven't been acknowledged/notified
+  // Find newly approved requests for this sector/RN/Motorista that haven't been acknowledged/notified
   const unnotifiedApprovals = useMemo(() => {
     if (!selectedSector) return [];
-    return pendingRequests.filter(
-      req => req.setor.trim() === selectedSector.trim() && 
+    const secClean = selectedSector.trim().toLowerCase();
+    return pendingRequests.filter(req => {
+      const isSectorMatch = (req.setor || "").trim().toLowerCase() === secClean;
+      const isUserMatch = (req.cadastroUser || "").toLowerCase().includes(secClean);
+      return (isSectorMatch || isUserMatch) && 
              req.statusPromax === "cadastrado" && 
-             req.notified === false
-    );
+             req.notified === false;
+    });
   }, [pendingRequests, selectedSector]);
 
   // Dismiss notification of newly approved/registered requests
   const handleDismissApprovals = () => {
+    if (!selectedSector) return;
+    const secClean = selectedSector.trim().toLowerCase();
     pendingRequests.forEach(req => {
-      if (req.setor.trim() === selectedSector?.trim() && req.statusPromax === "cadastrado" && req.notified === false) {
+      const isSectorMatch = (req.setor || "").trim().toLowerCase() === secClean;
+      const isUserMatch = (req.cadastroUser || "").toLowerCase().includes(secClean);
+      if ((isSectorMatch || isUserMatch) && req.statusPromax === "cadastrado" && req.notified === false) {
         savePendingRequest({
           ...req,
           notified: true
@@ -982,20 +990,27 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     });
   };
 
-  // Find newly rejected requests for this sector/route that haven't been acknowledged
+  // Find newly rejected requests for this sector/route/user that haven't been acknowledged
   const unnotifiedRejections = useMemo(() => {
     if (!selectedSector) return [];
-    return pendingRequests.filter(
-      req => req.setor.trim() === selectedSector.trim() && 
+    const secClean = selectedSector.trim().toLowerCase();
+    return pendingRequests.filter(req => {
+      const isSectorMatch = (req.setor || "").trim().toLowerCase() === secClean;
+      const isUserMatch = (req.cadastroUser || "").toLowerCase().includes(secClean);
+      return (isSectorMatch || isUserMatch) && 
              (req.statusPromax === "reprovado" || req.statusPromax === "corrigir") && 
-             req.notified === false
-    );
+             req.notified === false;
+    });
   }, [pendingRequests, selectedSector]);
 
   // Dismiss notification of newly rejected/returned requests
   const handleDismissRejections = () => {
+    if (!selectedSector) return;
+    const secClean = selectedSector.trim().toLowerCase();
     pendingRequests.forEach(req => {
-      if (req.setor.trim() === selectedSector?.trim() && (req.statusPromax === "reprovado" || req.statusPromax === "corrigir") && req.notified === false) {
+      const isSectorMatch = (req.setor || "").trim().toLowerCase() === secClean;
+      const isUserMatch = (req.cadastroUser || "").toLowerCase().includes(secClean);
+      if ((isSectorMatch || isUserMatch) && (req.statusPromax === "reprovado" || req.statusPromax === "corrigir") && req.notified === false) {
         savePendingRequest({
           ...req,
           notified: true
@@ -2121,6 +2136,16 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                       </div>
                     )}
 
+                    {/* Registration Record Info */}
+                    <div className="bg-slate-950 border border-slate-850 p-2.5 rounded-lg text-[9px] font-mono space-y-1">
+                      <p className="text-slate-400">
+                        👤 Cadastrado por: <strong className="text-indigo-300">{firstRec.usuarioAcao || "Gestor Djeanderson (Col K / SSTR)"}</strong>
+                      </p>
+                      <p className="text-slate-500 text-[8.5px]">
+                        🕒 Data/Hora Ação: <strong className="text-slate-300">{firstRec.dataAcao || firstRec.dataSolicitacao || "Registrado"}</strong>
+                      </p>
+                    </div>
+
                     <div className="bg-slate-950 border border-slate-850 p-3 rounded-lg space-y-2 font-mono text-[9px]">
                       <span className="text-slate-200 block text-[9.5px] font-bold font-sans">DETALHADAMENTE: LOGÍSTICA & RETORNO</span>
                       <div className="grid grid-cols-2 gap-2">
@@ -2656,7 +2681,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                       <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
                         {draftItems.map((dItem) => {
                           const matchingRecord = records.find(r => r.produto === dItem.itemCode);
-                          const dbP = PRODUCT_DATABASE.find(p => p.codigo === item.itemCode);
+                          const dbP = PRODUCT_DATABASE.find(p => p.codigo === dItem.itemCode);
                           const unitPrice = (dbP && dbP.valor && dbP.valor > 0) ? dbP.valor : (matchingRecord?.valorUnitario || 0);
                           const totalPriceValue = unitPrice * dItem.quantidade;
 
