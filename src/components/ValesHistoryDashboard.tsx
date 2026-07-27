@@ -17,7 +17,7 @@ export interface ValeEntry {
   hectolitros: number;
   valorTotal: number;
   itemsCount: number;
-  status?: "pendente" | "assinado" | "compensado";
+  status?: "emitido" | "pendente" | "assinado" | "compensado";
   originalRequest: any;
 }
 
@@ -25,7 +25,7 @@ interface ValesHistoryDashboardProps {
   vales: ValeEntry[];
   onReimprimir: (vale: ValeEntry) => void;
   onDeleteSingleVale?: (id: string) => void;
-  onUpdateValeStatus?: (id: string, newStatus: "pendente" | "assinado" | "compensado") => void;
+  onUpdateValeStatus?: (id: string, newStatus: "emitido" | "pendente" | "assinado" | "compensado") => void;
 }
 
 export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSingleVale, onUpdateValeStatus }: ValesHistoryDashboardProps) {
@@ -298,7 +298,8 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
               className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-indigo-500 focus:outline-none"
             >
               <option value="todos">Todos os Status</option>
-              <option value="pendente">🟡 Pendente</option>
+              <option value="emitido">🟠 Emitido</option>
+              <option value="pendente">🟡 Pendente de Assinatura</option>
               <option value="assinado">🔵 Assinado</option>
               <option value="compensado">🟢 Compensado</option>
             </select>
@@ -393,10 +394,13 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                             ? "bg-emerald-950/90 text-emerald-300 border-emerald-800/80"
                             : currentStatus === "assinado"
                             ? "bg-blue-950/90 text-blue-300 border-blue-800/80"
+                            : currentStatus === "emitido"
+                            ? "bg-orange-950/90 text-orange-300 border-orange-800/80"
                             : "bg-amber-950/90 text-amber-300 border-amber-800/80"
                         }`}
                       >
-                        <option value="pendente" className="bg-slate-900 text-amber-300 font-bold">🟡 Pendente</option>
+                        <option value="emitido" className="bg-slate-900 text-orange-300 font-bold">🟠 Emitido</option>
+                        <option value="pendente" className="bg-slate-900 text-amber-300 font-bold">🟡 Pendente de Assinatura</option>
                         <option value="assinado" className="bg-slate-900 text-blue-300 font-bold">🔵 Assinado</option>
                         <option value="compensado" className="bg-slate-900 text-emerald-300 font-bold">🟢 Compensado</option>
                       </select>
@@ -416,7 +420,12 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                     <td className="p-3 text-center shrink-0">
                       <div className="flex items-center justify-center gap-1.5">
                         <button
-                          onClick={() => onReimprimir(vale)}
+                          onClick={() => {
+                            if (onUpdateValeStatus && currentStatus !== "assinado" && currentStatus !== "compensado") {
+                              onUpdateValeStatus(vale.id, "emitido");
+                            }
+                            onReimprimir(vale);
+                          }}
                           className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500/80 rounded-lg text-[10px] font-bold text-indigo-400 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
                           title="Visualizar faturas e reimprimir via timbrada Ambev"
                         >

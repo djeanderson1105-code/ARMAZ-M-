@@ -93,7 +93,15 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // Hydrate local state from storage immediately
   const hydrateFromLocalStorage = useCallback(() => {
-    setPendingRequests(readLocal("sstr_representative_pending_requests", []));
+    const localRequests = readLocal("sstr_representative_pending_requests", []);
+    const sanitizedRequests = localRequests.map((req: any) => {
+      if (req.reviewedByControle !== true && req.faltaTipoErro) {
+        const { faltaTipoErro, ...rest } = req;
+        return rest;
+      }
+      return req;
+    });
+    setPendingRequests(sanitizedRequests);
     setRecords(readLocal("sstr_cached_records_v1", []));
     setBatches(readLocal("sstr_cached_batches_v1", []));
     setManagers(readLocal("sstr_registered_managers", [
@@ -158,11 +166,17 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
       });
 
       freshList = freshList.map(req => {
+        const cast = req as any;
         const isProcessed = req.statusPromax === "cadastrado" || req.statusPromax === "reprovado";
+        let updated = req;
         if (isProcessed && req.timestamp && (now - req.timestamp) > autoPurgeImgMs && req.fotoUrl && req.fotoUrl.startsWith("data:image")) {
-          return { ...req, fotoUrl: "imagem_purgada" };
+          updated = { ...updated, fotoUrl: "imagem_purgada" };
         }
-        return req;
+        if (cast.reviewedByControle !== true && cast.faltaTipoErro) {
+          const { faltaTipoErro, ...rest } = cast;
+          updated = rest as PendingRequest;
+        }
+        return updated;
       });
 
       freshList.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));

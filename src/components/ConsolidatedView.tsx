@@ -122,12 +122,22 @@ export default function ConsolidatedView({
     return new Date(year, month, day);
   };
 
+  // Scope filter: "todas" vs "aprovadas" for Top 10 items/clients and temporal analysis
+  const [statusScopeFilter, setStatusScopeFilter] = useState<"todas" | "aprovadas">("todas");
+
+  const analysisRecords = useMemo(() => {
+    if (statusScopeFilter === "aprovadas") {
+      return filteredRecords.filter(r => (r.status || "").toLowerCase().trim().includes("aprov"));
+    }
+    return filteredRecords;
+  }, [filteredRecords, statusScopeFilter]);
+
   // Top Products of all sectors combined
   const generalTopProducts = useMemo(() => {
-    if (filteredRecords.length === 0) return [];
+    if (analysisRecords.length === 0) return [];
     const prodMap: { [code: string]: { code: string; descricao: string; quantity: number; totalSpent: number; hl: number } } = {};
     
-    filteredRecords.forEach(r => {
+    analysisRecords.forEach(r => {
       const pCode = r.produto;
       if (!prodMap[pCode]) {
         prodMap[pCode] = { code: pCode, descricao: r.descricaoProduto, quantity: 0, totalSpent: 0, hl: 0 };
@@ -141,14 +151,14 @@ export default function ConsolidatedView({
       .sort((a, b) => b.quantity - a.quantity)
       .map((item, idx) => ({ ...item, rank: idx + 1 }))
       .slice(0, 10);
-  }, [filteredRecords]);
+  }, [analysisRecords]);
 
   // Top Clients of all sectors combined (grouped and sorted descending)
   const generalTopClients = useMemo(() => {
-    if (filteredRecords.length === 0) return [];
+    if (analysisRecords.length === 0) return [];
     const clientMap: { [code: string]: { code: string; nome: string; requestCount: number; totalSpent: number; hl: number } } = {};
     
-    filteredRecords.forEach(r => {
+    analysisRecords.forEach(r => {
       const cCode = r.codigoCliente;
       if (!clientMap[cCode]) {
         clientMap[cCode] = { code: cCode, nome: r.nomeCliente, requestCount: 0, totalSpent: 0, hl: 0 };
@@ -162,7 +172,7 @@ export default function ConsolidatedView({
       .sort((a, b) => b.totalSpent - a.totalSpent)
       .map((item, idx) => ({ ...item, rank: idx + 1 }))
       .slice(0, 10);
-  }, [filteredRecords]);
+  }, [analysisRecords]);
 
   // Monthly aggregated data for annual view with clients calculation
   const monthlyTimelineData = useMemo(() => {
@@ -195,7 +205,7 @@ export default function ConsolidatedView({
       };
     });
 
-    filteredRecords.forEach(r => {
+    analysisRecords.forEach(r => {
       if (!r.dataSolicitacao) return;
       const parts = r.dataSolicitacao.split("/");
       if (parts.length === 3) {
@@ -217,13 +227,13 @@ export default function ConsolidatedView({
     });
 
     return Object.values(monthMap).sort((a, b) => parseInt(a.monthId) - parseInt(b.monthId));
-  }, [filteredRecords]);
+  }, [analysisRecords]);
 
   // Daily aggregated data for selected month with clients calculation
   const dailyTimelineData = useMemo(() => {
     const dayMap: { [day: number]: { date: string; day: number; dateStr: string; totalSpent: number; totalHL: number; count: number; approvedCount: number; clientCount: number; clientSet: Set<string> } } = {};
     
-    const monthRecords = filteredRecords.filter(r => {
+    const monthRecords = analysisRecords.filter(r => {
       if (!r.dataSolicitacao) return false;
       const parts = r.dataSolicitacao.split("/");
       return parts.length === 3 && parts[1] === selectedMonth;
@@ -262,7 +272,7 @@ export default function ConsolidatedView({
     });
 
     return Object.values(dayMap).sort((a, b) => a.day - b.day);
-  }, [filteredRecords, selectedMonth]);
+  }, [analysisRecords, selectedMonth]);
 
   // Monthly points coordinates
   const monthlyPoints = useMemo(() => {
@@ -1426,10 +1436,41 @@ export default function ConsolidatedView({
       <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl space-y-4 relative">
         {/* ALWAYS-VISIBLE MONTH SELECTOR BAR (No shifts or disappearing when a month is clicked) */}
         <div className="bg-blue-950/20 border border-blue-900/40 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2.5 font-mono text-[10px] text-blue-300 no-print">
-          <div className="flex items-center gap-2 font-bold text-slate-200">
-            <Calendar className="w-4 h-4 text-blue-400" />
-            <span>Mês de Análise:</span>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2 font-bold text-slate-200">
+              <Calendar className="w-4 h-4 text-blue-400" />
+              <span>Mês de Análise:</span>
+            </div>
+
+            {/* Scope filter: Todas vs Aprovados (Posicionado exatamente entre Mês de Análise e Ano Inteiro) */}
+            <div className="bg-slate-955 border border-slate-800 rounded-xl p-1 flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setStatusScopeFilter("todas")}
+                className={`px-3 py-1 rounded-lg text-[10px] font-bold font-sans transition-all cursor-pointer ${
+                  statusScopeFilter === "todas"
+                    ? "bg-indigo-600 text-white shadow-md border border-indigo-400"
+                    : "text-slate-400 hover:text-white"
+                }`}
+                title="Filtrar todas as solicitações no gráfico e no TOP 10 (Aprovadas, Pendentes, Reprovadas e Baixadas)"
+              >
+                📋 Todas as Solicitações
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusScopeFilter("aprovadas")}
+                className={`px-3 py-1 rounded-lg text-[10px] font-bold font-sans transition-all cursor-pointer ${
+                  statusScopeFilter === "aprovadas"
+                    ? "bg-emerald-600 text-white shadow-md border border-emerald-400"
+                    : "text-slate-400 hover:text-white"
+                }`}
+                title="Filtrar apenas solicitações Aprovadas / Cadastradas no Promax"
+              >
+                ✅ Apenas Aprovados
+              </button>
+            </div>
           </div>
+
           <div className="flex flex-wrap gap-1.5 items-center justify-end">
             <button
               onClick={() => {

@@ -28,6 +28,7 @@ import { RAW_SAMPLE_DATA } from "../sampleData";
 import { getProductsDatabase } from "../data/products";
 import { DEFAULT_LISTA_CREW, DEFAULT_REPRESENTATIVOS_SETOR, DEFAULT_MOTORISTAS_ROTAS } from "../types";
 import { getAuth } from "firebase/auth";
+import { recordReads, recordWrites, recordDeletes } from "./dbQuotaTelemetry";
 
 export function sanitizeForFirestore<T>(data: T): T {
   if (data === null || data === undefined) {
@@ -585,12 +586,11 @@ function subscribeCollection(collectionName: string, localKey: string, isObject:
         resolve();
       }
     }, (err) => {
-      console.warn(`[REALTIME-SYNC] Error subscribing to ${collectionName}:`, err.message);
+      console.warn(`[REALTIME-SYNC] Firestore offline or error subscribing to ${collectionName}:`, err?.message || err);
       if (!resolved) {
         resolved = true;
-        resolve(); // resolve anyway to not block app load
+        resolve(); // resolve anyway using local cache so app continues smoothly
       }
-      handleFirestoreError(err, OperationType.LIST, collectionName);
     });
   });
 }
@@ -835,6 +835,7 @@ export async function setFirestoreDoc(collectionName: string, id: string, data: 
   try {
     const docRef = doc(firestoreDb, collectionName, id);
     await setDoc(docRef, sanitizeForFirestore(data));
+    recordWrites(1);
     console.log(`[GRANULAR-WRITE] Updated document "${id}" in Firestore collection "${collectionName}".`);
   } catch (err) {
     console.error(`[GRANULAR-WRITE-ERROR] Failed to write doc "${id}" to "${collectionName}":`, err);
@@ -846,6 +847,7 @@ export async function deleteFirestoreDoc(collectionName: string, id: string) {
   try {
     const docRef = doc(firestoreDb, collectionName, id);
     await deleteDoc(docRef);
+    recordDeletes(1);
     console.log(`[GRANULAR-DELETE] Deleted document "${id}" from Firestore collection "${collectionName}".`);
   } catch (err) {
     console.error(`[GRANULAR-DELETE-ERROR] Failed to delete doc "${id}" from "${collectionName}":`, err);

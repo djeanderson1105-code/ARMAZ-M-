@@ -410,7 +410,6 @@ export default function ManagersTab() {
         ...([reqAjudante1, reqAjudante2].filter(Boolean).length > 0 ? { faltaAjudantes: [reqAjudante1, reqAjudante2].filter(Boolean).join(", ") } : {}),
         ...(reqAjudante1 ? { faltaAjudante1: reqAjudante1 } : {}),
         ...(reqAjudante2 ? { faltaAjudante2: reqAjudante2 } : {}),
-        faltaTipoErro: "entrega",
 
         // Compat fallbacks
         item: firstItem.itemCode,
@@ -3719,14 +3718,14 @@ export default function ManagersTab() {
 
                 {/* Data de Entrega / Previsão */}
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-amber-400 uppercase font-mono block">
-                    Data de Entrega / Previsão <span className="text-amber-400">*</span>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">
+                    Data de Entrega / Previsão <span className="text-slate-500 font-normal ml-0.5">(Opcional)</span>
                   </label>
                   <input
                     type="date"
                     value={reqDataEntrega}
                     onChange={(e) => setReqDataEntrega(e.target.value)}
-                    className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-amber-400 focus:outline-none"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
               </div>

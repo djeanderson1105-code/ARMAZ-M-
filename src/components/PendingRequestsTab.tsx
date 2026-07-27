@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache } from "../types";
 import { getApiUrl } from "../utils/apiUrl";
 import { safeSetItem } from "../utils/apiSync";
@@ -7,7 +7,7 @@ import { PRODUCT_DATABASE } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
 import { getHectoFactor, calculateHL } from "../utils/hectoFactors";
 import { exportRegistrationPdf, generatePdfFilename, NETWORK_REGISTROS_PATH } from "../utils/pdfGenerator";
-import ValesHistoryDashboard from "./ValesHistoryDashboard";
+import ValesHistoryDashboard, { ValeEntry } from "./ValesHistoryDashboard";
 import { 
   Clock, 
   Search, 
@@ -85,6 +85,54 @@ const isReposicaoReq = (req: PendingRequest): boolean => {
 // Helper to check if a request is "Troca" (any motive other than product lack)
 const isTrocaReq = (req: PendingRequest): boolean => {
   return !isReposicaoReq(req);
+};
+
+// Helper to parse inversion product string into code, full product description, quantity and full formatted text
+export const parseInversionProduct = (str: string | undefined, defaultQty: number = 1) => {
+  if (!str) return { code: "INVERSÃO", name: "Produto Não Especificado", qty: defaultQty, fullText: "INVERSÃO - Produto Não Especificado (Qtd: 1)" };
+  
+  let qty = defaultQty;
+  const qtyMatch = str.match(/\(Qtd:\s*(\d+)/i);
+  if (qtyMatch) {
+    qty = parseInt(qtyMatch[1], 10);
+  }
+
+  const cleanStr = str.replace(/\(Qtd:[^)]+\)/i, "").trim();
+
+  let code = "INVERSÃO";
+  let name = "";
+
+  const match = cleanStr.match(/^#?(\d+)\s*[-:]?\s*(.*)$/);
+  if (match) {
+    code = match[1];
+    name = match[2] ? match[2].trim() : "";
+  } else if (/^\d+$/.test(cleanStr)) {
+    code = cleanStr;
+    name = "";
+  } else {
+    name = cleanStr;
+  }
+
+  if (name.startsWith("-")) {
+    name = name.substring(1).trim();
+  }
+
+  // Lookup in PRODUCT_DATABASE if name is empty, generic, dash, or equal to code
+  const dbP = PRODUCT_DATABASE.find(p => p.codigo === code || p.codigo === code.replace(/^0+/, ""));
+  if (dbP) {
+    if (!name || name === code || name.toUpperCase() === "INVERSÃO" || name === "-" || name.toUpperCase() === "SKU COMPENSADO DE INVERSÃO") {
+      name = dbP.descricao;
+    }
+  }
+
+  if (!name) {
+    name = "PRODUTO SSTR";
+  }
+
+  const codeDisplay = code !== "INVERSÃO" ? `#${code}` : code;
+  const fullText = `${codeDisplay} - ${name} (Qtd: ${qty})`;
+
+  return { code, name, qty, fullText };
 };
 
 // Helper function to extract or parse request date safely for range filtering and sorting
@@ -514,6 +562,7 @@ export default function PendingRequestsTab() {
   // Edit shortage/inversion details states
   const [editingFalta, setEditingFalta] = useState<PendingRequest | null>(null);
   const [editFaltaErrorType, setEditFaltaErrorType] = useState<"carregamento" | "entrega" | "">("");
+  const [editFaltaPhoto, setEditFaltaPhoto] = useState("");
   const [editFaltaMotorista, setEditFaltaMotorista] = useState("");
   const [editFaltaMotoristaCpf, setEditFaltaMotoristaCpf] = useState("");
   const [editFaltaAjudantes, setEditFaltaAjudantes] = useState("");
@@ -1255,7 +1304,6 @@ export default function PendingRequestsTab() {
         ...([reqAjudante1, reqAjudante2].filter(Boolean).length > 0 ? { faltaAjudantes: [reqAjudante1, reqAjudante2].filter(Boolean).join(", ") } : {}),
         ...(reqAjudante1 ? { faltaAjudante1: reqAjudante1 } : {}),
         ...(reqAjudante2 ? { faltaAjudante2: reqAjudante2 } : {}),
-        faltaTipoErro: "entrega",
 
         // Compat fallbacks
         item: firstItem.itemCode,
@@ -1323,60 +1371,68 @@ export default function PendingRequestsTab() {
     reader.readAsDataURL(file);
   };
 
-  // Auto-seed historical Vales tab if empty (User request)
-  useEffect(() => {
-    const saved = localStorage.getItem("sstr_vales_historico_reg");
-    if (!saved || JSON.parse(saved).length === 0) {
-      if (requests.length === 0) return;
-      
-      const seededVales = requests
-        .filter(req => {
-          const cast = req as any;
-          return cast.faltaTipoErro === "entrega";
-        })
-        .map((req, index) => {
-          const cast = req as any;
-          const printableItems = req.items && req.items.length > 0 ? req.items : [
-            {
-              produto: req.produto || req.item || "9999",
-              quantidade: req.quantidade || 1,
-              hectolitros: req.hectolitros || 0.12,
-              um: req.unidadeMedia || req.um || "CX",
-              motivo: req.motivo || "Falta de Entrega SSTR"
-            }
-          ];
-
-          const calculatedValTotal = printableItems.reduce((acc: number, item: any) => {
-            const match = promaxRecords.find(r => r.produto === (item.produto || item.itemCode || item.item));
-            const price = match?.valorUnitario || 98.50;
-            return acc + (price * item.quantidade);
-          }, 0);
-
-          return {
-            id: `vale_seed_${index}_${req.id}`,
-            requestId: req.id,
-            nf: req.nf || `10245${index}-2`,
-            rota: req.setor || "010",
-            dataEmissao: cast.dataEntregaRecibo || new Date().toLocaleDateString("pt-BR"),
-            motorista: cast.faltaMotorista || "Carlos Alberto Silva SSTR",
-            motoristaCpf: cast.faltaMotoristaCpf || "125.884.254-85",
-            ajudantes: cast.faltaAjudantes || "Marcus V., Diego M.",
-            ajudante1: cast.faltaAjudante1 || "Marcus Vinicius Ferreira",
-            ajudante1Cpf: cast.faltaAjudante1Cpf || "451.228.369-12",
-            ajudante2: cast.faltaAjudante2 || "Diego Marques Santana",
-            ajudante2Cpf: cast.faltaAjudante2Cpf || "754.125.362-95",
-            hectolitros: req.hectolitros || printableItems.reduce((s: any, c: any) => s + (c.hectolitros || 0), 0),
-            valorTotal: calculatedValTotal || (280 + (index * 95)),
-            itemsCount: printableItems.reduce((s: any, c: any) => s + c.quantidade, 0),
-            originalRequest: { ...req, fotoUrl: req.fotoUrl ? "imagem_no_vale_detalhes" : "" }
-          };
-        });
-
-      if (seededVales.length > 0) {
-        seededVales.forEach(vale => saveValeEntry(vale));
+  // Helper to create and save a Vale automatically when classified as delivery/unloading error ("entrega")
+  const createAndSaveVale = useCallback((req: PendingRequest) => {
+    const cast = req as any;
+    const printableItems = req.items && req.items.length > 0 ? req.items : [
+      {
+        produto: cast.produto || cast.item || "9999",
+        quantidade: cast.quantidade || 1,
+        hectolitros: cast.hectolitros || 0.12,
+        um: cast.unidadeMedia || cast.um || "CX",
+        motivo: cast.motivo || "Falta de Entrega SSTR"
       }
-    }
-  }, [requests, promaxRecords]);
+    ];
+
+    const computedValue = getRequestValue(req, promaxRecords);
+    const calculatedValTotal = computedValue > 0 ? computedValue : printableItems.reduce((acc: number, item: any) => {
+      const itemCode = String(item.produto || item.itemCode || item.item || "").trim();
+      const cleanCode = itemCode.replace(/^0+/, "");
+      const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === cleanCode || p.codigo.replace(/^0+/, "") === cleanCode);
+      const promaxMatch = promaxRecords.find(r => r.produto === itemCode || r.produto === cleanCode);
+      const price = (dbProduct?.valor && dbProduct.valor > 0)
+        ? dbProduct.valor
+        : (promaxMatch?.valorUnitario && promaxMatch.valorUnitario > 0)
+        ? promaxMatch.valorUnitario
+        : (item.valorUnitario || item.customUnitPrice || 0);
+      return acc + (price * (item.quantidade || 1));
+    }, 0);
+
+    const deterministicId = `vale_${req.id}`;
+    const newValeEntry: ValeEntry = {
+      id: deterministicId,
+      requestId: req.id,
+      nf: req.nf || "N0-NF",
+      rota: req.setor || "R00",
+      dataEmissao: cast.dataEntregaRecibo || new Date().toLocaleDateString("pt-BR"),
+      motorista: cast.faltaMotorista || "Não Declarado",
+      motoristaCpf: cast.faltaMotoristaCpf || "",
+      ajudantes: cast.faltaAjudantes || "",
+      ajudante1: cast.faltaAjudante1 || "",
+      ajudante1Cpf: cast.faltaAjudante1Cpf || "",
+      ajudante2: cast.faltaAjudante2 || "",
+      ajudante2Cpf: cast.faltaAjudante2Cpf || "",
+      hectolitros: req.hectolitros || printableItems.reduce((s: any, c: any) => s + (c.hectolitros || 0), 0),
+      valorTotal: calculatedValTotal,
+      itemsCount: printableItems.reduce((s: any, c: any) => s + (c.quantidade || 1), 0),
+      status: "emitido",
+      originalRequest: { ...req }
+    };
+
+    saveValeEntry(newValeEntry);
+  }, [promaxRecords, saveValeEntry]);
+
+  // Filter vales displayed in tab to ONLY those whose request was reviewed and classified as "entrega" (Erro de Descarregamento)
+  const displayVales = useMemo(() => {
+    const reqMap = new Map(requests.map(r => [r.id, r]));
+    return valesHistorico.filter(v => {
+      const targetReq = reqMap.get(v.requestId || v.originalRequest?.id);
+      if (targetReq) {
+        return (targetReq as any).reviewedByControle === true && (targetReq as any).faltaTipoErro === "entrega";
+      }
+      return (v.originalRequest as any)?.reviewedByControle === true && (v.originalRequest as any)?.faltaTipoErro === "entrega";
+    });
+  }, [valesHistorico, requests]);
 
   const handleLogAndPrint = (req: PendingRequest, type: "recibo" | "vale") => {
     let printedWithNewTab = false;
@@ -1479,9 +1535,17 @@ export default function PendingRequestsTab() {
           }
         ];
 
-        const calculatedValTotal = printableItems.reduce((acc: number, item: any) => {
-          const match = promaxRecords.find(r => r.produto === (item.produto || item.itemCode || item.item));
-          const price = match?.valorUnitario || 98.50;
+        const computedValue = getRequestValue(req, promaxRecords);
+        const calculatedValTotal = computedValue > 0 ? computedValue : printableItems.reduce((acc: number, item: any) => {
+          const itemCode = String(item.produto || item.itemCode || item.item || "").trim();
+          const cleanCode = itemCode.replace(/^0+/, "");
+          const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === cleanCode || p.codigo.replace(/^0+/, "") === cleanCode);
+          const promaxMatch = promaxRecords.find(r => r.produto === itemCode || r.produto === cleanCode);
+          const price = (dbProduct?.valor && dbProduct.valor > 0)
+            ? dbProduct.valor
+            : (promaxMatch?.valorUnitario && promaxMatch.valorUnitario > 0)
+            ? promaxMatch.valorUnitario
+            : (item.valorUnitario || item.customUnitPrice || 0);
           return acc + (price * item.quantidade);
         }, 0);
 
@@ -1499,7 +1563,7 @@ export default function PendingRequestsTab() {
           ajudante2: cast.faltaAjudante2 || "",
           ajudante2Cpf: cast.ajudante2Cpf || "",
           hectolitros: req.hectolitros || printableItems.reduce((s: any, c: any) => s + (c.hectolitros || 0), 0),
-          valorTotal: calculatedValTotal || 150,
+          valorTotal: calculatedValTotal,
           itemsCount: printableItems.reduce((s: any, c: any) => s + c.quantidade, 0),
           originalRequest: { ...req, fotoUrl: req.fotoUrl ? "imagem_no_vale_detalhes" : "" }
         };
@@ -1871,9 +1935,10 @@ export default function PendingRequestsTab() {
       // 4. Tab filters
       if (activeTab === "historico_baixas") {
         const isCadastrado = req.statusPromax === "cadastrado";
-        const isReprovado = req.statusPromax === "reprovado";
-        const isFaltaBaixada = !!(req as any).faltaBaixa;
-        const isPendente = req.statusPromax === "pendente";
+        const isReprovado = req.statusPromax === "reprovado" || req.statusPromax === "corrigir";
+        const hasReciboAssinado = !!(req as any).faltaBaixaReciboUrl || !!(req as any).faltaBaixaReciboName || (!!(req as any).faltaBaixa && !!(req as any).fotoUrl);
+        const isFaltaBaixada = (!!(req as any).faltaBaixa || !!(req as any).faltaBaixaDate) && hasReciboAssinado;
+        const isPendente = req.statusPromax === "pendente" && !(req as any).faltaBaixa;
 
         let matchesStatus = true;
         if (historicoBaixasStatusFilter === "aprovados") {
@@ -1881,12 +1946,13 @@ export default function PendingRequestsTab() {
         } else if (historicoBaixasStatusFilter === "reprovados") {
           matchesStatus = isReprovado;
         } else if (historicoBaixasStatusFilter === "baixados") {
-          matchesStatus = isFaltaBaixada || isCadastrado || isReprovado;
+          // Baixados: Apenas aquelas cujo recibo assinado já tenha sido importado/anexado
+          matchesStatus = isFaltaBaixada || hasReciboAssinado;
         } else if (historicoBaixasStatusFilter === "pendentes") {
           matchesStatus = isPendente;
         } else {
-          // "todos": Consolidate all occurrences regardless of origin flow (Approved, Rejected, Manual/System Baixas)
-          matchesStatus = isCadastrado || isReprovado || isFaltaBaixada || (req as any).statusPromax === "cadastrado";
+          // "todos": Consolidate all occurrences regardless of origin flow
+          matchesStatus = true;
         }
 
         return matchesStatus && matchSearch && matchSector;
@@ -1898,8 +1964,9 @@ export default function PendingRequestsTab() {
 
         // Faltas specificity status filter
         const isBaixada = !!(req as any).faltaBaixa;
+        const hasRecibo = !!(req as any).faltaBaixaReciboUrl || !!(req as any).faltaBaixaReciboName || !!(req as any).fotoUrl;
         if (lackFilterStatus === "abertos" && isBaixada) return false;
-        if (lackFilterStatus === "baixados" && !isBaixada) return false;
+        if (lackFilterStatus === "baixados" && (!isBaixada || !hasRecibo)) return false;
 
         // Faltas typo erro filter
         const errType = (req as any).faltaTipoErro;
@@ -2133,6 +2200,7 @@ export default function PendingRequestsTab() {
     setEditFaltaDataAnomalia(cast.mapaDataAnomalia || req.data.split(" ")[0] || "");
     setEditFaltaDataEntrega(cast.dataEntregaRecibo || new Date().toLocaleDateString("pt-BR"));
     setEditFaltaObservacao(cast.observacaoRecibo || req.observacao || "");
+    setEditFaltaPhoto(req.fotoUrl || "");
     const pdvDb = getPdvDatabase();
     const clientInfo = getClientDetails(req.nb, pdvDb, promaxRecords);
     setEditFaltaCidade(cast.municipioRecibo || clientInfo.municipio || "");
@@ -2151,7 +2219,8 @@ export default function PendingRequestsTab() {
 
       const updatedReq = {
         ...targetReq,
-        ...(editFaltaErrorType ? { faltaTipoErro: editFaltaErrorType } : {}),
+        faltaTipoErro: editFaltaErrorType || undefined,
+        reviewedByControle: true,
         ...(editFaltaMotorista.trim() ? { faltaMotorista: editFaltaMotorista.trim() } : {}),
         ...(editFaltaMotoristaCpf.trim() ? { faltaMotoristaCpf: editFaltaMotoristaCpf.trim() } : {}),
         ...((combinedHelpers || editFaltaAjudantes.trim()) ? { faltaAjudantes: combinedHelpers || editFaltaAjudantes.trim() } : {}),
@@ -2163,17 +2232,29 @@ export default function PendingRequestsTab() {
         ...(editFaltaDataEntrega.trim() ? { dataEntregaRecibo: editFaltaDataEntrega.trim() } : {}),
         ...(editFaltaObservacao.trim() ? { observacaoRecibo: editFaltaObservacao.trim() } : {}),
         ...(editFaltaCidade.trim() ? { municipioRecibo: editFaltaCidade.trim() } : {}),
+        ...(editFaltaPhoto ? { fotoUrl: editFaltaPhoto } : {}),
       } as PendingRequest;
 
       savePendingRequest(updatedReq);
+
+      if (editFaltaErrorType === "entrega") {
+        createAndSaveVale(updatedReq);
+      } else {
+        const existingVale = valesHistorico.find(v => v.requestId === updatedReq.id || v.originalRequest?.id === updatedReq.id || v.id === `vale_${updatedReq.id}`);
+        if (existingVale) {
+          deleteValeEntry(existingVale.id);
+        }
+      }
+
+      setEditingFalta(null);
     }
-    setEditingFalta(null);
   };
 
   // Process physical settlement confirmation modal with uploaded document/photo
   const handleConfirmarBaixaShortage = async () => {
     if (!baixandoFalta) return;
-    if (!baixaReciboFile) {
+    const isWarehouseError = baixandoFalta.faltaTipoErro === "carregamento";
+    if (!baixaReciboFile && !isWarehouseError) {
       setBaixaError("Por favor, anexe a foto ou o PDF do recibo assinado pelo cliente para poder efetuar a baixa.");
       return;
     }
@@ -2241,8 +2322,8 @@ export default function PendingRequestsTab() {
     }
 
     // Now upload physical settlement receipt image/file if needed
-    let finalReciboUrl = baixaReciboFile.dataUrl;
-    if (baixaReciboFile.dataUrl && baixaReciboFile.dataUrl.startsWith("data:image/")) {
+    let finalReciboUrl = baixaReciboFile?.dataUrl || baixandoFalta.fotoUrl || "";
+    if (baixaReciboFile?.dataUrl && baixaReciboFile.dataUrl.startsWith("data:image/")) {
       try {
         const upRes = await fetch(getApiUrl("/api/upload"), {
           method: "POST",
@@ -2265,11 +2346,11 @@ export default function PendingRequestsTab() {
       faltaBaixa: true,
       faltaBaixaDate: new Date().toLocaleDateString("pt-BR") + " às " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
       faltaBaixaUser: "Controle Operacional",
-      faltaBaixaReciboName: baixaReciboFile.name,
+      faltaBaixaReciboName: baixaReciboFile?.name || "Baixa Interna (Erro de Armazém)",
       faltaBaixaReciboUrl: finalReciboUrl,
-      faltaBaixaReciboType: baixaReciboFile.type,
+      faltaBaixaReciboType: baixaReciboFile?.type || "image/png",
       faltaBaixaObs: baixaObservacao.trim() || undefined,
-      fotoUrl: compiledPdfUrl // Replace original heavy image with the complete compiled PDF URL
+      fotoUrl: compiledPdfUrl || baixandoFalta.fotoUrl // Replace original heavy image with the complete compiled PDF URL
     } as PendingRequest;
 
     savePendingRequest(updatedRequestObj);
@@ -2931,7 +3012,7 @@ export default function PendingRequestsTab() {
           title="Consulte o financeiro de vales emitidos, rankings de equipes e reimpressões"
         >
           <TrendingUp className="w-3.5 h-3.5 text-amber-500 animate-pulse shrink-0" />
-          <span className="truncate">Vales ({valesHistorico.length})</span>
+          <span className="truncate">Vales ({displayVales.length})</span>
         </button>
 
         <button
@@ -3436,16 +3517,15 @@ export default function PendingRequestsTab() {
 
                 {/* Data de Entrega / Alinhamento */}
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-amber-400 font-mono uppercase tracking-wider block flex items-center gap-1">
-                    <Calendar className="w-3 h-3" />
-                    <span>Data de Entrega / Alinhamento <span className="text-amber-400">*</span>:</span>
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-slate-400" />
+                    <span>Data de Entrega / Alinhamento <span className="text-slate-500 font-normal ml-0.5">(Opcional)</span>:</span>
                   </label>
                   <input
                     type="date"
-                    required
                     value={reqDataEntrega}
                     onChange={(e) => setReqDataEntrega(e.target.value)}
-                    className="w-full bg-slate-950 border border-amber-500/40 rounded-xl px-3 h-10 text-xs font-mono text-slate-200 focus:outline-none focus:border-amber-400"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-10 text-xs font-mono text-slate-200 focus:outline-none focus:border-emerald-500"
                   />
                 </div>
               </div>
@@ -3564,7 +3644,7 @@ export default function PendingRequestsTab() {
                                 key={p.codigo}
                                 type="button"
                                 onMouseDown={() => {
-                                  setReqInversaoIr(p.codigo);
+                                  setReqInversaoIr(`#${p.codigo} - ${p.descricao}`);
                                   setReqItem(p.codigo);
                                 }}
                                 className="w-full px-3 py-2 text-left hover:bg-slate-900 transition-colors block text-[10.5px]"
@@ -3601,7 +3681,7 @@ export default function PendingRequestsTab() {
                               <button
                                 key={p.codigo}
                                 type="button"
-                                onMouseDown={() => setReqInversaoRecolher(p.codigo)}
+                                onMouseDown={() => setReqInversaoRecolher(`#${p.codigo} - ${p.descricao}`)}
                                 className="w-full px-3 py-2 text-left hover:bg-slate-900 transition-colors block text-[10.5px]"
                               >
                                 <span className="font-mono font-bold text-rose-400">{p.codigo}</span>
@@ -3850,7 +3930,7 @@ export default function PendingRequestsTab() {
         ) : activeTab === "historico_vales" ? (
           <div className="no-print animate-fade-in">
             <ValesHistoryDashboard 
-              vales={valesHistorico} 
+              vales={displayVales} 
               onReimprimir={(vale) => setSelectedPrintDoc({ type: "vale", request: vale.originalRequest })} 
               onDeleteSingleVale={handleDeleteSingleVale}
               onUpdateValeStatus={handleUpdateValeStatus}
@@ -4285,6 +4365,11 @@ export default function PendingRequestsTab() {
                               <CheckCircle2 className="w-3 h-3 text-emerald-450" />
                               <span>Promax Ok</span>
                             </span>
+                          ) : (cast.faltaBaixa || (req as any).faltaBaixa) ? (
+                            <span className="px-2 py-0.5 bg-emerald-950/60 border border-emerald-900/55 rounded-full text-[9px] font-bold font-mono text-emerald-400 flex items-center gap-1 shrink-0">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-450" />
+                              <span>🟢 Baixada</span>
+                            </span>
                           ) : req.statusPromax === "reprovado" ? (
                             <span className="px-2 py-0.5 bg-red-950/60 border border-red-900/55 rounded-full text-[9px] font-bold font-mono text-red-400 flex items-center gap-1 shrink-0">
                               <XCircle className="w-3 h-3 text-red-450" />
@@ -4422,15 +4507,19 @@ export default function PendingRequestsTab() {
                                     <span>Motivo: <strong className={isItemShort ? "text-red-400" : isSwapItem ? "text-indigo-400" : "text-blue-400"}>{sub.motivo}</strong></span>
                                   </div>
                                   
-                                  {isSwapItem && (
-                                    <div className="mt-1 p-1 bg-slate-900 rounded-[6px] text-[8.5px] font-sans text-amber-500 leading-normal border border-slate-850">
-                                      🔄 <strong className="text-indigo-400">Inversão de Carga:</strong>
-                                      <div className="pl-2 mt-0.5 text-[8px] text-slate-400">
-                                        Entregar: <span className="font-mono text-slate-300 font-bold">{sub.produtoAhEnviar}</span><br/>
-                                        Recolher: <span className="font-mono text-slate-200">{sub.produtoARecolher}</span>
+                                  {isSwapItem && (() => {
+                                    const pEnviar = parseInversionProduct(sub.produtoAhEnviar, sub.quantidade);
+                                    const pRecolher = parseInversionProduct(sub.produtoARecolher, sub.quantidade);
+                                    return (
+                                      <div className="mt-1.5 p-1.5 bg-slate-900 rounded-[6px] text-[8.5px] font-sans text-amber-500 leading-normal border border-slate-850 space-y-1">
+                                        <div className="font-bold text-amber-400 uppercase tracking-wide text-[8px]">🔄 COMPROVAÇÃO DE INVERSÃO LOGÍSTICA:</div>
+                                        <div className="pl-1 text-[8px] text-slate-300 space-y-0.5">
+                                          <div>➡️ <strong className="text-emerald-400">ENTREGAR:</strong> <span className="font-mono text-slate-100 font-bold">{pEnviar.fullText}</span></div>
+                                          <div>⬅️ <strong className="text-rose-400">RECOLHER:</strong> <span className="font-mono text-slate-300">{pRecolher.fullText}</span></div>
+                                        </div>
                                       </div>
-                                    </div>
-                                  )}
+                                    );
+                                  })()}
                                 </div>
                               );
                             })}
@@ -4494,8 +4583,8 @@ export default function PendingRequestsTab() {
                       )}
                     </div>
 
-                    {/* Photo Evidence Box for Control/Management (Visible while request has an image attached) */}
-                    {req.fotoUrl && !req.fotoUrl.toLowerCase().endsWith(".pdf") && (req.fotoUrl.startsWith("data:image") || req.fotoUrl.startsWith("http") || req.fotoUrl.startsWith("blob:") || req.fotoUrl.startsWith("/")) && (
+                    {/* Photo Evidence Box for Control/Management */}
+                    {req.fotoUrl && !req.fotoUrl.toLowerCase().endsWith(".pdf") && (req.fotoUrl.startsWith("data:image") || req.fotoUrl.startsWith("http") || req.fotoUrl.startsWith("blob:") || req.fotoUrl.startsWith("/")) ? (
                       <div className="relative group bg-slate-950 p-2.5 rounded-xl border border-slate-850 flex items-center justify-between gap-3 text-left font-mono">
                         <div className="flex items-center gap-3 min-w-0 flex-1">
                           <img 
@@ -4507,22 +4596,73 @@ export default function PendingRequestsTab() {
                           />
                           <div className="text-[10px] leading-relaxed min-w-0 flex-1">
                             <span className="text-amber-400 font-extrabold uppercase tracking-wider block text-[8.5px] font-sans">
-                              📷 Evidência Anexada (Pendência):
+                              📷 Evidência Anexada:
                             </span>
                             <span className="text-slate-300 italic block truncate max-w-[180px] font-medium text-[9.5px]">
                               "{req.observacao || "Foto enviada pelo solicitante"}"
                             </span>
                           </div>
                         </div>
-                        <button 
-                          type="button"
-                          onClick={() => setZoomPhoto(req.fotoUrl)}
-                          className="p-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-blue-400 hover:text-white cursor-pointer transition-colors flex items-center gap-1 shrink-0 text-[9px] font-bold"
-                          title="Visualizar foto em tela cheia"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>Ampliar</span>
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <label className="p-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-slate-300 hover:text-white cursor-pointer transition-colors flex items-center gap-1 text-[9px] font-bold" title="Alterar/Trocar foto do card">
+                            <Upload className="w-3.5 h-3.5 text-indigo-400" />
+                            <span>Trocar</span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  const reader = new FileReader();
+                                  reader.onload = (evt) => {
+                                    if (evt.target?.result) {
+                                      savePendingRequest({ ...req, fotoUrl: evt.target.result as string });
+                                    }
+                                  };
+                                  reader.readAsDataURL(file);
+                                }
+                              }}
+                            />
+                          </label>
+                          <button 
+                            type="button"
+                            onClick={() => setZoomPhoto(req.fotoUrl)}
+                            className="p-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-blue-400 hover:text-white cursor-pointer transition-colors flex items-center gap-1 text-[9px] font-bold"
+                            title="Visualizar foto em tela cheia"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Ampliar</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bg-slate-950 p-2 rounded-xl border border-slate-850/80 flex items-center justify-between gap-2 text-left font-sans text-[10px]">
+                        <div className="flex items-center gap-1.5 text-slate-400 min-w-0">
+                          <Camera className="w-3.5 h-3.5 text-amber-500/80 shrink-0" />
+                          <span className="truncate text-[9.5px]">Sem foto anexada</span>
+                        </div>
+                        <label className="px-2 py-1 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800/60 rounded-md text-indigo-300 hover:text-white cursor-pointer transition-colors flex items-center gap-1 text-[9px] font-bold shrink-0">
+                          <Upload className="w-3 h-3 text-indigo-400" />
+                          <span>Anexar Foto</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                const reader = new FileReader();
+                                reader.onload = (evt) => {
+                                  if (evt.target?.result) {
+                                    savePendingRequest({ ...req, fotoUrl: evt.target.result as string });
+                                  }
+                                };
+                                reader.readAsDataURL(file);
+                              }
+                            }}
+                          />
+                        </label>
                       </div>
                     )}
 
@@ -4880,9 +5020,16 @@ export default function PendingRequestsTab() {
                   <ul className="list-disc pl-4 mt-1 space-y-0.5 text-[11px]">
                     {baixandoFalta.items.map((sub, idx) => (
                       <li key={idx}>
-                        {sub.produtoAhEnviar ? (
-                          <span>🔄 Enviar: {sub.produtoAhEnviar} | Recolher: {sub.produtoARecolher}</span>
-                        ) : (
+                        {sub.produtoAhEnviar ? (() => {
+                          const pEnviar = parseInversionProduct(sub.produtoAhEnviar, sub.quantidade);
+                          const pRecolher = parseInversionProduct(sub.produtoARecolher, sub.quantidade);
+                          return (
+                            <div className="my-1 p-1.5 bg-slate-900/80 rounded border border-slate-800 text-[10px] space-y-0.5 font-sans">
+                              <div>➡️ <strong className="text-emerald-400">ENTREGAR:</strong> <span className="font-mono text-slate-200 font-bold">{pEnviar.fullText}</span></div>
+                              <div>⬅️ <strong className="text-rose-400">RECOLHER:</strong> <span className="font-mono text-slate-300">{pRecolher.fullText}</span></div>
+                            </div>
+                          );
+                        })() : (
                           <span>📦 SKU: {sub.item} - {sub.descricao || "Falta"} (Qtd: {sub.quantidade} {sub.unidadeMedida ? sub.unidadeMedida.toUpperCase() : "cx"})</span>
                         )}
                       </li>
@@ -4894,7 +5041,13 @@ export default function PendingRequestsTab() {
 
             <div className="space-y-1.5">
               <label className="text-[10px] text-slate-450 font-bold uppercase tracking-wider block">
-                Comprovante Assinado (Foto JPG/PNG ou PDF) <span className="text-emerald-500">*</span>
+                {baixandoFalta.faltaTipoErro === "carregamento" ? (
+                  <span className="text-blue-400">Comprovante / Recibo (Opcional - Erro de Armazém/Carregamento)</span>
+                ) : (
+                  <>
+                    Comprovante Assinado (Foto JPG/PNG ou PDF) <span className="text-emerald-500">*</span>
+                  </>
+                )}
               </label>
 
               {/* Drag and Drop Container */}
@@ -5090,227 +5243,289 @@ export default function PendingRequestsTab() {
       {/* SHORTAGE CLASSIFICATION AND DETAILS EDITING SLIDEOVER/MODAL */}
       {editingFalta && (() => {
         return (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in no-print">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-lg shadow-2xl space-y-4 text-left font-sans">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-fade-in no-print overflow-y-auto">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl text-left font-sans flex flex-col max-h-[92vh] my-auto overflow-hidden">
+              
+              {/* Fixed Header */}
+              <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-900 rounded-t-2xl">
                 <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
                   <Layers className="w-4 h-4 text-indigo-400" />
                   <span>Classificar e Ajustar Falta Física</span>
                 </h3>
                 <button 
                   onClick={() => setEditingFalta(null)} 
-                  className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white cursor-pointer"
+                  className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white cursor-pointer transition-colors"
+                  title="Fechar (ESC)"
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-5 h-5" />
                 </button>
               </div>
 
-              {/* Informative recap */}
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-850 text-[11px] text-slate-350 grid grid-cols-2 gap-2 font-mono">
-                <p><strong>Nota Fiscal:</strong> {editingFalta.nf}</p>
-                <p><strong>Código Client NB:</strong> {editingFalta.nb}</p>
-                <p><strong>Mapa Carga:</strong> {editingFalta.mapa || "NÃO CONFIGURADO"}</p>
-                <p><strong>Setor Venda:</strong> {editingFalta.setor}</p>
-              </div>
-
-              {/* Edit attributes form */}
-              <div className="space-y-3">
-                {/* 1. Classify err type */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Classificação do Erro (Responsabilidade):</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setEditFaltaErrorType("carregamento")}
-                      className={`p-2.5 rounded-xl border text-xs font-bold text-center cursor-pointer transition-colors ${
-                        editFaltaErrorType === "carregamento"
-                          ? "bg-blue-900/40 border-blue-500 text-blue-300"
-                          : "bg-slate-950 border-slate-850 text-slate-500 hover:border-slate-800 hover:text-slate-300"
-                      }`}
-                    >
-                      <p className="text-xs">📦 Erro Carregamento</p>
-                      <p className="text-[9px] font-medium opacity-85 mt-0.5">Estoque Armazém / Não faturar</p>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setEditFaltaErrorType("entrega")}
-                      className={`p-2.5 rounded-xl border text-xs font-bold text-center cursor-pointer transition-colors ${
-                        editFaltaErrorType === "entrega"
-                          ? "bg-amber-900/40 border-amber-500 text-amber-300"
-                          : "bg-slate-950 border-slate-850 text-slate-500 hover:border-slate-800 hover:text-slate-300"
-                      }`}
-                    >
-                      <p className="text-xs">🚚 Erro de Entrega</p>
-                      <p className="text-[9px] font-medium opacity-85 mt-0.5">Rota Logística / Faturar + Vale Crew</p>
-                    </button>
-                  </div>
+              {/* Scrollable Body with Mouse Wheel Scrollbar */}
+              <div className="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1 custom-scrollbar text-xs">
+                {/* Informative recap */}
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-850 text-[11px] text-slate-350 grid grid-cols-2 gap-2 font-mono">
+                  <p><strong>Nota Fiscal:</strong> {editingFalta.nf}</p>
+                  <p><strong>Código Client NB:</strong> {editingFalta.nb}</p>
+                  <p><strong>Mapa Carga:</strong> {editingFalta.mapa || "NÃO CONFIGURADO"}</p>
+                  <p><strong>Setor Venda:</strong> {editingFalta.setor}</p>
                 </div>
 
-                {/* 2. Motorista name & CPF */}
-                <div className="grid grid-cols-3 gap-2.5">
-                  <div className="col-span-2 space-y-1 font-sans font-medium">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Nome do Motorista:</label>
-                    <input
-                      type="text"
-                      list="motoristas-list"
-                      value={editFaltaMotorista}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setEditFaltaMotorista(val);
-                        const match = getCrewDetailByName(val);
-                        if (match) {
-                          setEditFaltaMotoristaCpf(match.cpf);
-                        }
-                      }}
-                      placeholder="Nome completo do condutor responsável"
-                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-sans"
-                    />
-                  </div>
-                  <div className="space-y-1 font-sans">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">CPF Motorista:</label>
-                    <input
-                      type="text"
-                      value={editFaltaMotoristaCpf}
-                      onChange={(e) => setEditFaltaMotoristaCpf(e.target.value)}
-                      placeholder="Ex: 123.456.789-00"
-                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-mono"
-                    />
-                  </div>
-                </div>
+                {/* Edit attributes form */}
+                <div className="space-y-3">
+                  {/* 1. Classify err type */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">
+                      Classificação do Erro (Responsabilidade):
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditFaltaErrorType("carregamento")}
+                        className={`p-2.5 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all flex flex-col items-center justify-center ${
+                          editFaltaErrorType === "carregamento"
+                            ? "bg-blue-900/40 border-blue-500 text-blue-300 ring-1 ring-blue-500/50"
+                            : "bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800 hover:text-slate-300"
+                        }`}
+                      >
+                        <p className="text-xs font-bold">📦 Carregamento</p>
+                        <p className="text-[8.5px] font-medium opacity-80 mt-0.5">Estoque Armazém / Não faturar</p>
+                      </button>
 
-                {/* 3. Ajudante 1 & CPF */}
-                <div className="grid grid-cols-3 gap-2.5">
-                  <div className="col-span-2 space-y-1 font-sans">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono font-sans font-medium">Nome do Ajudante 1:</label>
-                    <input
-                      type="text"
-                      list="ajudantes-list"
-                      value={editFaltaAjudante1}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setEditFaltaAjudante1(val);
-                        const match = getCrewDetailByName(val);
-                        if (match) {
-                          setEditFaltaAjudante1Cpf(match.cpf);
-                        }
-                      }}
-                      placeholder="Nome do ajudante 1 da rota"
-                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-sans"
-                    />
-                  </div>
-                  <div className="space-y-1 font-sans">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">CPF Ajudante 1:</label>
-                    <input
-                      type="text"
-                      value={editFaltaAjudante1Cpf}
-                      onChange={(e) => setEditFaltaAjudante1Cpf(e.target.value)}
-                      placeholder="Ex: 000.000.000-00"
-                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-mono"
-                    />
-                  </div>
-                </div>
+                      <button
+                        type="button"
+                        onClick={() => setEditFaltaErrorType("entrega")}
+                        className={`p-2.5 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all flex flex-col items-center justify-center ${
+                          editFaltaErrorType === "entrega"
+                            ? "bg-amber-900/40 border-amber-500 text-amber-300 ring-1 ring-amber-500/50"
+                            : "bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800 hover:text-slate-300"
+                        }`}
+                      >
+                        <p className="text-xs font-bold">🚚 Erro de Entrega</p>
+                        <p className="text-[8.5px] font-medium opacity-80 mt-0.5">Rota Logística / Faturar + Vale Crew</p>
+                      </button>
 
-                {/* 4. Ajudante 2 & CPF */}
-                <div className="grid grid-cols-3 gap-2.5 font-sans">
-                  <div className="col-span-2 space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono font-sans font-medium">Nome do Ajudante 2 (Opcional):</label>
-                    <input
-                      type="text"
-                      list="ajudantes-list"
-                      value={editFaltaAjudante2}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setEditFaltaAjudante2(val);
-                        const match = getCrewDetailByName(val);
-                        if (match) {
-                          setEditFaltaAjudante2Cpf(match.cpf);
-                        }
-                      }}
-                      placeholder="Nome do ajudante 2 da rota"
-                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-sans"
-                    />
+                      <button
+                        type="button"
+                        onClick={() => setEditFaltaErrorType("nao_identificado")}
+                        className={`p-2.5 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all flex flex-col items-center justify-center ${
+                          editFaltaErrorType === "nao_identificado" || !editFaltaErrorType
+                            ? "bg-purple-900/40 border-purple-500 text-purple-300 ring-1 ring-purple-500/50"
+                            : "bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800 hover:text-slate-300"
+                        }`}
+                      >
+                        <p className="text-xs font-bold">❓ Não Identificado</p>
+                        <p className="text-[8.5px] font-medium opacity-80 mt-0.5">Sem Culpa Definida / Apurar</p>
+                      </button>
+                    </div>
                   </div>
-                  <div className="space-y-1 font-sans">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">CPF Ajudante 2:</label>
-                    <input
-                      type="text"
-                      value={editFaltaAjudante2Cpf}
-                      onChange={(e) => setEditFaltaAjudante2Cpf(e.target.value)}
-                      placeholder="Ex: 000.000.000-00"
-                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-mono"
-                    />
+
+                  {/* 2. Motorista name & CPF */}
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <div className="col-span-2 space-y-1 font-sans font-medium">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Nome do Motorista:</label>
+                      <input
+                        type="text"
+                        list="motoristas-list"
+                        value={editFaltaMotorista}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setEditFaltaMotorista(val);
+                          const match = getCrewDetailByName(val);
+                          if (match) {
+                            setEditFaltaMotoristaCpf(match.cpf);
+                          }
+                        }}
+                        placeholder="Nome completo do condutor responsável"
+                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-sans"
+                      />
+                    </div>
+                    <div className="space-y-1 font-sans">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">CPF Motorista:</label>
+                      <input
+                        type="text"
+                        value={editFaltaMotoristaCpf}
+                        onChange={(e) => setEditFaltaMotoristaCpf(e.target.value)}
+                        placeholder="Ex: 123.456.789-00"
+                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-mono"
+                      />
+                    </div>
                   </div>
-                </div>
 
-                <datalist id="motoristas-list">
-                  {LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA")).map(crew => (
-                    <option key={crew.nome} value={crew.nome}>CPF: {crew.cpf}</option>
-                  ))}
-                </datalist>
-                <datalist id="ajudantes-list">
-                  {LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map(crew => (
-                    <option key={crew.nome} value={crew.nome}>CPF: {crew.cpf}</option>
-                  ))}
-                </datalist>
+                  {/* 3. Ajudante 1 & CPF */}
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <div className="col-span-2 space-y-1 font-sans">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono font-sans font-medium">Nome do Ajudante 1:</label>
+                      <input
+                        type="text"
+                        list="ajudantes-list"
+                        value={editFaltaAjudante1}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setEditFaltaAjudante1(val);
+                          const match = getCrewDetailByName(val);
+                          if (match) {
+                            setEditFaltaAjudante1Cpf(match.cpf);
+                          }
+                        }}
+                        placeholder="Nome do ajudante 1 da rota"
+                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-sans"
+                      />
+                    </div>
+                    <div className="space-y-1 font-sans">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">CPF Ajudante 1:</label>
+                      <input
+                        type="text"
+                        value={editFaltaAjudante1Cpf}
+                        onChange={(e) => setEditFaltaAjudante1Cpf(e.target.value)}
+                        placeholder="Ex: 000.000.000-00"
+                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-mono"
+                      />
+                    </div>
+                  </div>
 
-                {/* 4. Dates row */}
-                <div className="grid grid-cols-2 gap-3">
+                  {/* 4. Ajudante 2 & CPF */}
+                  <div className="grid grid-cols-3 gap-2.5 font-sans">
+                    <div className="col-span-2 space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono font-sans font-medium">Nome do Ajudante 2 (Opcional):</label>
+                      <input
+                        type="text"
+                        list="ajudantes-list"
+                        value={editFaltaAjudante2}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setEditFaltaAjudante2(val);
+                          const match = getCrewDetailByName(val);
+                          if (match) {
+                            setEditFaltaAjudante2Cpf(match.cpf);
+                          }
+                        }}
+                        placeholder="Nome do ajudante 2 da rota"
+                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-sans"
+                      />
+                    </div>
+                    <div className="space-y-1 font-sans">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">CPF Ajudante 2:</label>
+                      <input
+                        type="text"
+                        value={editFaltaAjudante2Cpf}
+                        onChange={(e) => setEditFaltaAjudante2Cpf(e.target.value)}
+                        placeholder="Ex: 000.000.000-00"
+                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <datalist id="motoristas-list">
+                    {LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA")).map(crew => (
+                      <option key={crew.nome} value={crew.nome}>CPF: {crew.cpf}</option>
+                    ))}
+                  </datalist>
+                  <datalist id="ajudantes-list">
+                    {LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map(crew => (
+                      <option key={crew.nome} value={crew.nome}>CPF: {crew.cpf}</option>
+                    ))}
+                  </datalist>
+
+                  {/* 4. Dates row */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Data da Anomalia (Mapa):</label>
+                      <input
+                        type="text"
+                        value={editFaltaDataAnomalia}
+                        onChange={(e) => setEditFaltaDataAnomalia(e.target.value)}
+                        placeholder="Ex: 21/06/2026"
+                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Data de Entrega Recibo:</label>
+                      <input
+                        type="text"
+                        value={editFaltaDataEntrega}
+                        onChange={(e) => setEditFaltaDataEntrega(e.target.value)}
+                        placeholder="Ex: 22/06/2026"
+                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Municipio / Cidade do PDV (Manual edit) */}
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Data da Anomalia (Mapa):</label>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Município / Cidade do PDV:</label>
                     <input
                       type="text"
-                      value={editFaltaDataAnomalia}
-                      onChange={(e) => setEditFaltaDataAnomalia(e.target.value)}
-                      placeholder="Ex: 21/06/2026"
+                      value={editFaltaCidade}
+                      onChange={(e) => setEditFaltaCidade(e.target.value)}
+                      placeholder="Digite a cidade manualmente (caso não identificada no banco)"
+                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none uppercase font-bold"
+                    />
+                    <p className="text-[10px] text-slate-500">
+                      O sistema busca a cidade automaticamente no banco importado. Se não identificar, você pode digitar acima.
+                    </p>
+                  </div>
+
+                  {/* 5. Custom observing receipt */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Observações no Recibo / Justificativa:</label>
+                    <textarea
+                      value={editFaltaObservacao}
+                      onChange={(e) => setEditFaltaObservacao(e.target.value)}
+                      placeholder="Opcional. Ex: Entrega realizada com atraso, autorizado pelo supervisor."
+                      rows={2}
                       className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none"
                     />
                   </div>
+
+                  {/* 6. Photo / Evidence upload section */}
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Data de Entrega Recibo:</label>
-                    <input
-                      type="text"
-                      value={editFaltaDataEntrega}
-                      onChange={(e) => setEditFaltaDataEntrega(e.target.value)}
-                      placeholder="Ex: 22/06/2026"
-                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none"
-                    />
+                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Foto / Evidência da Anomalia:</label>
+                    <div className="flex items-center gap-3 bg-slate-955 border border-slate-800 rounded-lg p-2.5">
+                      {editFaltaPhoto ? (
+                        <img src={editFaltaPhoto} alt="Evidência Anexada" className="w-12 h-12 object-cover rounded-lg border border-slate-700 shrink-0" />
+                      ) : (
+                        <div className="w-12 h-12 bg-slate-900 border border-dashed border-slate-700 rounded-lg flex items-center justify-center text-slate-500 shrink-0">
+                          <Camera className="w-5 h-5 text-amber-500" />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0 text-left">
+                        <label className="px-3 py-1.5 bg-indigo-950 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 rounded-lg text-[10.5px] font-bold cursor-pointer inline-flex items-center gap-1.5 transition-colors">
+                          <Upload className="w-3.5 h-3.5 text-indigo-400" />
+                          <span>{editFaltaPhoto ? "Substituir Foto" : "Importar Foto / Comprovante"}</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                const reader = new FileReader();
+                                reader.onload = (evt) => {
+                                  if (evt.target?.result) {
+                                    setEditFaltaPhoto(evt.target.result as string);
+                                  }
+                                };
+                                reader.readAsDataURL(file);
+                              }
+                            }}
+                          />
+                        </label>
+                        <p className="text-[9.5px] text-slate-500 mt-1 font-sans">
+                          {editFaltaPhoto ? "Foto anexada. Ela será salva no card da anomalia." : "Anexe uma foto do canhoto, avaria ou mapa de carga."}
+                        </p>
+                      </div>
+                    </div>
                   </div>
-                </div>
-
-                {/* Municipio / Cidade do PDV (Manual edit) */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Município / Cidade do PDV:</label>
-                  <input
-                    type="text"
-                    value={editFaltaCidade}
-                    onChange={(e) => setEditFaltaCidade(e.target.value)}
-                    placeholder="Digite a cidade manualmente (caso não identificada no banco)"
-                    className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none uppercase font-bold"
-                  />
-                  <p className="text-[10px] text-slate-500">
-                    O sistema busca a cidade automaticamente no banco importado. Se não identificar, você pode digitar acima.
-                  </p>
-                </div>
-
-                {/* 5. Custom observing receipt */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Observações no Recibo / Justificativa:</label>
-                  <textarea
-                    value={editFaltaObservacao}
-                    onChange={(e) => setEditFaltaObservacao(e.target.value)}
-                    placeholder="Opcional. Ex: Entrega realizada com atraso, autorizado pelo supervisor."
-                    rows={2}
-                    className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none"
-                  />
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+              {/* Fixed Footer */}
+              <div className="p-4 sm:p-5 border-t border-slate-800 flex justify-end gap-2.5 shrink-0 bg-slate-900 rounded-b-2xl">
                 <button
                   type="button"
                   onClick={() => setEditingFalta(null)}
-                  className="px-4 py-2 bg-slate-950 hover:bg-slate-850 border border-slate-850 rounded-lg text-xs font-bold text-slate-400 cursor-pointer"
+                  className="px-4 py-2 bg-slate-955 hover:bg-slate-850 border border-slate-850 rounded-lg text-xs font-bold text-slate-400 cursor-pointer"
                 >
                   Cancelar
                 </button>
@@ -5335,21 +5550,45 @@ export default function PendingRequestsTab() {
 
         const parseProductString = (str: string | undefined, defaultQty: number) => {
           if (!str) return { code: "INVERSÃO", name: "Produto Não Especificado", qty: defaultQty };
-          const match = str.match(/^#?(\d+)?\s*-?\s*([^()]+)/);
-          let code = "INVERSÃO";
-          let name = str;
-          if (match) {
-            code = match[1] || "INVERSÃO";
-            name = match[2].trim();
-          }
-          if (name.startsWith("-")) {
-            name = name.substring(1).trim();
-          }
+          
           let qty = defaultQty;
           const qtyMatch = str.match(/\(Qtd:\s*(\d+)/i);
           if (qtyMatch) {
             qty = parseInt(qtyMatch[1], 10);
           }
+
+          const cleanStr = str.replace(/\(Qtd:[^)]+\)/i, "").trim();
+
+          let code = "INVERSÃO";
+          let name = "";
+
+          const match = cleanStr.match(/^#?(\d+)\s*[-:]?\s*(.*)$/);
+          if (match) {
+            code = match[1];
+            name = match[2] ? match[2].trim() : "";
+          } else if (/^\d+$/.test(cleanStr)) {
+            code = cleanStr;
+            name = "";
+          } else {
+            name = cleanStr;
+          }
+
+          if (name.startsWith("-")) {
+            name = name.substring(1).trim();
+          }
+
+          // Lookup in PRODUCT_DATABASE if name is empty, generic, dash, or equal to code
+          const dbP = PRODUCT_DATABASE.find(p => p.codigo === code || p.codigo === code.replace(/^0+/, ""));
+          if (dbP) {
+            if (!name || name === code || name.toUpperCase() === "INVERSÃO" || name === "-" || name.toUpperCase() === "SKU COMPENSADO DE INVERSÃO") {
+              name = dbP.descricao;
+            }
+          }
+
+          if (!name) {
+            name = "PRODUTO SSTR";
+          }
+
           return { code, name, qty };
         };
         
@@ -5776,14 +6015,9 @@ export default function PendingRequestsTab() {
                                     onChange={(e) => handleUpdatePrintDocItem(index, "quantidade", Number(e.target.value))}
                                     className="w-16 text-center border border-gray-300 rounded font-mono font-bold bg-amber-50/50 hover:bg-amber-100 focus:bg-white text-xs py-0.5 no-print-border"
                                   />
-                                  <select
-                                    value={sub.unidadeMedida || "cx"}
-                                    onChange={(e) => handleUpdatePrintDocItem(index, "unidadeMedida", e.target.value)}
-                                    className="bg-amber-50 border border-gray-300 rounded text-[10px] font-mono font-bold py-0.5 px-1 no-print-border uppercase"
-                                  >
-                                    <option value="cx">CX / SKU</option>
-                                    <option value="und">UND</option>
-                                  </select>
+                                  <span className="text-slate-900 font-mono font-bold text-xs uppercase px-1">
+                                    {(sub.unidadeMedida || sub.um || "cx").toLowerCase() === "und" ? "UND" : "SKU"}
+                                  </span>
                                 </div>
                               </td>
                               <td className="p-2.5 border-r border-gray-300 text-center font-mono font-bold text-indigo-950">
@@ -5830,13 +6064,13 @@ export default function PendingRequestsTab() {
                         const itemQty = Number(sub.quantidade) || 0;
                         const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
                         const embalagem = dbProduct?.embalagem || 12;
-                        const baseBoxPrice = Number(sub.customUnitPrice) || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 98.50;
+                        const baseBoxPrice = Number(sub.customUnitPrice) || dbProduct?.valor || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 0;
                         const isUnd = (sub.unidadeMedida || "").toLowerCase() === "und";
                         const actualUnitPrice = isUnd ? (baseBoxPrice / embalagem) : baseBoxPrice;
                         return sum + (itemQty * actualUnitPrice);
                       }, 0);
 
-                      const umLabel = itemsToRender.every(it => (it.unidadeMedida || "").toLowerCase() === "und") ? "und" : "cx / sku";
+                      const umLabel = itemsToRender.every(it => (it.unidadeMedida || "").toLowerCase() === "und") ? "und" : "sku";
 
                       return (
                         <tr className="bg-slate-50 font-bold border-t border-gray-400">
@@ -5887,7 +6121,7 @@ export default function PendingRequestsTab() {
                     const itemQty = Number(sub.quantidade) || 0;
                     const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
                     const embalagem = dbProduct?.embalagem || 12;
-                    const baseBoxPrice = Number(sub.customUnitPrice) || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 98.50;
+                    const baseBoxPrice = Number(sub.customUnitPrice) || dbProduct?.valor || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 0;
                     const isUnd = (sub.unidadeMedida || "").toLowerCase() === "und";
                     const actualUnitPrice = isUnd ? (baseBoxPrice / embalagem) : baseBoxPrice;
                     return sum + (itemQty * actualUnitPrice);

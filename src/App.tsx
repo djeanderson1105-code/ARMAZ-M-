@@ -16,6 +16,7 @@ import ManagersTab from "./components/ManagersTab";
 import PendingRequestsTab from "./components/PendingRequestsTab";
 import RankingsView from "./components/RankingsView";
 import SstrOperationalAssistant from "./components/SstrOperationalAssistant";
+import DatabaseQuotaView from "./components/DatabaseQuotaView";
 
 // Icons
 import { 
@@ -51,6 +52,7 @@ const STORAGE_BATCHES_KEY = "sstr_cached_batches_v1";
 function MainApp() {
   const { 
     records, 
+    pendingRequests,
     batches, 
     saveRecordsAndBatches, 
     isInitialLoading, 
@@ -60,7 +62,7 @@ function MainApp() {
   } = useSstrData();
 
   const [activePortal, setActivePortal] = useState<"gestor" | "representante">("representante");
-  const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "import" | "export" | "pending" | "managers" | "rankings">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "import" | "export" | "pending" | "managers" | "rankings" | "dados">("dashboard");
   const [isManagerLoggedIn, setIsManagerLoggedIn] = useState<boolean>(() => {
     return sessionStorage.getItem("is_sstr_manager_authenticated") === "true";
   });
@@ -394,7 +396,8 @@ function MainApp() {
                   { id: "rankings", label: "Rankings SSTR", icon: Award },
                   { id: "import", label: "Atualizar Base (Lançamentos)", icon: Upload },
                   { id: "export", label: "Exportador & PDF", icon: Download },
-                  { id: "managers", label: "Gestão de Cadastros", icon: Users }
+                  { id: "managers", label: "Gestão de Cadastros", icon: Users },
+                  { id: "dados", label: "DADOS (Banco & Quotas)", icon: Database }
                 ].map(tab => {
                   const Icon = tab.icon;
                   const isSelected = activeTab === tab.id;
@@ -474,6 +477,13 @@ function MainApp() {
 
               {activeTab === "managers" && (
                 <ManagersTab />
+              )}
+
+              {activeTab === "dados" && (
+                <DatabaseQuotaView 
+                  records={records} 
+                  pendingRequests={pendingRequests} 
+                />
               )}
             </div>
 

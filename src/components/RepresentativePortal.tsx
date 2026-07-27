@@ -34,6 +34,53 @@ import {
   FolderOpen,
   RotateCcw
 } from "lucide-react";
+
+// Helper to parse inversion product string into code, full product description, quantity and full formatted text
+const parseInversionProduct = (str: string | undefined, defaultQty: number = 1) => {
+  if (!str) return { code: "INVERSÃO", name: "Produto Não Especificado", qty: defaultQty, fullText: "INVERSÃO - Produto Não Especificado (Qtd: 1)" };
+  
+  let qty = defaultQty;
+  const qtyMatch = str.match(/\(Qtd:\s*(\d+)/i);
+  if (qtyMatch) {
+    qty = parseInt(qtyMatch[1], 10);
+  }
+
+  const cleanStr = str.replace(/\(Qtd:[^)]+\)/i, "").trim();
+
+  let code = "INVERSÃO";
+  let name = "";
+
+  const match = cleanStr.match(/^#?(\d+)\s*[-:]?\s*(.*)$/);
+  if (match) {
+    code = match[1];
+    name = match[2] ? match[2].trim() : "";
+  } else if (/^\d+$/.test(cleanStr)) {
+    code = cleanStr;
+    name = "";
+  } else {
+    name = cleanStr;
+  }
+
+  if (name.startsWith("-")) {
+    name = name.substring(1).trim();
+  }
+
+  const dbP = PRODUCT_DATABASE.find(p => p.codigo === code || p.codigo === code.replace(/^0+/, ""));
+  if (dbP) {
+    if (!name || name === code || name.toUpperCase() === "INVERSÃO" || name === "-" || name.toUpperCase() === "SKU COMPENSADO DE INVERSÃO") {
+      name = dbP.descricao;
+    }
+  }
+
+  if (!name) {
+    name = "PRODUTO SSTR";
+  }
+
+  const codeDisplay = code !== "INVERSÃO" ? `#${code}` : code;
+  const fullText = `${codeDisplay} - ${name} (Qtd: ${qty})`;
+
+  return { code, name, qty, fullText };
+};
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import PauBrasilLogo from "./PauBrasilLogo";
