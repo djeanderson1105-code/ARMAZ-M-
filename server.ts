@@ -132,32 +132,49 @@ async function createEvidencePdf(requestData: any, imageBuffer: Buffer | null, i
   if (imageBuffer) {
     try {
       let pdfImg;
-      if (imageExtension.toLowerCase() === "png") {
-        pdfImg = await pdfDoc.embedPng(imageBuffer);
-      } else {
-        pdfImg = await pdfDoc.embedJpg(imageBuffer);
+      const isPng = imageExtension.toLowerCase().includes("png");
+      
+      try {
+        if (isPng) {
+          pdfImg = await pdfDoc.embedPng(imageBuffer);
+        } else {
+          pdfImg = await pdfDoc.embedJpg(imageBuffer);
+        }
+      } catch (firstErr) {
+        // Fallback: Try embedding with the opposite method if extension was inaccurate
+        try {
+          if (isPng) {
+            pdfImg = await pdfDoc.embedJpg(imageBuffer);
+          } else {
+            pdfImg = await pdfDoc.embedPng(imageBuffer);
+          }
+        } catch (secondErr) {
+          console.warn("[PDF-COMPILATION] Image embedding failed for both JPEG and PNG format:", secondErr);
+        }
       }
-      
-      const maxWidth = 515.275;
-      const maxHeight = 280;
-      const scaled = pdfImg.scaleToFit(maxWidth, maxHeight);
-      
-      const imgY = Math.max(40, currentY - scaled.height - 30);
-      
-      page.drawText("EVIDÊNCIA FOTOGRÁFICA REGISTRADA NO ATO:", {
-        x: 40,
-        y: imgY + scaled.height + 8,
-        size: 8,
-        font: fontBold,
-        color: rgb(0.4, 0.4, 0.4),
-      });
-      
-      page.drawImage(pdfImg, {
-        x: 40,
-        y: imgY,
-        width: scaled.width,
-        height: scaled.height,
-      });
+
+      if (pdfImg) {
+        const maxWidth = 515.275;
+        const maxHeight = 280;
+        const scaled = pdfImg.scaleToFit(maxWidth, maxHeight);
+        
+        const imgY = Math.max(40, currentY - scaled.height - 30);
+        
+        page.drawText("EVIDÊNCIA FOTOGRÁFICA REGISTRADA NO ATO:", {
+          x: 40,
+          y: imgY + scaled.height + 8,
+          size: 8,
+          font: fontBold,
+          color: rgb(0.4, 0.4, 0.4),
+        });
+        
+        page.drawImage(pdfImg, {
+          x: 40,
+          y: imgY,
+          width: scaled.width,
+          height: scaled.height,
+        });
+      }
     } catch (imgErr) {
       console.error("[PDF-COMPILATION] Failed to embed image into document:", imgErr);
     }
@@ -353,6 +370,17 @@ async function startServer() {
             }
           } catch (err) {
             console.error(`[API-COMPILE-PDF] Base64 decoding failed:`, err);
+          }
+        } else if (docData.fotoUrl.startsWith("http://") || docData.fotoUrl.startsWith("https://")) {
+          try {
+            const imgRes = await fetch(docData.fotoUrl);
+            if (imgRes.ok) {
+              const arrayBuf = await imgRes.arrayBuffer();
+              imageBuffer = Buffer.from(arrayBuf);
+              ext = docData.fotoUrl.split(".").pop()?.split("?")[0] || "jpg";
+            }
+          } catch (err) {
+            console.error(`[API-COMPILE-PDF] Failed fetching photo from URL:`, err);
           }
         }
       }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache } from "../types";
+import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, getDisplayCadastroUser } from "../types";
 import { getApiUrl } from "../utils/apiUrl";
 import { safeSetItem } from "../utils/apiSync";
 import { useSstrData } from "../context/SstrDataContext";
@@ -752,16 +752,34 @@ export default function PendingRequestsTab() {
     await savePendingRequest(updatedReq);
   };
 
-  // Delete an approved item / request from Espelho do Dia and Approved list
+  // Delete an approved item / request from Espelho do Dia and Approved list (returns to Pending)
   const handleDeleteApprovedItem = (requestId: string, productCode?: string) => {
     const targetReq = requests.find(r => r.id === requestId);
     if (!targetReq) return;
+
+    const resetFields = {
+      statusPromax: "pendente" as const,
+      faltaBaixa: false,
+      faltaBaixaDate: undefined,
+      faltaBaixaUser: undefined,
+      faltaBaixaObs: undefined,
+      contingenciaBaixada: false,
+      contingenciaBaixadaDate: undefined,
+      contingenciaBaixadaUser: undefined,
+      cadastroUser: undefined,
+      cadastroDate: undefined,
+      rejeitadoObs: undefined,
+      reprovadoUser: undefined,
+      reprovadoDate: undefined,
+      notified: false
+    };
 
     if (targetReq.items && targetReq.items.length > 1 && productCode) {
       const filteredItems = targetReq.items.filter((it: any) => (it.item || it.itemCode) !== productCode);
       if (filteredItems.length > 0) {
         savePendingRequest({
           ...targetReq,
+          ...resetFields,
           items: filteredItems
         });
         return;
@@ -770,8 +788,7 @@ export default function PendingRequestsTab() {
 
     savePendingRequest({
       ...targetReq,
-      statusPromax: "reprovado",
-      rejeitadoObs: "Excluído do Espelho do Dia"
+      ...resetFields
     });
   };
 
@@ -1291,7 +1308,17 @@ export default function PendingRequestsTab() {
         observacao: reqObservacao.trim(),
         statusPromax: "pendente",
         notified: false,
-        cadastroUser: "Gestor (Dashboard)",
+        cadastroUser: (() => {
+          const loggedManager = sessionStorage.getItem("sstr_current_manager_name");
+          if (loggedManager && loggedManager.trim()) {
+            return loggedManager;
+          }
+          const rotInfo = motoristasList[effectiveSetor.trim()];
+          const repInfo = repsList[effectiveSetor.trim()];
+          if (rotInfo?.nome) return `Motorista ${rotInfo.nome} (Rota ${effectiveSetor})`;
+          if (repInfo?.nome) return `RN ${repInfo.nome} (Setor ${effectiveSetor})`;
+          return "Gestor (Dashboard)";
+        })(),
         cadastroDate: dataFormatada,
         dataEntrega: reqDataEntrega.trim() || undefined,
         emContingencia: isContingencia,
@@ -2129,7 +2156,26 @@ export default function PendingRequestsTab() {
         });
       }
     } else if (type === "delete") {
-      deletePendingRequest(requestId);
+      const targetReq = requests.find(r => r.id === requestId);
+      if (targetReq) {
+        savePendingRequest({
+          ...targetReq,
+          statusPromax: "pendente",
+          faltaBaixa: false,
+          faltaBaixaDate: undefined,
+          faltaBaixaUser: undefined,
+          faltaBaixaObs: undefined,
+          contingenciaBaixada: false,
+          contingenciaBaixadaDate: undefined,
+          contingenciaBaixadaUser: undefined,
+          cadastroUser: undefined,
+          cadastroDate: undefined,
+          rejeitadoObs: undefined,
+          reprovadoUser: undefined,
+          reprovadoDate: undefined,
+          notified: false
+        });
+      }
     }
 
     setModalAction(null);
@@ -2297,9 +2343,12 @@ export default function PendingRequestsTab() {
         throw new Error("A resposta do servidor de compilação de PDF não retornou uma URL válida.");
       }
     } catch (compileErr: any) {
-      console.error("Erro ao compilar PDF de evidência para baixa:", compileErr);
-      setBaixaError(`FALHA CRÍTICA DE COMPILAÇÃO: A baixa física foi BLOQUEADA pois não foi possível gerar o PDF de evidência completo do processo (${compileErr.message}). Corrija a imagem ou tente novamente.`);
-      return;
+      console.warn("Servidor de PDF indisponível ou erro no processamento do backend, gerando PDF localmente...", compileErr);
+      try {
+        await exportRegistrationPdf(baixandoFalta, { autoDownload: true, isBaixa: true });
+      } catch (localPdfErr: any) {
+        console.error("Erro na geração local de PDF:", localPdfErr);
+      }
     }
 
     // PDF compiled successfully! Now offer the download of this document with a standard naming convention
@@ -3436,6 +3485,7 @@ export default function PendingRequestsTab() {
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-10 text-xs font-semibold text-slate-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
                   >
                     <option value="">-- Selecione o Ajudante 1 --</option>
+                    <option value="Não possui">Não possui</option>
                     {LISTA_CREW.filter(c => c.cargo.toLowerCase().includes("ajudante") || c.cargo.toLowerCase().includes("auxiliar")).map(c => (
                       <option key={c.cpf} value={c.nome}>
                         {c.nome}
@@ -4324,8 +4374,12 @@ export default function PendingRequestsTab() {
                           <h4 className="font-bold text-xs text-slate-200">
                             {rotInfo ? `Rota ${req.setor}` : `Setor ${req.setor}`}
                           </h4>
-                          <span className="text-[10px] font-mono text-slate-450 block truncate max-w-[145px]" title={rotInfo ? rotInfo.nome : (repInfo ? repInfo.nome : "")}>
-                            {rotInfo ? rotInfo.nome : (repInfo ? repInfo.nome : "Representante")}
+                          <span 
+                            className="text-[10px] font-mono text-indigo-300 font-semibold flex items-center gap-1 leading-tight truncate max-w-[200px] mt-0.5" 
+                            title={`Cadastrado por: ${getDisplayCadastroUser(req, repsList, motoristasList)}`}
+                          >
+                            <User className="w-3 h-3 text-indigo-400 shrink-0" />
+                            <span className="truncate">{getDisplayCadastroUser(req, repsList, motoristasList)}</span>
                           </span>
                         </div>
                       </div>
@@ -4802,19 +4856,12 @@ export default function PendingRequestsTab() {
                         <div className="flex flex-wrap gap-2 pt-1 border-t border-slate-850/50">
                           {/* Deliver Receipt */}
                           {(() => {
-                            const isReqInversion = (req.motivo && (req.motivo.toLowerCase().includes("inver") || req.motivo.toLowerCase().includes("troca"))) || 
-                              (req.items && req.items.some((it: any) => it.produtoAhEnviar || it.produtoARecolher));
-                            const canPrintRecibo = !isFaltaSkuCompletoReq(req) || !!cast.faltaTipoErro || !!isReqInversion;
+                            const canPrintRecibo = true;
                             return (
                               <button
                                 onClick={() => setSelectedPrintDoc({ type: "recibo", request: req })}
-                                disabled={!canPrintRecibo}
-                                className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all ${
-                                  canPrintRecibo 
-                                    ? "bg-slate-950 hover:bg-slate-855 border border-slate-800 text-blue-400 cursor-pointer" 
-                                    : "bg-slate-950/40 border border-slate-900 text-slate-600 cursor-not-allowed"
-                                }`}
-                                title={canPrintRecibo ? "Gerar recibo de entrega timbrado Ambev para o PDV assinar" : "Indisponível apenas para Falta de SKU Fechado sem classificação"}
+                                className="flex-1 py-1.5 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all bg-slate-950 hover:bg-slate-855 border border-slate-800 text-blue-400 cursor-pointer"
+                                title="Gerar recibo de entrega timbrado Ambev para o PDV assinar"
                               >
                                 <Printer className="w-3.5 h-3.5 text-blue-550" />
                                 <span>Recibo PDV</span>
@@ -4922,7 +4969,7 @@ export default function PendingRequestsTab() {
                             <div className="p-2.5 bg-slate-950 border border-slate-850 rounded-xl space-y-1.5 text-[10px] font-mono text-left">
                               <div className="flex flex-wrap items-center justify-between gap-1">
                                 <span className="text-slate-400">
-                                  👤 Cadastrado por (Plataforma): <strong className="text-indigo-300 font-bold">{req.cadastroUser || "Usuário Não Identificado"}</strong>
+                                  👤 Cadastrado por (Plataforma): <strong className="text-indigo-300 font-bold">{getDisplayCadastroUser(req, repsList, motoristasList)}</strong>
                                 </span>
                                 <span className="text-slate-400">
                                   🕒 <strong className="text-slate-200">{req.cadastroDate || req.data || "Sem Data/Hora"}</strong>
@@ -4950,16 +4997,14 @@ export default function PendingRequestsTab() {
                                 <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
                               </button>
 
-                              {!isFaltaSkuCompletoReq(req) && (
-                                <button
-                                  onClick={() => setSelectedPrintDoc({ type: "recibo", request: req })}
-                                  className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
-                                  title="Gerar Recibo PDV em Contingência para este cadastro aprovado"
-                                >
-                                  <Printer className="w-3.5 h-3.5 text-amber-400" />
-                                  <span>Recibo PDV ⚠️</span>
-                                </button>
-                              )}
+                              <button
+                                onClick={() => setSelectedPrintDoc({ type: "recibo", request: req })}
+                                className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
+                                title="Gerar Recibo PDV em Contingência para este cadastro aprovado"
+                              >
+                                <Printer className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Recibo PDV ⚠️</span>
+                              </button>
                             </div>
                           </div>
                         )}
@@ -6329,8 +6374,8 @@ export default function PendingRequestsTab() {
 
               {/* Info for Delete */}
               {modalAction.type === "delete" && (
-                <p className="text-xs text-red-400 leading-relaxed">
-                  Tem certeza que deseja apagar permanentemente esta solicitação? Esta ação é irreversível e removerá o registro do controle.
+                <p className="text-xs text-amber-300 leading-relaxed font-sans">
+                  Tem certeza que deseja remover esta solicitação do Espelho/Histórico? Ela retornará para a lista de <strong>PENDENTES</strong> até que seja lançada novamente.
                 </p>
               )}
 

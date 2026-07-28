@@ -1,6 +1,33 @@
 import * as XLSX from "xlsx";
 import { ProductInfo, extractFatorFromDescricao, clearProductsCache } from "../data/products";
-import { PendingRequest, ValeEntry, ExchangeRecord } from "../types";
+import { PendingRequest, ExchangeRecord } from "../types";
+import { ValeEntry } from "../components/ValesHistoryDashboard";
+
+/**
+ * Helper to parse Brazilian currency and decimal numbers safely
+ * e.g. "R$ 30,48", "30,48", "30.48", "1.250,50" -> 30.48
+ */
+export function parsePtBrNumber(val: any): number {
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  if (!val) return 0;
+  let str = String(val).replace(/R\$\s*/gi, "").replace(/\s/g, "").trim();
+  if (!str) return 0;
+
+  if (str.includes(",")) {
+    // Brazilian format: 1.250,50 or 30,48 -> remove thousands dots, convert comma to dot
+    str = str.replace(/\./g, "").replace(",", ".");
+  } else {
+    // English or standard format: 30.48 or 1250.50
+    // If multiple dots like 1.250.50, combine thousands
+    const parts = str.split(".");
+    if (parts.length > 2) {
+      str = parts.slice(0, -1).join("") + "." + parts[parts.length - 1];
+    }
+  }
+
+  const parsed = parseFloat(str);
+  return isNaN(parsed) ? 0 : parsed;
+}
 
 /**
  * Parses Excel (.xlsx, .xls) and CSV files for Product Database according to the structure:
@@ -67,6 +94,7 @@ export function parseProductExcel(buffer: ArrayBuffer): ProductInfo[] {
 
     const rawCod = String(row[colIndices.cod] ?? "").trim();
     if (!rawCod) continue;
+    if (/^(cod|codigo|sku|descricao|produto|fator|valor|hecto)$/i.test(rawCod)) continue;
 
     // Clean codigo: strip leading zero padding or keep standard number
     const codigo = rawCod.replace(/^0+/, "") || rawCod;
@@ -77,42 +105,18 @@ export function parseProductExcel(buffer: ArrayBuffer): ProductInfo[] {
 
     // Fato (Fator / Qtd por caixa)
     const rawFato = row[colIndices.fato];
-    let fato = 0;
-    if (typeof rawFato === "number") {
-      fato = rawFato;
-    } else if (rawFato) {
-      const parsed = parseFloat(String(rawFato).replace(/\s/g, "").replace(",", "."));
-      if (!isNaN(parsed) && parsed > 0) fato = parsed;
-    }
+    let fato = parsePtBrNumber(rawFato);
     if (!fato || fato <= 0) {
       fato = extractFatorFromDescricao(descricao);
     }
 
     // Valor (Price R$)
     const rawValor = row[colIndices.valor];
-    let valor = 0;
-    if (typeof rawValor === "number") {
-      valor = rawValor;
-    } else if (rawValor) {
-      const cleanVal = String(rawValor)
-        .replace("R$", "")
-        .replace(/\s/g, "")
-        .replace(/\./g, "")
-        .replace(",", ".");
-      valor = parseFloat(cleanVal) || 0;
-    }
+    const valor = parsePtBrNumber(rawValor);
 
     // Fator Hecto (HL factor)
     const rawHecto = row[colIndices.fatorHecto];
-    let fatorHecto = 0;
-    if (typeof rawHecto === "number") {
-      fatorHecto = rawHecto;
-    } else if (rawHecto) {
-      const cleanHecto = String(rawHecto)
-        .replace(/\s/g, "")
-        .replace(",", ".");
-      fatorHecto = parseFloat(cleanHecto) || 0;
-    }
+    const fatorHecto = parsePtBrNumber(rawHecto);
 
     seenCodes.add(codigo);
     products.push({
@@ -186,7 +190,6 @@ export function recalculateAllRecordsWithProducts(
         const itemHecto = (p.fatorHecto || 0) * (req.quantidade || 1);
         return {
           ...req,
-          descricaoItem: p.descricao || req.descricaoItem,
           valorTotal: Number(itemVal.toFixed(2)),
           hectolitros: Number(itemHecto.toFixed(4))
         };

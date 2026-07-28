@@ -12,7 +12,7 @@ import {
 } from "../utils/apiSync";
 import { onSnapshot, collection, getDocs, query, limit } from "firebase/firestore";
 import { extractImagesToIDB, restoreImagesFromCache } from "../utils/indexedDbCache";
-import { getProductsDatabase, ProductInfo } from "../data/products";
+import { getProductsDatabase, setProductsCache, ProductInfo } from "../data/products";
 
 export interface SstrDataContextType {
   // Collections State
@@ -403,13 +403,17 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   const saveProductsList = async (newList: ProductInfo[]) => {
+    setProductsCache(newList);
     setProducts(newList);
-    safeSetItem("sstr_products_database", JSON.stringify(newList));
-    // Save to Firestore in chunks if needed
-    for (const prod of newList) {
-      if (prod.codigo) {
-        await setFirestoreDoc("products", prod.codigo, prod);
+    // Save to Firestore in background without blocking state updates
+    try {
+      for (const prod of newList) {
+        if (prod.codigo) {
+          await setFirestoreDoc("products", prod.codigo, prod);
+        }
       }
+    } catch (e) {
+      console.warn("[CONTEXT] Firestore product sync warning:", e);
     }
   };
 

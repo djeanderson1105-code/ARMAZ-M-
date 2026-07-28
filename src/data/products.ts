@@ -334,6 +334,13 @@ export const clearProductsCache = () => {
   cachedProducts = null;
 };
 
+export const setProductsCache = (newList: ProductInfo[]) => {
+  cachedProducts = newList;
+  if (typeof window !== "undefined") {
+    safeSetItem("sstr_products_database", JSON.stringify(newList));
+  }
+};
+
 if (typeof window !== "undefined") {
   window.addEventListener("storage", () => {
     cachedProducts = null;

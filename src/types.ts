@@ -430,6 +430,7 @@ export function getCrewDetailByName(name: string): CrewMember | undefined {
   return found;
 }
 
+
 export interface PdvInfo {
   codigo: string; // NB
   razaoSocial: string;
@@ -442,5 +443,49 @@ export interface PdvInfo {
   uf?: string;
   cep?: string;
 }
+
+export function getDisplayCadastroUser(
+  req: PendingRequest,
+  repsList: Record<string, { nome: string; gv?: string }> = {},
+  motoristasList: Record<string, { nome: string; cpf?: string }> = {}
+): string {
+  if (!req) return "Usuário Desconhecido";
+  const setorKey = (req.setor || "").trim();
+  const rotInfo = motoristasList[setorKey] || (getMotoristasRotas && getMotoristasRotas()[setorKey]);
+  const repInfo = repsList[setorKey] || (getRepresentativosSetor && getRepresentativosSetor()[setorKey]);
+  
+  const rawUser = req.cadastroUser ? req.cadastroUser.trim() : "";
+  const isGenericUser = !rawUser || 
+    rawUser === "Responsável pelo Controle" || 
+    rawUser === "Gestor" || 
+    rawUser === "Gestor (Dashboard)" || 
+    rawUser === "Usuário Não Identificado" ||
+    rawUser === "Controle Operacional";
+  
+  // If req has a specific, non-generic cadastroUser name
+  if (!isGenericUser) {
+    return rawUser;
+  }
+  
+  // Retroactive resolution for generic or missing cadastroUser
+  if (repInfo?.nome) {
+    return `RN ${repInfo.nome} (${setorKey})`;
+  }
+  if (rotInfo?.nome) {
+    return `Motorista ${rotInfo.nome} (Rota ${setorKey})`;
+  }
+  
+  const loggedManager = typeof sessionStorage !== "undefined" ? sessionStorage.getItem("sstr_current_manager_name") : null;
+  if (loggedManager && loggedManager.trim() && loggedManager.trim().toLowerCase() !== "gestor") {
+    return loggedManager.trim();
+  }
+
+  if (rawUser && rawUser !== "Responsável pelo Controle") {
+    return rawUser;
+  }
+  
+  return `Setor/Rota ${setorKey || "Operacional"}`;
+}
+
 
 

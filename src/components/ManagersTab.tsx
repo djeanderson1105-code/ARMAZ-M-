@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { safeSetItem } from "../utils/apiSync";
 import { useSstrData } from "../context/SstrDataContext";
 import * as XLSX from "xlsx";
+import { parseProductExcel, recalculateAllRecordsWithProducts } from "../utils/productExcelImport";
 import { 
   UserPlus, 
   Shield, 
@@ -39,7 +40,7 @@ import {
   PendingRequest,
   RequestItem
 } from "../types";
-import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, getProductsDatabase, clearProductsCache, extractFatorFromDescricao } from "../data/products";
+import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, getProductsDatabase, clearProductsCache, setProductsCache, extractFatorFromDescricao } from "../data/products";
 import { getPdvDatabase, registerNewPdv, registerMultiplePdvs, clearPdvCache } from "../data/pdvData";
 
 interface ManagerUser {
@@ -50,7 +51,7 @@ interface ManagerUser {
 
 export default function ManagersTab() {
   const { 
-    pendingRequests: requests, 
+    pendingRequests, 
     savePendingRequest, 
     saveProductsList,
     crewList, 
@@ -65,8 +66,11 @@ export default function ManagersTab() {
     managers, 
     saveManager, 
     deleteManager,
-    vales 
+    vales,
+    saveValeEntry,
+    records
   } = useSstrData();
+  const requests = pendingRequests;
   const [activeSubTab, setActiveSubTab] = useState<"gestores" | "crew" | "rns" | "rotas" | "otimizacao" | "pdvs" | "produtos">("gestores");
 
   // PDV States
@@ -382,8 +386,17 @@ export default function ManagersTab() {
         return acc;
       }, 0);
 
-      const loggedManager = sessionStorage.getItem("sstr_current_manager_name") || "Gestor";
-      const cadastroUserStr = loggedManager.toLowerCase().includes("gestor") ? loggedManager : `Gestor (${loggedManager})`;
+      const loggedManager = sessionStorage.getItem("sstr_current_manager_name");
+      const rotInfo = reqSetor ? getMotoristasRotas()[reqSetor.trim()] : undefined;
+      const repInfo = reqSetor ? getRepresentativosSetor()[reqSetor.trim()] : undefined;
+      const cadastroUserStr = (() => {
+        if (loggedManager && loggedManager.trim()) {
+          return loggedManager;
+        }
+        if (rotInfo?.nome) return `Motorista ${rotInfo.nome} (Rota ${reqSetor})`;
+        if (repInfo?.nome) return `RN ${repInfo.nome} (Setor ${reqSetor})`;
+        return "Gestor";
+      })();
 
       const newRequest: PendingRequest = {
         id: `pending_req_${Date.now()}`,
@@ -568,18 +581,22 @@ export default function ManagersTab() {
         if (filteredItems.length > 0) {
           savePendingRequest({
             ...targetReq,
-            items: filteredItems
+            items: filteredItems,
+            statusPromax: "pendente",
+            rejeitadoObs: undefined,
+            notified: false
           });
-          setSuccess("Item excluído do Espelho do Dia com sucesso!");
+          setSuccess("Item do Espelho retornado para Pendente com sucesso!");
           return;
         }
       }
       savePendingRequest({
         ...targetReq,
-        statusPromax: "reprovado",
-        rejeitadoObs: "Excluído do Espelho do Dia"
+        statusPromax: "pendente",
+        rejeitadoObs: undefined,
+        notified: false
       });
-      setSuccess("Solicitação excluída do Espelho do Dia com sucesso!");
+      setSuccess("Solicitação excluída do Espelho e retornada para Pendente com sucesso!");
     } catch (e) {
       console.error(e);
     }
@@ -723,6 +740,8 @@ export default function ManagersTab() {
   const [newProductFatorHecto, setNewProductFatorHecto] = useState("0.05");
   const [editingProductCodigo, setEditingProductCodigo] = useState<string | null>(null);
   const [confirmDeleteProduct, setConfirmDeleteProduct] = useState<string | null>(null);
+  const [selectedProductCodes, setSelectedProductCodes] = useState<Set<string>>(new Set());
+  const [confirmClearAllProducts, setConfirmClearAllProducts] = useState(false);
 
   // Editing state trackers
   const [editingRepId, setEditingRepId] = useState<string | null>(null);
@@ -1978,17 +1997,64 @@ export default function ManagersTab() {
       }
       
       const updatedList = Array.from(productMap.values());
+      setProductsCache(updatedList);
       setProductsList(updatedList);
       await saveProductsList(updatedList);
-      clearProductsCache();
+
+      // Recalculate pending requests and vales with new product values
+      const { updatedRequests, updatedVales } = recalculateAllRecordsWithProducts(
+        updatedList,
+        pendingRequests,
+        vales,
+        records
+      );
+
+      for (const req of updatedRequests) {
+        await savePendingRequest(req);
+      }
+      for (const vale of updatedVales) {
+        await saveValeEntry(vale);
+      }
+
       window.dispatchEvent(new Event("storage"));
       
-      setSuccess(`${count} produtos processados e atualizados na base com sucesso!${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""}`);
+      setSuccess(`${count} produtos processados e atualizados na base de dados e replicados para trocas, reposições e vales com sucesso!${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ""}`);
       setProductPasteText("");
       setTimeout(() => setSuccess(null), 4000);
     } catch (err: any) {
       console.error(err);
       setError("Erro ao processar lote de produtos: " + err.message);
+    }
+  };
+
+  const handleClearAllProducts = async () => {
+    try {
+      setProductsCache([]);
+      setProductsList([]);
+      await saveProductsList([]);
+      setSelectedProductCodes(new Set());
+      setConfirmClearAllProducts(false);
+      window.dispatchEvent(new Event("storage"));
+      setSuccess("Toda a base de produtos foi removida com sucesso!");
+    } catch (err: any) {
+      setError("Erro ao apagar base de produtos: " + err.message);
+    }
+  };
+
+  const handleDeleteSelectedProducts = async () => {
+    if (selectedProductCodes.size === 0) return;
+    try {
+      const currentList = getProductsDatabase();
+      const updated = currentList.filter(p => !selectedProductCodes.has(p.codigo));
+      setProductsCache(updated);
+      setProductsList(updated);
+      await saveProductsList(updated);
+      const count = selectedProductCodes.size;
+      setSelectedProductCodes(new Set());
+      window.dispatchEvent(new Event("storage"));
+      setSuccess(`${count} produtos selecionados foram apagados da base com sucesso!`);
+    } catch (err: any) {
+      setError("Erro ao apagar produtos selecionados: " + err.message);
     }
   };
 
@@ -1999,17 +2065,51 @@ export default function ManagersTab() {
 
     if (isExcel) {
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         try {
-          const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: "array" });
-          const firstSheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[firstSheetName];
-          const csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ";" });
-          handleProductImportText(csvText);
+          const buffer = e.target?.result as ArrayBuffer;
+          const parsedProducts = parseProductExcel(buffer);
+          if (!parsedProducts || parsedProducts.length === 0) {
+            setError("Nenhum produto válido foi extraído do arquivo Excel. Verifique as colunas.");
+            return;
+          }
+
+          const productMap = new Map<string, ProductInfo>();
+          // Preserve existing products
+          const currentProducts = getProductsDatabase();
+          for (const item of currentProducts) {
+            if (item.codigo) {
+              productMap.set(item.codigo.trim(), item);
+            }
+          }
+          // Merge / update new products from Excel
+          parsedProducts.forEach(p => productMap.set(p.codigo, p));
+
+          const updatedList = Array.from(productMap.values());
+          setProductsCache(updatedList);
+          setProductsList(updatedList);
+          await saveProductsList(updatedList);
+
+          // Recalculate pending requests and vales with new product prices
+          const { updatedRequests, updatedVales } = recalculateAllRecordsWithProducts(
+            updatedList,
+            pendingRequests,
+            vales,
+            records
+          );
+
+          for (const req of updatedRequests) {
+            await savePendingRequest(req);
+          }
+          for (const vale of updatedVales) {
+            await saveValeEntry(vale);
+          }
+
+          window.dispatchEvent(new Event("storage"));
+          setSuccess(`${parsedProducts.length} cadastros de produtos importados do Excel com sucesso e replicados para todas as trocas, reposições e vales! (Total na base: ${updatedList.length})`);
         } catch (err: any) {
           console.error(err);
-          setError("Erro ao ler arquivo Excel: " + err.message);
+          setError("Erro ao ler arquivo Excel de produtos: " + err.message);
         }
       };
       reader.readAsArrayBuffer(file);
@@ -4589,9 +4689,11 @@ export default function ManagersTab() {
                     type="file"
                     accept=".csv,.txt,.xlsx,.xls"
                     className="hidden"
+                    onClick={(e) => e.stopPropagation()}
                     onChange={(e) => {
                       if (e.target.files && e.target.files[0]) {
                         handleProductImportFile(e.target.files[0]);
+                        e.target.value = "";
                       }
                     }}
                   />
@@ -4626,22 +4728,98 @@ export default function ManagersTab() {
                 <span>Base de Produtos e Fatores de Conversão (HL)</span>
               </h3>
               
-              <div className="relative shrink-0">
-                <Search className="w-3 h-3 text-slate-500 absolute left-2.5 top-2.5" />
-                <input
-                  type="text"
-                  placeholder="Buscar produto ou SKU..."
-                  value={searchProduct}
-                  onChange={(e) => setSearchProduct(e.target.value)}
-                  className="w-full sm:w-[180px] bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-2 py-1 text-[11px] text-white focus:outline-none focus:border-indigo-500 font-sans"
-                />
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Delete All Icon Button */}
+                <button
+                  type="button"
+                  onClick={() => setConfirmClearAllProducts(true)}
+                  disabled={productsList.length === 0}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold uppercase transition-all flex items-center gap-1 border ${
+                    productsList.length === 0
+                      ? "bg-slate-950 text-slate-700 border-slate-850 cursor-not-allowed opacity-50"
+                      : "bg-red-950/40 hover:bg-red-900/60 border-red-800/60 text-red-300 hover:text-white cursor-pointer"
+                  }`}
+                  title="Apagar TODOS os registros da base de produtos"
+                >
+                  <Trash2 className="w-3 h-3 text-red-400" />
+                  <span>Apagar Tudo</span>
+                </button>
+
+                {/* Delete Selected Items Button */}
+                {selectedProductCodes.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteSelectedProducts}
+                    className="px-2.5 py-1 bg-red-600 hover:bg-red-500 text-white rounded-lg text-[10px] font-mono font-bold uppercase transition-all flex items-center gap-1 shadow-md cursor-pointer animate-fade-in"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Apagar Selecionados ({selectedProductCodes.size})</span>
+                  </button>
+                )}
+
+                <div className="relative shrink-0">
+                  <Search className="w-3 h-3 text-slate-500 absolute left-2.5 top-2.5" />
+                  <input
+                    type="text"
+                    placeholder="Buscar produto ou SKU..."
+                    value={searchProduct}
+                    onChange={(e) => setSearchProduct(e.target.value)}
+                    className="w-full sm:w-[160px] bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-2 py-1 text-[11px] text-white focus:outline-none focus:border-indigo-500 font-sans"
+                  />
+                </div>
               </div>
             </div>
+
+            {/* Confirm Clear All Products Modal */}
+            {confirmClearAllProducts && (
+              <div className="p-3 bg-red-950/80 border border-red-800 rounded-xl space-y-2 text-left animate-fade-in">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-red-200 font-sans">
+                    <strong>ATENÇÃO CRÍTICA:</strong> Tem certeza que deseja apagar <strong>TODOS os {productsList.length} cadastros de produtos</strong>? Esta ação removerá totalmente a lista da base local e da nuvem.
+                  </p>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClearAllProducts(false)}
+                    className="px-3 py-1 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 text-[10px] font-mono rounded-lg cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearAllProducts}
+                    className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-mono font-bold uppercase rounded-lg shadow cursor-pointer"
+                  >
+                    Sim, Apagar Tudo
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="overflow-y-auto rounded-xl max-h-[500px] border border-slate-850/40">
               <table className="w-full text-xs text-left">
                 <thead>
                   <tr className="bg-slate-950/80 sticky top-0 text-slate-450 font-mono text-[9px] uppercase font-bold border-b border-slate-800">
+                    <th className="p-3 w-8 text-center">
+                      <input
+                        type="checkbox"
+                        checked={
+                          productsList.length > 0 &&
+                          productsList.every(p => selectedProductCodes.has(p.codigo))
+                        }
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedProductCodes(new Set(productsList.map(p => p.codigo)));
+                          } else {
+                            setSelectedProductCodes(new Set());
+                          }
+                        }}
+                        className="rounded border-slate-800 bg-slate-900 text-indigo-600 focus:ring-0 cursor-pointer"
+                        title="Selecionar todos os produtos"
+                      />
+                    </th>
                     <th className="p-3">SKU</th>
                     <th className="p-3">Descrição Comercial</th>
                     <th className="p-3 text-center">Fator (Uds/SKU)</th>
@@ -4660,14 +4838,33 @@ export default function ManagersTab() {
                     if (filtered.length === 0) {
                       return (
                         <tr>
-                          <td colSpan={6} className="p-8 text-center text-slate-500 font-mono">Nenhum produto cadastrado na base.</td>
+                          <td colSpan={7} className="p-8 text-center text-slate-500 font-mono">Nenhum produto cadastrado na base.</td>
                         </tr>
                       );
                     }
                     
                     // Show top 100 products for performance
                     return filtered.slice(0, 100).map(p => (
-                      <tr key={p.codigo} className="hover:bg-slate-950/20">
+                      <tr 
+                        key={p.codigo} 
+                        className={`hover:bg-slate-950/20 ${selectedProductCodes.has(p.codigo) ? "bg-indigo-950/20" : ""}`}
+                      >
+                        <td className="p-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedProductCodes.has(p.codigo)}
+                            onChange={(e) => {
+                              const next = new Set(selectedProductCodes);
+                              if (e.target.checked) {
+                                next.add(p.codigo);
+                              } else {
+                                next.delete(p.codigo);
+                              }
+                              setSelectedProductCodes(next);
+                            }}
+                            className="rounded border-slate-800 bg-slate-900 text-indigo-600 focus:ring-0 cursor-pointer"
+                          />
+                        </td>
                         <td className="p-3 font-mono text-indigo-400 font-semibold text-[11px]">#{p.codigo}</td>
                         <td className="p-3 font-sans font-medium text-slate-200 uppercase text-[11px]">{p.descricao}</td>
                         <td className="p-3 font-mono text-center text-slate-350">{p.fator !== undefined ? p.fator : 12}</td>

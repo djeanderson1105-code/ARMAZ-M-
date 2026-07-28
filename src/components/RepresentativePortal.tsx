@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { ExchangeRecord, REPRESENTATIVOS_SETOR, PendingRequest, MOTORISTAS_ROTAS, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, RouteDriverInfo } from "../types";
+import { ExchangeRecord, REPRESENTATIVOS_SETOR, PendingRequest, MOTORISTAS_ROTAS, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, RouteDriverInfo, getDisplayCadastroUser, LISTA_CREW } from "../types";
 import { getApiUrl } from "../utils/apiUrl";
 import { useSstrData } from "../context/SstrDataContext";
 import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros } from "../data/products";
@@ -222,7 +222,7 @@ const compressImage = (file: File, maxWidth: number = 800, maxHeight: number = 8
 };
 
 export default function RepresentativePortal({ records, onTransferApprovedRequest }: RepresentativePortalProps) {
-  const { pendingRequests, savePendingRequest, deletePendingRequest, repsList, motoristasList } = useSstrData();
+  const { pendingRequests, savePendingRequest, deletePendingRequest, repsList, motoristasList, crewList } = useSstrData();
   // Helper to get solicitation number of any pending request
   const getSolicitacaoNum = (req: PendingRequest): string => {
     return (req as any).solicitacao || req.id.replace(/\D/g, "").slice(-8) || String(req.timestamp || Date.now()).slice(-8);
@@ -641,6 +641,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
   const [formSuccess, setFormSuccess] = useState<boolean>(false);
   const [formMotiveType, setFormMotiveType] = useState<string>("Produto Avariado");
   const [formMotiveText, setFormMotiveText] = useState("Produto Avariado");
+  const [formAjudante, setFormAjudante] = useState<string>("Não possui");
 
   // WEBCAM INTERNA INTEGRADA (Corrige erro de RAM insuficiente nos celulares de motoristas/RNs)
   const [isWebcamOpen, setIsWebcamOpen] = useState(false);
@@ -1427,6 +1428,14 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
 
     const finalNf = cleanNf;
 
+    const isFaltaSku = formMotiveType.toLowerCase().includes("falta");
+    if (isFaltaSku) {
+      if (!formAjudante || !formAjudante.trim()) {
+        setFormError("⚠️ Por favor, selecione o Ajudante responsável ou a opção 'Não possui' para prosseguir com a Falta de SKU.");
+        return;
+      }
+    }
+
     const isFaltaSkuCompleto = formMotiveType === "Falta de SKU Completo";
     if (!formFotoUrl && !isFaltaSkuCompleto) {
       setFormError("A Foto/Doc comprobatório de avaria ou pendência é obrigatória para o Controle.");
@@ -1635,11 +1644,33 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       notified: false,
       pdfFilename: expectedFilename,
       pdfFilePath: expectedFullPath,
-      cadastroUser: roleContext === "rn" ? `Representante Setor ${selectedSector}` : `Motorista / Rota ${selectedSector}`,
+      cadastroUser: (() => {
+        const loggedUser = sessionStorage.getItem("sstr_current_manager_name");
+        if (loggedUser && loggedUser.trim() && loggedUser.trim().toLowerCase() !== "gestor") {
+          return loggedUser;
+        }
+        if (roleContext === "rn") {
+          const repInfo = repsList[selectedSector || ""] || getRepresentativosSetor()[selectedSector || ""];
+          if (repInfo && repInfo.nome) {
+            return `RN ${repInfo.nome} (Setor ${selectedSector})`;
+          }
+          if (loggedUser) return `${loggedUser} (RN Setor ${selectedSector})`;
+          return `Representante Setor ${selectedSector}`;
+        } else {
+          const motInfo = motoristasList[selectedSector || ""] || getMotoristasRotas()[selectedSector || ""];
+          if (motInfo && motInfo.nome) {
+            return `Motorista ${motInfo.nome} (Rota ${selectedSector})`;
+          }
+          if (loggedUser) return `${loggedUser} (Motorista Rota ${selectedSector})`;
+          return `Motorista Rota ${selectedSector}`;
+        }
+      })(),
       cadastroDate: dataFormatada,
       emContingencia: isContingencia,
       contingenciaBaixada: false,
       valorTotal: calcTotalVal > 0 ? calcTotalVal : undefined,
+      ...(formAjudante ? { faltaAjudantes: formAjudante } : {}),
+      ...(formAjudante && formAjudante !== "Não possui" ? { faltaAjudante1: formAjudante } : {}),
       
       // Fallbacks on top-level properties for compatibility with older display cards
       item: firstItem.itemCode,
@@ -1676,6 +1707,8 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
           fotoUrl: uploadedFotoUrl,
           observacao: formObservacao.trim(),
           statusPromax: "pendente" as const,
+          ...(formAjudante ? { faltaAjudantes: formAjudante } : {}),
+          ...(formAjudante && formAjudante !== "Não possui" ? { faltaAjudante1: formAjudante } : {}),
           notified: false,
           rejeitadoObs: undefined,
           pdfFilename: expectedFilename,
@@ -1736,6 +1769,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     setFormInversaoRecolherQtd("");
     setFormMotiveType("Produto Avariado");
     setFormMotiveText("Produto Avariado");
+    setFormAjudante("Não possui");
     setDraftItems([]);
     setFormSuccess(true);
     setReceiptRequest(newRequest);
@@ -2583,6 +2617,42 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                           />
                         </div>
                       )}
+
+                      {/* Selection of Helper / Ajudante */}
+                      <div className="space-y-1.5 mt-3 text-left">
+                        <label className="text-[9px] font-bold text-slate-300 font-mono uppercase tracking-wider flex items-center justify-between">
+                          <span className="flex items-center gap-1.5 text-indigo-300">
+                            👥 Ajudante (Carga / Auxiliar)
+                            {(formMotiveType.toLowerCase().includes("falta") || formMotiveType === "Falta de SKU Completo" || formMotiveType === "Falta no SKU") && (
+                              <span className="text-red-500 font-sans font-bold">*</span>
+                            )}
+                          </span>
+                          {(formMotiveType.toLowerCase().includes("falta") || formMotiveType === "Falta de SKU Completo" || formMotiveType === "Falta no SKU") ? (
+                            <span className="text-[7.5px] bg-red-950/60 border border-red-900/40 text-red-400 px-2 py-0.5 rounded-full font-mono font-bold">
+                              OBRIGATÓRIO PARA FALTA
+                            </span>
+                          ) : (
+                            <span className="text-[7.5px] text-slate-500 font-mono">
+                              OPCIONAL
+                            </span>
+                          )}
+                        </label>
+                        <select
+                          value={formAjudante}
+                          onChange={(e) => setFormAjudante(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono font-semibold text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                        >
+                          <option value="Não possui">-- Selecione o Ajudante ou 'Não possui' --</option>
+                          <option value="Não possui">Não possui</option>
+                          {(crewList && crewList.length > 0 ? crewList : LISTA_CREW)
+                            .filter((c: any) => c.cargo.toLowerCase().includes("ajudante") || c.cargo.toLowerCase().includes("auxiliar") || c.cargo.toLowerCase().includes("crew") || c.cargo.toLowerCase().includes("ajud"))
+                            .map((c: any) => (
+                              <option key={c.cpf || c.nome} value={c.nome}>
+                                {c.nome} ({c.cargo})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
                       {formMotiveType === "Inversão" && (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-slate-950 border border-slate-850/80 rounded-xl mt-2.5 animate-fade-in text-left">
                           
@@ -3081,6 +3151,14 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                                 Mapa: {firstReq.mapa || "Não informado"} • NB: {firstReq.nb}
                               </span>
                               <div className="flex flex-col text-[8px] text-slate-500 mt-1 space-y-0.5">
+                                <span className="text-indigo-300 font-semibold truncate max-w-[200px]" title={`Cadastrado por: ${getDisplayCadastroUser(firstReq, repsList, motoristasList)}`}>
+                                  👤 {getDisplayCadastroUser(firstReq, repsList, motoristasList)}
+                                </span>
+                                {(firstReq.faltaAjudantes || firstReq.faltaAjudante1) && (
+                                  <span className="text-indigo-200 font-semibold truncate max-w-[200px]" title={`Ajudante: ${firstReq.faltaAjudantes || firstReq.faltaAjudante1}`}>
+                                    👥 Ajudante: {firstReq.faltaAjudantes || firstReq.faltaAjudante1}
+                                  </span>
+                                )}
                                 <span>Solicitado em: {firstReq.data}</span>
                                 {(isReprovado || isCorrigir) && firstReq.reprovadoDate && (
                                   <span className="text-rose-455 font-semibold">Ação do Controle em: {firstReq.reprovadoDate}</span>
@@ -3307,6 +3385,14 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                                 Mapa: {firstReq.mapa || "Sem Mapa"} • NB: {firstReq.nb}
                               </span>
                               <div className="flex flex-col text-[8px] text-slate-500 mt-1 space-y-0.5">
+                                <span className="text-indigo-300 font-semibold truncate max-w-[200px]" title={`Cadastrado por: ${getDisplayCadastroUser(firstReq, repsList, motoristasList)}`}>
+                                  👤 {getDisplayCadastroUser(firstReq, repsList, motoristasList)}
+                                </span>
+                                {(firstReq.faltaAjudantes || firstReq.faltaAjudante1) && (
+                                  <span className="text-indigo-200 font-semibold truncate max-w-[200px]" title={`Ajudante: ${firstReq.faltaAjudantes || firstReq.faltaAjudante1}`}>
+                                    👥 Ajudante: {firstReq.faltaAjudantes || firstReq.faltaAjudante1}
+                                  </span>
+                                )}
                                 <span>Solicitado em: {firstReq.data}</span>
                                 <span>Aprovado em: {firstReq.cadastroDate || firstReq.data}</span>
                               </div>
