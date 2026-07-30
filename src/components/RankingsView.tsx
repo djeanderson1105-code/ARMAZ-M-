@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { ExchangeRecord } from "../types";
-import { calculateHL } from "../utils/hectoFactors";
+import { getRecordHL } from "../utils/hectoFactors";
 import { 
   Award, 
   MapPin, 
@@ -111,7 +111,7 @@ export default function RankingsView({ records: rawRecords }: RankingsViewProps)
       dg.requestCount += 1;
       dg.totalQty += r.quantidade || 0;
       
-      const hlValue = r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
+      const hlValue = getRecordHL(r);
       dg.totalHL += hlValue;
 
       if (r.placa) dg.vehiclePlates.add(r.placa.trim().toUpperCase());
@@ -258,7 +258,7 @@ export default function RankingsView({ records: rawRecords }: RankingsViewProps)
       cg.requestCount += 1;
       cg.totalQty += r.quantidade || 0;
       
-      const hlValue = r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
+      const hlValue = getRecordHL(r);
       cg.totalHL += hlValue;
 
       // Driver details
@@ -363,7 +363,7 @@ export default function RankingsView({ records: rawRecords }: RankingsViewProps)
       mg.requestCount += 1;
       mg.totalQty += r.quantidade || 0;
 
-      const hlValue = r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
+      const hlValue = getRecordHL(r);
       mg.totalHL += hlValue;
 
       // Sector and driver details

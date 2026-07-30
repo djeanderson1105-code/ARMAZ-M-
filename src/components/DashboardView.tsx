@@ -2,7 +2,7 @@ import React, { useState, useMemo } from "react";
 import { ExchangeRecord, SectorAnalytics, REPRESENTATIVOS_SETOR } from "../types";
 import { getApiUrl } from "../utils/apiUrl";
 import { parseSectorAnalytics } from "../utils/csvParser";
-import { calculateHL, getHectoFactor } from "../utils/hectoFactors";
+import { getRecordHL, getHectoFactor, isRecordApproved } from "../utils/hectoFactors";
 import { isRecordReposicao, isRecordTroca } from "../utils/processTypes";
 import ConsolidatedView from "./ConsolidatedView";
 import { 
@@ -38,6 +38,21 @@ interface DashboardViewProps {
 }
 
 // Helper to convert Brazilian date "DD/MM/YYYY" to Date object
+const META_HL_BY_MONTH: Record<string, number> = {
+  "01": 5.61,  // JANEIRO
+  "02": 12.02, // FEVEREIRO
+  "03": 7.03,  // MARÇO
+  "04": 8.44,  // ABRIL
+  "05": 9.88,  // MAIO
+  "06": 15.44, // JUNHO
+  "07": 10.02, // JULHO
+  "08": 8.27,  // AGOSTO
+  "09": 13.80, // SETEMBRO
+  "10": 15.30, // OUTUBRO
+  "11": 10.70, // NOVEMBRO
+  "12": 12.90, // DEZEMBRO
+};
+
 const parseToDate = (ptDateStr: string): Date | null => {
   if (!ptDateStr) return null;
   const parts = ptDateStr.split("/");
@@ -89,6 +104,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
   
   // Process Type Filter state: "todos" | "reposicao" | "troca"
   const [processTypeFilter, setProcessTypeFilter] = useState<"todos" | "reposicao" | "troca">("todos");
+
+  // Dashboard Metric View Toggle: "hl" | "reais"
+  const [dashboardMetricView, setDashboardMetricView] = useState<"hl" | "reais">("hl");
 
   // States for dynamic filters
   const [semesterFilter, setSemesterFilter] = useState<"1H" | "2H" | "all">("1H");
@@ -239,7 +257,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
         }
       }
 
-      const hl = r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
+      const hl = getRecordHL(r);
 
       if (isRecordReposicao(r)) {
         repVal += r.valorTotal || 0;
@@ -338,27 +356,39 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
     let pendingValue = 0;
     let reprovedValue = 0;
 
+    let totalHL = 0;
+    let approvedHL = 0;
+    let pendingHL = 0;
+    let reprovedHL = 0;
+
     let approvedCount = 0;
     let pendingCount = 0;
     let reprovedCount = 0;
 
     filteredRecords.forEach(r => {
-      totalValue += r.valorTotal;
-      const statusClean = r.status.toLowerCase().trim();
+      const val = r.valorTotal || 0;
+      const hl = getRecordHL(r);
+      totalValue += val;
+      totalHL += hl;
+      const isApproved = isRecordApproved(r);
+      const statusClean = (r.status || "").toLowerCase().trim();
       
-      if (statusClean.includes("aprov")) {
-        approvedValue += r.valorTotal;
+      if (isApproved) {
+        approvedValue += val;
+        approvedHL += hl;
         approvedCount++;
       } else if (statusClean.includes("pend")) {
-        pendingValue += r.valorTotal;
+        pendingValue += val;
+        pendingHL += hl;
         pendingCount++;
-      } else if (statusClean.includes("reprov")) {
-        reprovedValue += r.valorTotal;
+      } else if (statusClean.includes("reprov") || statusClean.includes("cancela")) {
+        reprovedValue += val;
+        reprovedHL += hl;
         reprovedCount++;
       } else {
-        // Fallback or unaligned
-        approvedValue += r.valorTotal;
-        approvedCount++;
+        pendingValue += val;
+        pendingHL += hl;
+        pendingCount++;
       }
     });
 
@@ -370,6 +400,10 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
       approvedValue,
       pendingValue,
       reprovedValue,
+      totalHL,
+      approvedHL,
+      pendingHL,
+      reprovedHL,
       totalCount: filteredRecords.length,
       approvedCount,
       pendingCount,
@@ -388,37 +422,58 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
   const annualApprovedAccumulated = useMemo(() => {
     let sum = 0;
     records.forEach(r => {
-      const statusClean = r.status.toLowerCase().trim();
-      if (statusClean.includes("aprov")) {
-        sum += r.valorTotal;
+      if (isRecordApproved(r)) {
+        sum += r.valorTotal || 0;
       }
     });
     return sum;
   }, [records]);
 
-  // Hectoliters volume calculator - active filter view
-  const totalHLFiltered = useMemo(() => {
-    return filteredRecords.reduce((sum, r) => sum + calculateHL(r.produto, r.quantidade), 0);
-  }, [filteredRecords]);
-
-  // Hectoliters volume calculator - entire database
-  const totalHLAll = useMemo(() => {
-    return records.reduce((sum, r) => sum + calculateHL(r.produto, r.quantidade), 0);
+  // Year Accumulative approved HL
+  const annualApprovedAccumulatedHL = useMemo(() => {
+    let sum = 0;
+    records.forEach(r => {
+      if (isRecordApproved(r)) {
+        sum += getRecordHL(r);
+      }
+    });
+    return sum;
   }, [records]);
 
-  // Top Products of all sectors combined (unfiltered by selectedSector)
+  // Hectoliters volume calculator - active filter view (ONLY approved records)
+  const totalHLFiltered = useMemo(() => {
+    return filteredRecords.reduce((sum, r) => {
+      if (isRecordApproved(r)) {
+        return sum + getRecordHL(r);
+      }
+      return sum;
+    }, 0);
+  }, [filteredRecords]);
+
+  // Hectoliters volume calculator - entire database (ONLY approved records)
+  const totalHLAll = useMemo(() => {
+    return records.reduce((sum, r) => {
+      if (isRecordApproved(r)) {
+        return sum + getRecordHL(r);
+      }
+      return sum;
+    }, 0);
+  }, [records]);
+
+  // Top Products of all sectors combined (ONLY approved requests)
   const generalTopProducts = useMemo(() => {
-    if (filteredRecords.length === 0) return [];
+    const approvedOnly = filteredRecords.filter(isRecordApproved);
+    if (approvedOnly.length === 0) return [];
     const prodMap: { [code: string]: { code: string; descricao: string; quantity: number; totalSpent: number; hl: number } } = {};
     
-    filteredRecords.forEach(r => {
+    approvedOnly.forEach(r => {
       const pCode = r.produto;
       if (!prodMap[pCode]) {
         prodMap[pCode] = { code: pCode, descricao: r.descricaoProduto, quantity: 0, totalSpent: 0, hl: 0 };
       }
       prodMap[pCode].quantity += r.quantidade;
       prodMap[pCode].totalSpent += r.valorTotal;
-      prodMap[pCode].hl += calculateHL(pCode, r.quantidade);
+      prodMap[pCode].hl += getRecordHL(r);
     });
 
     return Object.values(prodMap)
@@ -426,19 +481,20 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
       .map((item, idx) => ({ ...item, rank: idx + 1 }));
   }, [filteredRecords]);
 
-  // Top Clients of all sectors combined (unfiltered by selectedSector)
+  // Top Clients of all sectors combined (ONLY approved requests)
   const generalTopClients = useMemo(() => {
-    if (filteredRecords.length === 0) return [];
+    const approvedOnly = filteredRecords.filter(isRecordApproved);
+    if (approvedOnly.length === 0) return [];
     const clientMap: { [code: string]: { code: string; nome: string; requestCount: number; totalSpent: number; hl: number } } = {};
     
-    filteredRecords.forEach(r => {
+    approvedOnly.forEach(r => {
       const cCode = r.codigoCliente;
       if (!clientMap[cCode]) {
         clientMap[cCode] = { code: cCode, nome: r.nomeCliente, requestCount: 0, totalSpent: 0, hl: 0 };
       }
       clientMap[cCode].requestCount += 1;
       clientMap[cCode].totalSpent += r.valorTotal;
-      clientMap[cCode].hl += calculateHL(r.produto, r.quantidade);
+      clientMap[cCode].hl += getRecordHL(r);
     });
 
     return Object.values(clientMap)
@@ -446,11 +502,12 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
       .map((item, idx) => ({ ...item, rank: idx + 1 }));
   }, [filteredRecords]);
 
-  // Timeline chronology data for line-plots
+  // Timeline chronology data for line-plots (ONLY approved requests)
   const timelineData = useMemo(() => {
     const dateMap: { [dateStr: string]: { date: string; timestamp: number; count: number; totalSpent: number; totalHL: number } } = {};
+    const approvedOnly = filteredRecords.filter(isRecordApproved);
     
-    filteredRecords.forEach(r => {
+    approvedOnly.forEach(r => {
       if (!r.dataSolicitacao) return;
       const dStr = r.dataSolicitacao;
       const dateObj = parseToDate(dStr);
@@ -461,7 +518,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
       }
       dateMap[dStr].count += 1;
       dateMap[dStr].totalSpent += r.valorTotal;
-      dateMap[dStr].totalHL += calculateHL(r.produto, r.quantidade);
+      dateMap[dStr].totalHL += getRecordHL(r);
     });
 
     return Object.values(dateMap).sort((a, b) => a.timestamp - b.timestamp);
@@ -545,14 +602,42 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
   }, [filterMode, selectedMonthYear, semesterFilter, startDateStr, endDateStr]);
 
   // Progress metrics
+  const activeGoalHL = useMemo(() => {
+    if (filterMode === "mes") {
+      if (selectedMonthYear !== "todos") {
+        const mStr = selectedMonthYear.split("/")[0];
+        return META_HL_BY_MONTH[mStr] || 10.0;
+      }
+      if (semesterFilter === "1H") return 58.42;
+      if (semesterFilter === "2H") return 70.99;
+      return 129.41;
+    } else {
+      if (startDateStr && endDateStr) {
+        const start = new Date(startDateStr + "T00:00:00");
+        const end = new Date(endDateStr + "T23:59:59");
+        const diffTime = Math.abs(end.getTime() - start.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
+        return Number((diffDays * (129.41 / 365)).toFixed(2));
+      }
+      if (semesterFilter === "1H") return 58.42;
+      if (semesterFilter === "2H") return 70.99;
+      return 129.41;
+    }
+  }, [filterMode, selectedMonthYear, semesterFilter, startDateStr, endDateStr]);
+
   const monthlyAtingimento = useMemo(() => {
-    // Current selected period/month approved sum / activeGoal
-    return (stats.approvedValue / activeGoal) * 100;
-  }, [stats.approvedValue, activeGoal]);
+    if (dashboardMetricView === "hl") {
+      return activeGoalHL > 0 ? (stats.approvedHL / activeGoalHL) * 100 : 0;
+    }
+    return activeGoal > 0 ? (stats.approvedValue / activeGoal) * 100 : 0;
+  }, [stats.approvedValue, stats.approvedHL, activeGoal, activeGoalHL, dashboardMetricView]);
 
   const annualAtingimento = useMemo(() => {
+    if (dashboardMetricView === "hl") {
+      return (annualApprovedAccumulatedHL / 129.41) * 100;
+    }
     return (annualApprovedAccumulated / META_ANUAL) * 100;
-  }, [annualApprovedAccumulated]);
+  }, [annualApprovedAccumulated, annualApprovedAccumulatedHL, dashboardMetricView]);
 
   // Filter sector records based on status filter
   const sectorRecordsForTree = useMemo(() => {
@@ -568,8 +653,20 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
 
   // Sector Analytics based on filtered records
   const sectorAnalytics = useMemo(() => {
-    return parseSectorAnalytics(sectorRecordsForTree);
-  }, [sectorRecordsForTree]);
+    const raw = parseSectorAnalytics(sectorRecordsForTree);
+    if (dashboardMetricView === "hl") {
+      return [...raw].sort((a, b) => b.totalHl - a.totalHl);
+    }
+    return [...raw].sort((a, b) => b.totalSpent - a.totalSpent);
+  }, [sectorRecordsForTree, dashboardMetricView]);
+
+  const maxSectorValue = useMemo(() => {
+    if (sectorAnalytics.length === 0) return 1;
+    if (dashboardMetricView === "hl") {
+      return Math.max(...sectorAnalytics.map(s => s.totalHl || 0));
+    }
+    return Math.max(...sectorAnalytics.map(s => s.totalSpent || 0));
+  }, [sectorAnalytics, dashboardMetricView]);
 
   // --- Dynamic Sector Audit Exploration & Inner Rankings ---
   // Records specifically belonging to the active sector
@@ -580,124 +677,145 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
 
   // Total spent in this active sector
   const activeSectorTotalSpent = useMemo(() => {
-    return activeSectorRecords.reduce((sum, r) => sum + r.valorTotal, 0);
+    return activeSectorRecords.reduce((sum, r) => sum + (r.valorTotal || 0), 0);
   }, [activeSectorRecords]);
 
-  // Ranking of ALL products in this sector (unfiltered by selection, sorted descending by cost)
+  // Total HL in this active sector
+  const activeSectorTotalHL = useMemo(() => {
+    return activeSectorRecords.reduce((sum, r) => sum + getRecordHL(r), 0);
+  }, [activeSectorRecords]);
+
+  // Ranking of ALL products in this sector
   const productsRanking = useMemo(() => {
     if (activeSectorRecords.length === 0) return [];
     
-    const prodMap: { [code: string]: { code: string; descricao: string; quantity: number; totalSpent: number } } = {};
+    const prodMap: { [code: string]: { code: string; descricao: string; quantity: number; totalSpent: number; hl: number } } = {};
     
     activeSectorRecords.forEach(r => {
       const pCode = r.produto;
       if (!prodMap[pCode]) {
-        prodMap[pCode] = { code: pCode, descricao: r.descricaoProduto, quantity: 0, totalSpent: 0 };
+        prodMap[pCode] = { code: pCode, descricao: r.descricaoProduto, quantity: 0, totalSpent: 0, hl: 0 };
       }
       prodMap[pCode].quantity += r.quantidade;
-      prodMap[pCode].totalSpent += r.valorTotal;
+      prodMap[pCode].totalSpent += r.valorTotal || 0;
+      prodMap[pCode].hl += getRecordHL(r);
     });
 
+    const isHl = dashboardMetricView === "hl";
+    const totalSectorMetric = isHl ? activeSectorTotalHL : activeSectorTotalSpent;
+
     return Object.values(prodMap)
-      .sort((a, b) => b.totalSpent - a.totalSpent)
+      .sort((a, b) => isHl ? b.hl - a.hl : b.totalSpent - a.totalSpent)
       .map((item, idx) => {
-        const percentImpact = activeSectorTotalSpent > 0 ? (item.totalSpent / activeSectorTotalSpent) * 100 : 0;
+        const itemVal = isHl ? item.hl : item.totalSpent;
+        const percentImpact = totalSectorMetric > 0 ? (itemVal / totalSectorMetric) * 100 : 0;
         return {
           ...item,
           rank: idx + 1,
           percentImpact
         };
       });
-  }, [activeSectorRecords, activeSectorTotalSpent]);
+  }, [activeSectorRecords, activeSectorTotalSpent, activeSectorTotalHL, dashboardMetricView]);
 
-  // Ranking of ALL clients in this sector (unfiltered by selection, sorted descending by cost)
+  // Ranking of ALL clients in this sector
   const clientsRanking = useMemo(() => {
     if (activeSectorRecords.length === 0) return [];
 
-    const clientMap: { [name: string]: { code: string; nome: string; requestCount: number; totalSpent: number } } = {};
+    const clientMap: { [name: string]: { code: string; nome: string; requestCount: number; totalSpent: number; hl: number } } = {};
 
     activeSectorRecords.forEach(r => {
       const cName = r.nomeCliente;
       if (!clientMap[cName]) {
-        clientMap[cName] = { code: r.codigoCliente, nome: cName, requestCount: 0, totalSpent: 0 };
+        clientMap[cName] = { code: r.codigoCliente, nome: cName, requestCount: 0, totalSpent: 0, hl: 0 };
       }
       clientMap[cName].requestCount += 1;
-      clientMap[cName].totalSpent += r.valorTotal;
+      clientMap[cName].totalSpent += r.valorTotal || 0;
+      clientMap[cName].hl += getRecordHL(r);
     });
 
+    const isHl = dashboardMetricView === "hl";
+    const totalSectorMetric = isHl ? activeSectorTotalHL : activeSectorTotalSpent;
+
     return Object.values(clientMap)
-      .sort((a, b) => b.totalSpent - a.totalSpent)
+      .sort((a, b) => isHl ? b.hl - a.hl : b.totalSpent - a.totalSpent)
       .map((item, idx) => {
-        const percentImpact = activeSectorTotalSpent > 0 ? (item.totalSpent / activeSectorTotalSpent) * 100 : 0;
+        const itemVal = isHl ? item.hl : item.totalSpent;
+        const percentImpact = totalSectorMetric > 0 ? (itemVal / totalSectorMetric) * 100 : 0;
         return {
           ...item,
           rank: idx + 1,
           percentImpact
         };
       });
-  }, [activeSectorRecords, activeSectorTotalSpent]);
+  }, [activeSectorRecords, activeSectorTotalSpent, activeSectorTotalHL, dashboardMetricView]);
 
   // If a product is selected, find the ranking of clients who requested this product
   const clientsForSelectedProduct = useMemo(() => {
     if (!selectedProductCode || activeSectorRecords.length === 0) return [];
 
-    const clientMap: { [name: string]: { code: string; nome: string; quantity: number; totalSpent: number } } = {};
+    const clientMap: { [name: string]: { code: string; nome: string; quantity: number; totalSpent: number; hl: number } } = {};
 
     activeSectorRecords.forEach(r => {
       if (r.produto === selectedProductCode) {
         const cName = r.nomeCliente;
         if (!clientMap[cName]) {
-          clientMap[cName] = { code: r.codigoCliente, nome: cName, quantity: 0, totalSpent: 0 };
+          clientMap[cName] = { code: r.codigoCliente, nome: cName, quantity: 0, totalSpent: 0, hl: 0 };
         }
         clientMap[cName].quantity += r.quantidade;
-        clientMap[cName].totalSpent += r.valorTotal;
+        clientMap[cName].totalSpent += r.valorTotal || 0;
+        clientMap[cName].hl += getRecordHL(r);
       }
     });
 
-    const productTotal = Object.values(clientMap).reduce((sum, c) => sum + c.totalSpent, 0);
+    const isHl = dashboardMetricView === "hl";
+    const productTotal = Object.values(clientMap).reduce((sum, c) => sum + (isHl ? c.hl : c.totalSpent), 0);
 
     return Object.values(clientMap)
-      .sort((a, b) => b.totalSpent - a.totalSpent)
+      .sort((a, b) => isHl ? b.hl - a.hl : b.totalSpent - a.totalSpent)
       .map((item, idx) => {
-        const percentOfProduct = productTotal > 0 ? (item.totalSpent / productTotal) * 100 : 0;
+        const itemVal = isHl ? item.hl : item.totalSpent;
+        const percentOfProduct = productTotal > 0 ? (itemVal / productTotal) * 100 : 0;
         return {
           ...item,
           rank: idx + 1,
           percentOfProduct
         };
       });
-  }, [selectedProductCode, activeSectorRecords]);
+  }, [selectedProductCode, activeSectorRecords, dashboardMetricView]);
 
   // If a client is selected, find the ranking of items requested by this client
   const productsForSelectedClient = useMemo(() => {
     if (!selectedClientName || activeSectorRecords.length === 0) return [];
 
-    const prodMap: { [code: string]: { code: string; descricao: string; quantity: number; totalSpent: number } } = {};
+    const prodMap: { [code: string]: { code: string; descricao: string; quantity: number; totalSpent: number; hl: number } } = {};
 
     activeSectorRecords.forEach(r => {
       if (r.nomeCliente === selectedClientName) {
         const pCode = r.produto;
         if (!prodMap[pCode]) {
-          prodMap[pCode] = { code: pCode, descricao: r.descricaoProduto, quantity: 0, totalSpent: 0 };
+          prodMap[pCode] = { code: pCode, descricao: r.descricaoProduto, quantity: 0, totalSpent: 0, hl: 0 };
         }
         prodMap[pCode].quantity += r.quantidade;
-        prodMap[pCode].totalSpent += r.valorTotal;
+        prodMap[pCode].totalSpent += r.valorTotal || 0;
+        prodMap[pCode].hl += getRecordHL(r);
       }
     });
 
-    const clientTotal = Object.values(prodMap).reduce((sum, p) => sum + p.totalSpent, 0);
+    const isHl = dashboardMetricView === "hl";
+    const clientTotal = Object.values(prodMap).reduce((sum, p) => sum + (isHl ? p.hl : p.totalSpent), 0);
 
     return Object.values(prodMap)
-      .sort((a, b) => b.totalSpent - a.totalSpent)
+      .sort((a, b) => isHl ? b.hl - a.hl : b.totalSpent - a.totalSpent)
       .map((item, idx) => {
-        const percentOfClient = clientTotal > 0 ? (item.totalSpent / clientTotal) * 100 : 0;
+        const itemVal = isHl ? item.hl : item.totalSpent;
+        const percentOfClient = clientTotal > 0 ? (itemVal / clientTotal) * 100 : 0;
         return {
           ...item,
           rank: idx + 1,
           percentOfClient
         };
       });
-  }, [selectedClientName, activeSectorRecords]);
+  }, [selectedClientName, activeSectorRecords, dashboardMetricView]);
 
   // Calculate sector consumption breakdown relative to active meta
   // "grafico informando qual o setor consome mais da meta"
@@ -712,7 +830,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
       if (statusClean.includes("aprov") && r.setorVenda) {
         const sec = r.setorVenda.trim();
         sectorMap[sec] = (sectorMap[sec] || 0) + r.valorTotal;
-        sectorHlMap[sec] = (sectorHlMap[sec] || 0) + calculateHL(r.produto, r.quantidade);
+        sectorHlMap[sec] = (sectorHlMap[sec] || 0) + getRecordHL(r);
       }
     });
 
@@ -834,40 +952,31 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {/* Process Type Pill Filter replicated from Auditoria e Rastreamento */}
-            <div className="flex items-center space-x-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+            {/* Sophisticated Metric View Switcher Button (HL vs R$) */}
+            <div className="flex items-center space-x-1 bg-slate-950 p-1 rounded-xl border border-slate-800 shadow-inner">
               <button
                 type="button"
-                onClick={() => setProcessTypeFilter("todos")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
-                  processTypeFilter === "todos"
-                    ? "bg-blue-600 text-white shadow-md"
+                onClick={() => setDashboardMetricView("hl")}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold font-mono flex items-center gap-1.5 transition-all cursor-pointer ${
+                  dashboardMetricView === "hl"
+                    ? "bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-md scale-[1.02]"
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                🌐 Todos
+                <span>🍺</span>
+                <span>Visão Hectolitro (HL)</span>
               </button>
               <button
                 type="button"
-                onClick={() => setProcessTypeFilter("reposicao")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
-                  processTypeFilter === "reposicao"
-                    ? "bg-indigo-600 text-white shadow-md"
+                onClick={() => setDashboardMetricView("reais")}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold font-mono flex items-center gap-1.5 transition-all cursor-pointer ${
+                  dashboardMetricView === "reais"
+                    ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-slate-950 shadow-md scale-[1.02]"
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                📦 Reposição (Falta)
-              </button>
-              <button
-                type="button"
-                onClick={() => setProcessTypeFilter("troca")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
-                  processTypeFilter === "troca"
-                    ? "bg-emerald-600 text-white shadow-md"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                🔁 Troca (Outros)
+                <span>💰</span>
+                <span>Visão Reais (R$)</span>
               </button>
             </div>
 
@@ -999,22 +1108,6 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
             </select>
           </div>
 
-          {/* Process Type Filter (Reposição vs Troca) */}
-          <div className="md:col-span-2 flex flex-col space-y-1.5">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono flex items-center gap-1">
-              📦 Tipo de Processo
-            </label>
-            <select
-              value={processTypeFilter}
-              onChange={(e) => setProcessTypeFilter(e.target.value as any)}
-              className="bg-slate-950 text-slate-100 hover:bg-slate-900 border border-slate-800 font-mono text-xs rounded-xl px-3 py-2.5 focus:outline-hidden focus:ring-1 focus:ring-blue-500 transition-all cursor-pointer w-full"
-            >
-              <option value="todos">🌐 Todos os Processos</option>
-              <option value="reposicao">📦 Reposição (Falta de Produto)</option>
-              <option value="troca">🔁 Troca (Outros Motivos)</option>
-            </select>
-          </div>
-
           {/* Clear Button */}
           <div className="md:col-span-2 lg:col-span-1">
             {(semesterFilter !== "1H" || selectedMonthYear !== "todos" || startDateStr !== "" || endDateStr !== "" || selectedReason !== "todos" || selectedGv !== "todos" || processTypeFilter !== "todos") ? (
@@ -1076,10 +1169,16 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                 </span>
               </div>
               <p className="text-base font-black font-mono text-white mt-1">
-                {formatCurrency(processSummaryDashboard.totalVal)}
+                {dashboardMetricView === "hl" 
+                  ? `${processSummaryDashboard.totalHl.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 2 })} HL`
+                  : formatCurrency(processSummaryDashboard.totalVal)
+                }
               </p>
               <span className="text-[9.5px] text-slate-400 block mt-0.5 font-sans leading-tight">
-                {processSummaryDashboard.totalHl.toFixed(1)} HL • Visão Consolidada do Sistema
+                {dashboardMetricView === "hl"
+                  ? `${formatCurrency(processSummaryDashboard.totalVal)} • Visão Consolidada do Sistema`
+                  : `${processSummaryDashboard.totalHl.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 2 })} HL • Visão Consolidada do Sistema`
+                }
               </span>
             </button>
 
@@ -1100,10 +1199,16 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                 </span>
               </div>
               <p className="text-base font-black font-mono text-white mt-1">
-                {formatCurrency(processSummaryDashboard.repVal)}
+                {dashboardMetricView === "hl"
+                  ? `${processSummaryDashboard.repHl.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 2 })} HL`
+                  : formatCurrency(processSummaryDashboard.repVal)
+                }
               </p>
               <span className="text-[9.5px] text-slate-400 block mt-0.5 font-sans leading-tight">
-                {processSummaryDashboard.repHl.toFixed(1)} HL • Relatório 03.18.05 Informa / Falta no Entrega
+                {dashboardMetricView === "hl"
+                  ? `${formatCurrency(processSummaryDashboard.repVal)} • Relatório 03.18.05 Informa / Falta no Entrega`
+                  : `${processSummaryDashboard.repHl.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 2 })} HL • Relatório 03.18.05 Informa / Falta no Entrega`
+                }
               </span>
             </button>
 
@@ -1124,10 +1229,16 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                 </span>
               </div>
               <p className="text-base font-black font-mono text-white mt-1">
-                {formatCurrency(processSummaryDashboard.trocaVal)}
+                {dashboardMetricView === "hl"
+                  ? `${processSummaryDashboard.trocaHl.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 2 })} HL`
+                  : formatCurrency(processSummaryDashboard.trocaVal)
+                }
               </p>
               <span className="text-[9.5px] text-slate-400 block mt-0.5 font-sans leading-tight">
-                {processSummaryDashboard.trocaHl.toFixed(1)} HL • Avaria, Inversão, Vencimento, Vasilhame, Qualidade
+                {dashboardMetricView === "hl"
+                  ? `${formatCurrency(processSummaryDashboard.trocaVal)} • Avaria, Inversão, Vencimento, Vasilhame, Qualidade`
+                  : `${processSummaryDashboard.trocaHl.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 2 })} HL • Avaria, Inversão, Vencimento, Vasilhame, Qualidade`
+                }
               </span>
             </button>
           </div>
@@ -1195,6 +1306,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
           selectedMonthYear={selectedMonthYear}
           setSelectedMonthYear={setSelectedMonthYear}
           setFilterMode={setFilterMode}
+          dashboardMetricView={dashboardMetricView}
         />
       ) : (
         <>
@@ -1218,13 +1330,17 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
               <div>
                 <span className="text-xs text-slate-400 block">Consumido no período</span>
                 <span className="text-3xl font-extrabold font-display leading-tight text-white">
-                  {formatCurrency(stats.approvedValue)}
+                  {dashboardMetricView === "hl"
+                    ? `${stats.approvedHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                    : formatCurrency(stats.approvedValue)}
                 </span>
               </div>
               <div className="text-right">
                 <span className="text-xs text-slate-400 block">Meta Limite</span>
                 <span className="text-xl font-bold font-mono text-blue-400">
-                  {formatCurrency(activeGoal)}
+                  {dashboardMetricView === "hl"
+                    ? `${activeGoalHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                    : formatCurrency(activeGoal)}
                 </span>
               </div>
             </div>
@@ -1250,7 +1366,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
               ></div>
               {monthlyAtingimento > 100 && (
                 <div className="absolute right-2 top-0.5 text-[8px] font-extrabold font-mono text-rose-200">
-                  ESTOURO {formatCurrency(stats.approvedValue - activeGoal)}
+                  ESTOURO {dashboardMetricView === "hl" 
+                    ? `${(stats.approvedHL - activeGoalHL).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                    : formatCurrency(stats.approvedValue - activeGoal)}
                 </div>
               )}
             </div>
@@ -1258,14 +1376,14 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
 
           <div className="text-[10px] text-slate-400 font-mono bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/60 leading-relaxed">
             {monthlyAtingimento <= 100 ? (
-              <span>🟢 A operação de reposição está dentro da meta limite estipulada de <strong>{formatCurrency(activeGoal)}</strong>. Margem disponível: <strong>{formatCurrency(activeGoal - stats.approvedValue)}</strong>.</span>
+              <span>🟢 A operação de reposição está dentro da meta limite estipulada de <strong>{dashboardMetricView === "hl" ? `${activeGoalHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL` : formatCurrency(activeGoal)}</strong>. Margem disponível: <strong>{dashboardMetricView === "hl" ? `${(activeGoalHL - stats.approvedHL).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL` : formatCurrency(activeGoal - stats.approvedValue)}</strong>.</span>
             ) : (
-              <span className="text-rose-300">⚠️ Alerta de Limite Excedido! O volume acumulado extrapola a meta estipulada de {formatCurrency(activeGoal)} por <strong>{formatCurrency(stats.approvedValue - activeGoal)}</strong>.</span>
+              <span className="text-rose-300">⚠️ Alerta de Limite Excedido! O volume acumulado extrapola a meta estipulada de {dashboardMetricView === "hl" ? `${activeGoalHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL` : formatCurrency(activeGoal)} por <strong>{dashboardMetricView === "hl" ? `${(stats.approvedHL - activeGoalHL).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL` : formatCurrency(stats.approvedValue - activeGoal)}</strong>.</span>
             )}
           </div>
         </div>
 
-        {/* Annual Meta Progress Widget (Meta Anual R$ 144.000) */}
+        {/* Annual Meta Progress Widget (Meta Anual R$ 144.000 ou 129,41 HL) */}
         <div className="lg:col-span-6 bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl flex flex-col justify-between space-y-4">
           <div>
             <div className="flex items-center justify-between">
@@ -1274,7 +1392,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                 <span className="text-xs font-bold uppercase tracking-wider font-mono">Meta Anual Acumulada</span>
               </div>
               <span className="text-[10px] font-bold font-mono text-indigo-400 bg-indigo-950/80 border border-indigo-900/50 px-2 py-0.5 rounded-md">
-                Meta Mensal x 12
+                {dashboardMetricView === "hl" ? "Soma das Metas HL" : "Meta Mensal x 12"}
               </span>
             </div>
 
@@ -1282,13 +1400,17 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
               <div>
                 <span className="text-xs text-slate-400 block">Acumulado do ano (YTD)</span>
                 <span className="text-3xl font-extrabold font-display leading-tight text-white">
-                  {formatCurrency(annualApprovedAccumulated)}
+                  {dashboardMetricView === "hl"
+                    ? `${annualApprovedAccumulatedHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                    : formatCurrency(annualApprovedAccumulated)}
                 </span>
               </div>
               <div className="text-right">
                 <span className="text-xs text-slate-400 block">Meta Anual</span>
                 <span className="text-xl font-bold font-mono text-indigo-400">
-                  {formatCurrency(META_ANUAL)}
+                  {dashboardMetricView === "hl"
+                    ? "129,41 HL"
+                    : formatCurrency(META_ANUAL)}
                 </span>
               </div>
             </div>
@@ -1312,7 +1434,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
           </div>
 
           <div className="text-[10px] text-slate-400 font-mono bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/60 leading-relaxed">
-            <span>📊 O acumulado de todo o ano de 2026 registra <strong>{formatCurrency(annualApprovedAccumulated)}</strong> aprovados, correspondendo a {annualAtingimento.toFixed(1)}% da meta de custo total anual de <strong>{formatCurrency(META_ANUAL)}</strong>.</span>
+            <span>📊 O acumulado de todo o ano de 2026 registra <strong>{dashboardMetricView === "hl" ? `${annualApprovedAccumulatedHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL` : formatCurrency(annualApprovedAccumulated)}</strong> aprovados, correspondendo a {annualAtingimento.toFixed(1)}% da meta de custo total anual de <strong>{dashboardMetricView === "hl" ? "129,41 HL" : formatCurrency(META_ANUAL)}</strong>.</span>
           </div>
         </div>
 
@@ -1328,9 +1450,13 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
             <DollarSign className="w-6 h-6" />
           </div>
           <div>
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest font-mono">Total Lançado (Geral)</p>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest font-mono">
+              {dashboardMetricView === "hl" ? "Volume Lançado (Geral)" : "Total Lançado (Geral)"}
+            </p>
             <h3 className="text-xl font-bold font-mono text-white tracking-tight mt-0.5">
-              {formatCurrency(stats.totalValue)}
+              {dashboardMetricView === "hl"
+                ? `${stats.totalHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                : formatCurrency(stats.totalValue)}
             </h3>
             <p className="text-[10px] text-slate-400 mt-1 flex items-center font-mono">
               <TrendingUp className="w-3.5 h-3.5 text-blue-400 mr-1" />
@@ -1345,9 +1471,13 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
             <CheckCircle2 className="w-6 h-6" />
           </div>
           <div>
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest font-mono">Valor Total Aprovado</p>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest font-mono">
+              {dashboardMetricView === "hl" ? "Volume Total Aprovado" : "Valor Total Aprovado"}
+            </p>
             <h3 className="text-xl font-bold font-mono text-emerald-400 tracking-tight mt-0.5">
-              {formatCurrency(stats.approvedValue)}
+              {dashboardMetricView === "hl"
+                ? `${stats.approvedHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                : formatCurrency(stats.approvedValue)}
             </h3>
             <p className="text-[10px] text-slate-400 mt-1 flex items-center font-mono">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5 animate-pulse"></span>
@@ -1362,9 +1492,13 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
             <RefreshCw className="w-6 h-6" />
           </div>
           <div>
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest font-mono">Aguardando Avaliação</p>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest font-mono">
+              {dashboardMetricView === "hl" ? "Volume em Avaliação" : "Aguardando Avaliação"}
+            </p>
             <h3 className="text-xl font-bold font-mono text-amber-400 tracking-tight mt-0.5">
-              {formatCurrency(stats.pendingValue)}
+              {dashboardMetricView === "hl"
+                ? `${stats.pendingHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                : formatCurrency(stats.pendingValue)}
             </h3>
             <p className="text-[10px] text-slate-400 mt-1 flex items-center font-mono">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5"></span>
@@ -1538,7 +1672,8 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
             ) : (
               sectorAnalytics.map((sa) => {
                 const isSelected = selectedSector === sa.setor;
-                const percentage = maxSectorSpent > 0 ? (sa.totalSpent / maxSectorSpent) * 100 : 0;
+                const sectorVal = dashboardMetricView === "hl" ? (sa.totalHl || 0) : sa.totalSpent;
+                const percentage = maxSectorValue > 0 ? (sectorVal / maxSectorValue) * 100 : 0;
                 
                 return (
                   <button
@@ -1572,7 +1707,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                         )}
                       </div>
                       <span className="font-bold text-sm font-mono text-blue-400 shrink-0">
-                        {formatCurrency(sa.totalSpent)}
+                        {dashboardMetricView === "hl" 
+                          ? `${(sa.totalHl || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                          : formatCurrency(sa.totalSpent)}
                       </span>
                     </div>
 
@@ -1636,15 +1773,21 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
               {/* Sector stats row */}
               <div className="grid grid-cols-3 gap-3 bg-slate-950 p-4 rounded-xl border border-slate-850">
                 <div className="text-center">
-                  <p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider font-mono">Gasto Geral</p>
+                  <p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider font-mono">
+                    {dashboardMetricView === "hl" ? "Volume Total (HL)" : "Gasto Geral"}
+                  </p>
                   <p className="text-base font-bold text-blue-400 font-mono mt-0.5">
-                    {formatCurrency(activeAnalytics.totalSpent)}
+                    {dashboardMetricView === "hl"
+                      ? `${(activeAnalytics.totalHl || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                      : formatCurrency(activeAnalytics.totalSpent)}
                   </p>
                 </div>
                 <div className="text-center border-x border-slate-800/85">
                   <p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider font-mono">Média por Item</p>
                   <p className="text-base font-bold text-white font-mono mt-0.5">
-                    {formatCurrency(activeAnalytics.averageSpent)}
+                    {dashboardMetricView === "hl"
+                      ? `${(activeAnalytics.averageHl || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                      : formatCurrency(activeAnalytics.averageSpent)}
                   </p>
                 </div>
                 <div className="text-center">
@@ -1738,11 +1881,13 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                                     <span className="truncate">{p.descricao}</span>
                                   </p>
                                   <p className="text-slate-400 text-[10px] font-mono mt-0.5 pl-5">
-                                    Cód: <span className="text-slate-300">{p.code}</span> | Qtd: <span className="text-slate-250 font-bold">{p.quantity}</span> | {p.percentOfClient.toFixed(1)}% do client
+                                    Cód: <span className="text-slate-300">{p.code}</span> | Qtd: <span className="text-slate-250 font-bold">{p.quantity}</span> | {p.percentOfClient.toFixed(1)}% do cliente
                                   </p>
                                 </div>
                                 <span className="font-bold text-blue-400 font-mono shrink-0 text-right">
-                                  {formatCurrency(p.totalSpent)}
+                                  {dashboardMetricView === "hl"
+                                    ? `${(p.hl || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                                    : formatCurrency(p.totalSpent)}
                                 </span>
                               </button>
                             );
@@ -1755,7 +1900,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                     <>
                       <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest font-mono pb-2 border-b border-slate-800/60 flex justify-between items-center">
                         <span>📦 Ranking de Itens do Setor</span>
-                        <span className="text-[9px] font-mono text-slate-500 lowercase">Organizados por impacto de custo</span>
+                        <span className="text-[9px] font-mono text-slate-500 lowercase">
+                          Organizados por {dashboardMetricView === "hl" ? "volume (HL)" : "impacto de custo"}
+                        </span>
                       </h4>
                       <div className="space-y-2 overflow-y-auto max-h-[280px] bg-slate-950/20 p-1.5 rounded-xl border border-slate-850/40">
                         {productsRanking.length === 0 ? (
@@ -1788,7 +1935,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                                   </p>
                                 </div>
                                 <span className="font-bold text-blue-400 font-mono shrink-0 pt-0.5">
-                                  {formatCurrency(p.totalSpent)}
+                                  {dashboardMetricView === "hl"
+                                    ? `${(p.hl || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                                    : formatCurrency(p.totalSpent)}
                                 </span>
                               </button>
                             );
@@ -1838,7 +1987,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                                   </p>
                                 </div>
                                 <span className="font-bold text-blue-400 font-mono shrink-0 text-right">
-                                  {formatCurrency(c.totalSpent)}
+                                  {dashboardMetricView === "hl"
+                                    ? `${(c.hl || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                                    : formatCurrency(c.totalSpent)}
                                 </span>
                               </button>
                             );
@@ -1851,7 +2002,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                     <>
                       <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest font-mono pb-2 border-b border-slate-800/60 flex justify-between items-center">
                         <span>👤 Clientes de Maior Volume</span>
-                        <span className="text-[9px] font-mono text-slate-500 lowercase">Organizados por impacto de custo</span>
+                        <span className="text-[9px] font-mono text-slate-500 lowercase">
+                          Organizados por {dashboardMetricView === "hl" ? "volume (HL)" : "impacto de custo"}
+                        </span>
                       </h4>
                       <div className="space-y-2 overflow-y-auto max-h-[280px] bg-slate-950/20 p-1.5 rounded-xl border border-slate-850/40">
                         {clientsRanking.length === 0 ? (
@@ -1884,7 +2037,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                                   </p>
                                 </div>
                                 <span className="font-bold text-blue-400 font-mono shrink-0 pt-0.5">
-                                  {formatCurrency(c.totalSpent)}
+                                  {dashboardMetricView === "hl"
+                                    ? `${(c.hl || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                                    : formatCurrency(c.totalSpent)}
                                 </span>
                               </button>
                             );

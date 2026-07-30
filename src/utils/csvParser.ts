@@ -1,5 +1,6 @@
 import { ExchangeRecord, SectorAnalytics } from "../types";
 import { PRODUCT_DATABASE } from "../data/products";
+import { getHectoFactor, calculateHL, getRecordHL } from "./hectoFactors";
 
 // Helper to normalize strings for comparison (removes accents, converts to lowercase)
 function normalizeHeaderName(header: string): string {
@@ -152,9 +153,9 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
       sector = "Sem Setor";
     }
 
-    const matchedProduct = PRODUCT_DATABASE.find(p => p.codigo === produtoVal.trim());
-    const fatHecto = matchedProduct ? matchedProduct.fatorHecto : 0;
-    const computedHl = matchedProduct ? Number((qty * fatHecto).toFixed(4)) : 0;
+    const umVal = getValSafe(parts, indices.um, "Un").trim();
+    const fatHecto = getHectoFactor(produtoVal);
+    const computedHl = calculateHL(produtoVal, qty, umVal);
 
     const record: ExchangeRecord = {
       id: uniqueId,
@@ -222,34 +223,40 @@ export function parseSectorAnalytics(records: ExchangeRecord[]): SectorAnalytics
 
   Object.entries(sectorsMap).forEach(([sector, recs]) => {
     let totalSpent = 0;
-    const prodSpent: { [prod: string]: { description: string; quantity: number; spent: number } } = {};
-    const clientSpent: { [client: string]: { name: string; requests: number; spent: number } } = {};
-    const justificationCounts: { [just: string]: { count: number; totalSpent: number } } = {};
+    let totalHl = 0;
+    const prodSpent: { [prod: string]: { description: string; quantity: number; spent: number; hl: number } } = {};
+    const clientSpent: { [client: string]: { name: string; requests: number; spent: number; hl: number } } = {};
+    const justificationCounts: { [just: string]: { count: number; totalSpent: number; hl: number } } = {};
 
     recs.forEach(r => {
-      totalSpent += r.valorTotal;
+      const recHl = getRecordHL(r);
+      totalSpent += r.valorTotal || 0;
+      totalHl += recHl;
 
       // Top products spending
       if (!prodSpent[r.produto]) {
-        prodSpent[r.produto] = { description: r.descricaoProduto, quantity: 0, spent: 0 };
+        prodSpent[r.produto] = { description: r.descricaoProduto, quantity: 0, spent: 0, hl: 0 };
       }
       prodSpent[r.produto].quantity += r.quantidade;
-      prodSpent[r.produto].spent += r.valorTotal;
+      prodSpent[r.produto].spent += r.valorTotal || 0;
+      prodSpent[r.produto].hl += recHl;
 
       // Top requesting clients
       if (!clientSpent[r.codigoCliente]) {
-        clientSpent[r.codigoCliente] = { name: r.nomeCliente, requests: 0, spent: 0 };
+        clientSpent[r.codigoCliente] = { name: r.nomeCliente, requests: 0, spent: 0, hl: 0 };
       }
       clientSpent[r.codigoCliente].requests += 1;
-      clientSpent[r.codigoCliente].spent += r.valorTotal;
+      clientSpent[r.codigoCliente].spent += r.valorTotal || 0;
+      clientSpent[r.codigoCliente].hl += recHl;
 
       // Justifications
       const just = r.justificativa || "Não Especificado";
       if (!justificationCounts[just]) {
-        justificationCounts[just] = { count: 0, totalSpent: 0 };
+        justificationCounts[just] = { count: 0, totalSpent: 0, hl: 0 };
       }
       justificationCounts[just].count += 1;
-      justificationCounts[just].totalSpent += r.valorTotal;
+      justificationCounts[just].totalSpent += r.valorTotal || 0;
+      justificationCounts[just].hl += recHl;
     });
 
     // Top products array sorted
@@ -257,7 +264,8 @@ export function parseSectorAnalytics(records: ExchangeRecord[]): SectorAnalytics
       produto: prod,
       descricao: d.description,
       quantity: d.quantity,
-      totalSpent: Number(d.spent.toFixed(2))
+      totalSpent: Number(d.spent.toFixed(2)),
+      hl: Number(d.hl.toFixed(4))
     })).sort((a, b) => b.totalSpent - a.totalSpent);
 
     // Top clients array sorted
@@ -265,14 +273,17 @@ export function parseSectorAnalytics(records: ExchangeRecord[]): SectorAnalytics
       codigoCliente: cli,
       nome: d.name,
       requestCount: d.requests,
-      totalSpent: Number(d.spent.toFixed(2))
+      totalSpent: Number(d.spent.toFixed(2)),
+      hl: Number(d.hl.toFixed(4))
     })).sort((a, b) => b.totalSpent - a.totalSpent);
 
     analytics.push({
       setor: sector,
       totalSpent: Number(totalSpent.toFixed(2)),
+      totalHl: Number(totalHl.toFixed(4)),
       requestCount: recs.length,
       averageSpent: recs.length > 0 ? Number((totalSpent / recs.length).toFixed(2)) : 0,
+      averageHl: recs.length > 0 ? Number((totalHl / recs.length).toFixed(4)) : 0,
       topProducts: topProducts.slice(0, 10), // Top 10 items
       topClients: topClients.slice(0, 10), // Top 10 clients
       justificationCounts

@@ -293,9 +293,75 @@ export function getHectoFactor(productCode: string): number {
 }
 
 /**
- * Calculates Hectoliters (HL) for a physical quantity of a product
+ * Calculates Hectoliters (HL) for a physical quantity of a product based on unit of measure (UM)
+ * - CX / SKU Fechado: quantity * fatorHecto
+ * - UN / Unidade: quantity * (fatorHecto / fator)
+ * - DZ / Dúzia: (quantity * 12) * (fatorHecto / fator)
  */
-export function calculateHL(productCode: string, quantity: number): number {
-  const factor = getHectoFactor(productCode);
-  return Number((quantity * factor).toFixed(5));
+export function calculateHL(productCode: string, quantity: number, um?: string): number {
+  const codeStr = String(productCode).trim();
+  const cleanCode = codeStr.replace(/^0+/, "");
+  
+  const product = PRODUCT_DATABASE.find(p => p.codigo === codeStr || p.codigo === cleanCode);
+  
+  const fatorHecto = product ? product.fatorHecto : getHectoFactor(codeStr);
+  const fatorUnits = (product && product.fator && product.fator > 0) ? product.fator : 12;
+
+  const umClean = (um || "").trim().toUpperCase();
+
+  let hl = 0;
+  if (umClean === "UN" || umClean === "UND" || umClean === "UNIDADE" || umClean === "UNID" || umClean.startsWith("UN")) {
+    // Quantity in individual units (UN)
+    hl = quantity * (fatorHecto / fatorUnits);
+  } else if (umClean === "DZ" || umClean === "DUZIA" || umClean.startsWith("DZ")) {
+    // Quantity in dozen (DZ = 12 UN)
+    hl = (quantity * 12) * (fatorHecto / fatorUnits);
+  } else {
+    // Default or CX / SKU fechado
+    hl = quantity * fatorHecto;
+  }
+
+  return Number(hl.toFixed(5));
 }
+
+/**
+ * Resolves Hectoliters (HL) for a record, dynamically ensuring unit of measure (UND vs CX) is properly applied.
+ */
+export function getRecordHL(r: { produto?: string; quantidade?: number; um?: string; unidadeMedida?: string; hectolitros?: number }): number {
+  const code = r.produto || "";
+  const qty = r.quantidade || 0;
+  const um = (r.unidadeMedida || r.um || "cx").trim().toLowerCase();
+  const isUnd = um === "und" || um === "un" || um === "unidade" || um === "unid" || um.startsWith("un");
+
+  if (typeof r.hectolitros === "number" && !isNaN(r.hectolitros) && r.hectolitros > 0) {
+    const rawFatorHecto = getHectoFactor(code);
+    // If unit is UND, verify stored hectolitros isn't accidentally the full box factor (inflated)
+    if (isUnd && rawFatorHecto > 0.005 && Math.abs(r.hectolitros - (qty * rawFatorHecto)) < 0.001) {
+      return calculateHL(code, qty, um);
+    }
+    return r.hectolitros;
+  }
+  return calculateHL(code, qty, um);
+}
+
+/**
+ * Checks if a record represents an approved request.
+ */
+export function isRecordApproved(r: { status?: string; statusPromax?: string }): boolean {
+  const s = (r.status || "").toLowerCase().trim();
+  const sp = (r.statusPromax || "").toLowerCase().trim();
+
+  if (s.includes("reprov") || s.includes("cancela") || s.includes("pendent") || s.includes("recus") || s.includes("corrig")) {
+    return false;
+  }
+  if (sp === "reprovado" || sp === "corrigir" || sp === "pendente") {
+    return false;
+  }
+
+  if (s.includes("aprov") || s.includes("cadastrad") || s.includes("faturad") || s.includes("concluid") || s === "atendido" || sp === "cadastrado" || sp === "concluido") {
+    return true;
+  }
+
+  return s !== "" && !s.includes("pend") && !s.includes("reprov") && !s.includes("cancela");
+}
+

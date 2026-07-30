@@ -51,11 +51,13 @@ export interface ExchangeRecord {
 export interface SectorAnalytics {
   setor: string;
   totalSpent: number;
+  totalHl: number;
   requestCount: number;
   averageSpent: number;
-  topProducts: { produto: string; descricao: string; quantity: number; totalSpent: number }[];
-  topClients: { codigoCliente: string; nome: string; requestCount: number; totalSpent: number }[];
-  justificationCounts: { [justification: string]: { count: number; totalSpent: number } };
+  averageHl: number;
+  topProducts: { produto: string; descricao: string; quantity: number; totalSpent: number; hl: number }[];
+  topClients: { codigoCliente: string; nome: string; requestCount: number; totalSpent: number; hl: number }[];
+  justificationCounts: { [justification: string]: { count: number; totalSpent: number; hl: number } };
 }
 
 export interface ImportBatch {
@@ -444,6 +446,54 @@ export interface PdvInfo {
   cep?: string;
 }
 
+export const RGB_PRODUCT_CODES = new Set([
+  "1743", "2538", "13205", "35331", "2548", "2546", "982", "1388",
+  "1695", "20530", "29253", "13201", "23186", "988", "20217", "27522",
+  "3733", "20329", "10537", "20533", "16503", "20549", "2006", "10530",
+  "13203", "33857"
+]);
+
+export function isRGBProduct(itemCode?: string | number | null, description?: string | null): boolean {
+  if (itemCode) {
+    const cleanCode = String(itemCode).trim().replace(/^0+/, "");
+    if (RGB_PRODUCT_CODES.has(cleanCode)) return true;
+  }
+  if (description) {
+    const descUpper = String(description).toUpperCase();
+    if (
+      descUpper.includes("ONE WAY") || 
+      descUpper.includes("LONG NECK") || 
+      descUpper.includes("LATA") || 
+      descUpper.includes("SLEEK") || 
+      descUpper.includes(" PET ") || 
+      descUpper.includes("PET ") ||
+      descUpper.includes("473ML") ||
+      descUpper.includes("350ML") ||
+      descUpper.includes("269ML") ||
+      descUpper.includes("250ML")
+    ) {
+      return false;
+    }
+    if (
+      descUpper.includes("RETORN") || 
+      descUpper.includes("RGB") || 
+      descUpper.includes("VASILHAME") ||
+      descUpper.includes("GARRAFEIRA") ||
+      descUpper.includes("600ML") || 
+      descUpper.includes("1 L") || 
+      descUpper.includes("1L") || 
+      descUpper.includes("300ML") || 
+      descUpper.includes("LITRAO") || 
+      descUpper.includes("LITRÃO") || 
+      descUpper.includes("GFA VD") || 
+      descUpper.includes("CX C/23")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function getDisplayCadastroUser(
   req: PendingRequest,
   repsList: Record<string, { nome: string; gv?: string }> = {},
@@ -467,6 +517,15 @@ export function getDisplayCadastroUser(
     return rawUser;
   }
   
+  // Try action/settlement user fields if present
+  const reqActionUser = (req as any).usuarioAcao;
+  if (reqActionUser && String(reqActionUser).trim() && String(reqActionUser).trim() !== "Controle Promax") {
+    return String(reqActionUser).trim();
+  }
+  if (req.faltaBaixaUser && req.faltaBaixaUser.trim()) {
+    return req.faltaBaixaUser.trim();
+  }
+
   // Retroactive resolution for generic or missing cadastroUser
   if (repInfo?.nome) {
     return `RN ${repInfo.nome} (${setorKey})`;
@@ -475,7 +534,9 @@ export function getDisplayCadastroUser(
     return `Motorista ${rotInfo.nome} (Rota ${setorKey})`;
   }
   
-  const loggedManager = typeof sessionStorage !== "undefined" ? sessionStorage.getItem("sstr_current_manager_name") : null;
+  const loggedManager = typeof sessionStorage !== "undefined" 
+    ? (sessionStorage.getItem("sstr_current_manager_name") || localStorage.getItem("sstr_current_manager_name")) 
+    : null;
   if (loggedManager && loggedManager.trim() && loggedManager.trim().toLowerCase() !== "gestor") {
     return loggedManager.trim();
   }

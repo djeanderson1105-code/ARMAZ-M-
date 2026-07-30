@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, getDisplayCadastroUser } from "../types";
+import AvariasPackagingChart from "./AvariasPackagingChart";
 import { getApiUrl } from "../utils/apiUrl";
 import { safeSetItem } from "../utils/apiSync";
 import { useSstrData } from "../context/SstrDataContext";
-import { PRODUCT_DATABASE } from "../data/products";
+import { PRODUCT_DATABASE, calculateItemValue, calculateItemHL } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
 import { getHectoFactor, calculateHL } from "../utils/hectoFactors";
 import { exportRegistrationPdf, generatePdfFilename, NETWORK_REGISTROS_PATH } from "../utils/pdfGenerator";
@@ -212,68 +213,45 @@ const isSwapRequest = (req: PendingRequest): boolean => {
 // Pricing helper to determine standard request pricing based on platform registered data and promax database
 const getRequestValue = (req: PendingRequest, promaxRecords: ExchangeRecord[] = []): number => {
   if (req.items && req.items.length > 0) {
-    const total = req.items.reduce((sum, current) => {
-      const itemCode = current.item || current.itemCode || "";
-      const cleanCode = itemCode.replace(/^0+/, "");
-      const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === cleanCode);
-      const isUnd = (current.unidadeMedida || "").toLowerCase() === "und";
-      const embalagem = dbProduct?.fator || current.fatorEmbalagem || 12;
-
-      // 1. Check Product Database price (if > 0)
-      if (dbProduct && dbProduct.valor !== undefined && dbProduct.valor > 0) {
-        const boxPrice = dbProduct.valor;
-        const actualUnitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
-        return sum + (actualUnitPrice * current.quantidade);
-      }
-
-      // 2. Check Promax records price
-      const promaxMatch = promaxRecords.find(r => r.produto === itemCode || r.produto === cleanCode);
-      if (promaxMatch && promaxMatch.valorUnitario && promaxMatch.valorUnitario > 0) {
-        const boxPrice = promaxMatch.valorUnitario;
-        const actualUnitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
-        return sum + (actualUnitPrice * current.quantidade);
-      }
-
-      // 3. Fallback to custom/draft stored prices (ignoring legacy hardcoded 98.50 if dbProduct/promax exist)
-      if (current.customUnitPrice !== undefined && current.customUnitPrice > 0 && current.customUnitPrice !== 98.50) {
-        return sum + (current.customUnitPrice * current.quantidade);
-      }
-      if (current.precoCalculated !== undefined && current.precoCalculated > 0 && current.precoCalculated !== 98.50) {
-        return sum + current.precoCalculated;
-      }
-      if (current.precoSugerido !== undefined && current.precoSugerido > 0 && current.precoSugerido !== 98.50) {
-        const unitVal = isUnd ? (current.precoSugerido / embalagem) : current.precoSugerido;
-        return sum + (unitVal * current.quantidade);
-      }
-
-      // 4. Last resort stored price
-      if (current.precoCalculated !== undefined && current.precoCalculated > 0) {
-        return sum + current.precoCalculated;
-      }
-
-      return sum;
-    }, 0);
-
+    const total = req.items.reduce((sum, current) => sum + calculateItemValue(current), 0);
     if (total > 0) return total;
   }
 
   if (req.item) {
-    const itemCode = req.item;
-    const cleanCode = itemCode.replace(/^0+/, "");
-    const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === cleanCode);
-    const qty = req.quantidade || 1;
-
-    if (dbProduct && dbProduct.valor !== undefined && dbProduct.valor > 0) {
-      return dbProduct.valor * qty;
-    }
-
-    const promaxMatch = promaxRecords.find(r => r.produto === itemCode || r.produto === cleanCode);
-    if (promaxMatch && promaxMatch.valorUnitario && promaxMatch.valorUnitario > 0) {
-      return promaxMatch.valorUnitario * qty;
-    }
+    const val = calculateItemValue({
+      item: req.item,
+      quantidade: req.quantidade,
+      unidadeMedida: (req as any).unidadeMedida || (req as any).um,
+      customUnitPrice: (req as any).customUnitPrice || (req as any).precoSugerido
+    });
+    if (val > 0) return val;
   }
 
   if (req.valorTotal !== undefined && req.valorTotal > 0 && req.valorTotal !== 98.50) return req.valorTotal;
+
+  return 0;
+};
+
+// Calculate accurate HL volume for any request accounting for single vs multi-items and unit of measure
+export const getRequestHL = (req: PendingRequest): number => {
+  if (req.items && req.items.length > 0) {
+    const total = req.items.reduce((sum, item) => sum + calculateItemHL(item), 0);
+    if (total > 0) return Number(total.toFixed(4));
+  }
+
+  if (req.item) {
+    const hl = calculateItemHL({
+      item: req.item,
+      quantidade: req.quantidade,
+      unidadeMedida: (req as any).unidadeMedida || (req as any).um,
+      fatorHecto: (req as any).fatorHecto
+    });
+    if (hl > 0) return Number(hl.toFixed(4));
+  }
+
+  if (req.hectolitros !== undefined && req.hectolitros > 0) {
+    return req.hectolitros;
+  }
 
   return 0;
 };
@@ -445,7 +423,8 @@ export default function PendingRequestsTab() {
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [sectorFilter, setSectorFilter] = useState<string>("todos");
-  const [processTypeFilter, setProcessTypeFilter] = useState<"todos" | "reposicao" | "troca" | "troca_exceto_sku_fechado">("todos");
+  const [processTypeFilter, setProcessTypeFilter] = useState<string>("todos");
+  const [dateSortOrder, setDateSortOrder] = useState<"desc" | "asc">("desc");
   const [zoomPhoto, setZoomPhoto] = useState<string | null>(null);
 
   // Espelho de Reposições state variables
@@ -505,8 +484,8 @@ export default function PendingRequestsTab() {
       contingenciaBaixada: false,
       contingenciaBaixadaDate: undefined,
       contingenciaBaixadaUser: undefined,
-      cadastroUser: undefined,
-      cadastroDate: undefined,
+      cadastroUser: returnToPendingModalReq.cadastroUser || (typeof sessionStorage !== "undefined" ? sessionStorage.getItem("sstr_current_manager_name") : null) || undefined,
+      cadastroDate: returnToPendingModalReq.cadastroDate,
       rejeitadoObs: undefined,
       reprovadoUser: undefined,
       reprovadoDate: undefined,
@@ -533,7 +512,7 @@ export default function PendingRequestsTab() {
   const [lackFilterErrorType, setLackFilterErrorType] = useState<"todos" | "carregamento" | "entrega" | "indefinido">("todos");
   
   // Status filter for Histórico de Baixas (Requirement 4)
-  const [historicoBaixasStatusFilter, setHistoricoBaixasStatusFilter] = useState<"todos" | "aprovados" | "reprovados" | "baixados" | "pendentes">("todos");
+  const [historicoBaixasStatusFilter, setHistoricoBaixasStatusFilter] = useState<"todos" | "aprovados" | "reprovados" | "baixados" | "pendentes" | "duplicatas">("todos");
   const [onlyContingenciaFilter, setOnlyContingenciaFilter] = useState(false);
 
   // States for physical settlement ("Dar Baixa" with signed receipt attachment)
@@ -766,8 +745,8 @@ export default function PendingRequestsTab() {
       contingenciaBaixada: false,
       contingenciaBaixadaDate: undefined,
       contingenciaBaixadaUser: undefined,
-      cadastroUser: undefined,
-      cadastroDate: undefined,
+      cadastroUser: targetReq.cadastroUser || (typeof sessionStorage !== "undefined" ? sessionStorage.getItem("sstr_current_manager_name") : null) || undefined,
+      cadastroDate: targetReq.cadastroDate,
       rejeitadoObs: undefined,
       reprovadoUser: undefined,
       reprovadoDate: undefined,
@@ -893,6 +872,97 @@ export default function PendingRequestsTab() {
     alert("Alterações do recibo/vale salvas com sucesso no Espelho do Dia e no Histórico!");
   };
 
+  // Handler for creating an ad-hoc voucher (Vale Avulso)
+  const handleCreateAvulsoVale = async (data: {
+    mapa: string;
+    itemCode: string;
+    itemDesc?: string;
+    data: string;
+    quantidade: number;
+    unidadeMedida: "cx" | "und";
+    motorista: string;
+    ajudantes: string;
+    observacao: string;
+  }) => {
+    const code = data.itemCode.trim();
+    const cleanCode = code.replace(/^0+/, "");
+    const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === code || p.codigo === cleanCode || p.descricao.toLowerCase().includes(code.toLowerCase()));
+
+    const factor = dbProduct?.fatorHecto || getHectoFactor(code);
+    const embalagem = dbProduct?.fator || 12;
+    const isUnd = data.unidadeMedida === "und";
+    const hl = isUnd ? Number(((data.quantidade / embalagem) * factor).toFixed(4)) : Number((data.quantidade * factor).toFixed(4));
+
+    const boxPrice = dbProduct?.valor || 0;
+    const unitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
+    const totalPrice = Number((unitPrice * data.quantidade).toFixed(2));
+
+    const reqId = `req_avulso_${Date.now()}`;
+    const valeId = `vale_avulso_${Date.now()}`;
+    const loggedUser = sessionStorage.getItem("sstr_current_manager_name") || "Gestor";
+
+    const newRequest: PendingRequest = {
+      id: reqId,
+      timestamp: Date.now(),
+      data: data.data || new Date().toLocaleDateString("pt-BR"),
+      setor: "AVULSO",
+      mapa: data.mapa.trim() || "MAPA-AVULSO",
+      nb: "000000",
+      nf: `VALE-${data.mapa.trim() || Date.now().toString().slice(-4)}`,
+      fotoUrl: "",
+      observacao: `[VALE AVULSO] Motorista: ${data.motorista} | Ajudante: ${data.ajudantes}${data.observacao ? ` | Obs: ${data.observacao}` : ""}`,
+      statusPromax: "cadastrado",
+      notified: true,
+      cadastroUser: loggedUser,
+      cadastroDate: new Date().toLocaleDateString("pt-BR") + " " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+      quantidade: data.quantidade,
+      hectolitros: hl,
+      valorTotal: totalPrice,
+      unidadeMedida: data.unidadeMedida,
+      items: [
+        {
+          id: `item_avulso_1`,
+          item: dbProduct?.codigo || code,
+          itemCode: dbProduct?.codigo || code,
+          descricao: dbProduct?.descricao || data.itemDesc || `SKU ${code}`,
+          quantidade: data.quantidade,
+          unidadeMedida: data.unidadeMedida,
+          fatorEmbalagem: embalagem,
+          fatorHecto: factor,
+          hectolitros: hl,
+          customUnitPrice: unitPrice,
+          precoCalculated: totalPrice
+        }
+      ]
+    };
+
+    const newVale: ValeEntry = {
+      id: valeId,
+      requestId: reqId,
+      nf: newRequest.nf,
+      rota: "AVULSO",
+      dataEmissao: data.data || new Date().toLocaleDateString("pt-BR"),
+      motorista: data.motorista,
+      motoristaCpf: "",
+      ajudantes: data.ajudantes,
+      ajudante1: data.ajudantes,
+      ajudante1Cpf: "",
+      ajudante2: "",
+      ajudante2Cpf: "",
+      hectolitros: hl,
+      valorTotal: totalPrice,
+      itemsCount: 1,
+      status: "emitido",
+      originalRequest: newRequest
+    };
+
+    await savePendingRequest(newRequest);
+    await saveValeEntry(newVale);
+
+    window.dispatchEvent(new Event("storage"));
+    setSelectedPrintDoc({ type: "vale", request: newRequest });
+  };
+
   // Request creation states (modo supervisor / gestor)
   const [reqSetor, setReqSetor] = useState("");
   const [reqMotorista, setReqMotorista] = useState("");
@@ -910,7 +980,7 @@ export default function PendingRequestsTab() {
   // Single item entry states
   const [reqItem, setReqItem] = useState("");
   const [reqQuantidade, setReqQuantidade] = useState("");
-  const [reqUnidade, setReqUnidade] = useState<"sku" | "und">("sku");
+  const [reqUnidade, setReqUnidade] = useState<"sku" | "und">("und");
   const [showItemSuggestions, setShowItemSuggestions] = useState(false);
 
   // Inversion fields
@@ -973,10 +1043,27 @@ export default function PendingRequestsTab() {
       }
     }
 
+    let clientCity = "";
+    if (client && client.municipio) {
+      clientCity = client.uf ? `${client.municipio} - ${client.uf}` : client.municipio;
+    } else if (foundPromax && ((foundPromax as any).cidadeCliente || (foundPromax as any).cidade)) {
+      clientCity = (foundPromax as any).cidadeCliente || (foundPromax as any).cidade;
+    } else {
+      const foundReq = requests.find(r => {
+        const reqCd = (r.nb || "").trim();
+        return reqCd === cleanNb || parseInt(reqCd, 10) === parseInt(cleanNb, 10);
+      });
+      if (foundReq && ((foundReq as any).cidadeCliente || (foundReq as any).cidade)) {
+        clientCity = (foundReq as any).cidadeCliente || (foundReq as any).cidade;
+      }
+    }
+
     return {
       foundSector,
       isRegistered: !!client,
-      clientName: client ? client.nomeFantasia : null
+      clientName: client ? client.nomeFantasia : null,
+      clientCity: clientCity || null,
+      clientAddress: client ? `${client.endereco || ""}${client.bairro ? `, ${client.bairro}` : ""}` : null
     };
   }, [reqNb, promaxRecords, requests]);
 
@@ -1896,6 +1983,92 @@ export default function PendingRequestsTab() {
     return Array.from(list).sort();
   }, [requests]);
 
+  // Detection and analysis of duplicate request registrations across the platform
+  const duplicateAnalysis = useMemo(() => {
+    const groups: Record<string, PendingRequest[]> = {};
+
+    requests.forEach(r => {
+      const nb = (r.nb || "").toString().trim().toLowerCase();
+      const nf = (r.nf || "").toString().trim().toLowerCase();
+      const mapa = (r.mapa || "").toString().trim().toLowerCase();
+      
+      let itemSig = (r.item || "").toString().trim().toLowerCase();
+      if (!itemSig && r.items && r.items.length > 0) {
+        itemSig = r.items.map(i => `${i.item}_${i.quantidade}`).sort().join("|");
+      }
+
+      if (!nb || (!nf && !mapa)) return;
+
+      const key = `${nb}_${nf}_${mapa}_${itemSig}`;
+
+      if (!groups[key]) {
+        groups[key] = [];
+      }
+      groups[key].push(r);
+    });
+
+    const duplicateGroups = Object.entries(groups).filter(([_, items]) => items.length > 1);
+
+    const duplicateMap = new Map<string, { groupKey: string; groupIndex: number; totalInGroup: number; duplicateCount: number; isExcess: boolean }>();
+    let totalDuplicateCount = 0;
+    let totalExcessCount = 0;
+
+    duplicateGroups.forEach(([key, items], gIdx) => {
+      totalDuplicateCount += items.length;
+      totalExcessCount += (items.length - 1);
+
+      items.forEach((req, idx) => {
+        duplicateMap.set(req.id, {
+          groupKey: key,
+          groupIndex: gIdx + 1,
+          totalInGroup: items.length,
+          duplicateCount: items.length,
+          isExcess: idx > 0
+        });
+      });
+    });
+
+    return {
+      duplicateGroups,
+      duplicateMap,
+      totalDuplicateCount,
+      totalExcessCount
+    };
+  }, [requests]);
+
+  const handlePurgeExcessDuplicates = useCallback(() => {
+    if (duplicateAnalysis.totalExcessCount === 0) {
+      alert("Nenhuma duplicata excedente identificada para exclusão.");
+      return;
+    }
+
+    const confirmPurge = window.confirm(
+      `🚨 ATENÇÃO: Deseja excluir permanentemente as ${duplicateAnalysis.totalExcessCount} cópias duplicadas no histórico?\n\nEsta operação manterá 1 registro original de cada solicitação e excluirá apenas as cópias repetidas.`
+    );
+
+    if (!confirmPurge) return;
+
+    let purgedCount = 0;
+    duplicateAnalysis.duplicateGroups.forEach(([_, items]) => {
+      for (let i = 1; i < items.length; i++) {
+        deletePendingRequest(items[i].id);
+        purgedCount++;
+      }
+    });
+
+    alert(`✅ Limpeza concluída! ${purgedCount} solicitações duplicadas foram excluídas com sucesso.`);
+  }, [duplicateAnalysis, deletePendingRequest]);
+
+  const handlePermanentDelete = useCallback((requestId: string) => {
+    const targetReq = requests.find(r => r.id === requestId);
+    const clientName = targetReq ? targetReq.nb : "";
+    const nf = targetReq ? targetReq.nf : "";
+    
+    if (window.confirm(`Tem certeza que deseja excluir permanentemente esta solicitação (NF ${nf || "N/A"} - NB ${clientName}) do histórico? Esta ação removerá o registro definitivamente.`)) {
+      deletePendingRequest(requestId);
+    }
+  }, [requests, deletePendingRequest]);
+
   // Filter requests according to tabs
   const filteredRequests = useMemo(() => {
     return requests.filter(req => {
@@ -1952,6 +2125,10 @@ export default function PendingRequestsTab() {
         if (!isTroca) return false;
       } else if (processTypeFilter === "troca_exceto_sku_fechado") {
         if (isFaltaSkuCompleto) return false;
+      } else if (processTypeFilter === "alto_volume") {
+        if (getRequestHL(req) < 1.0) return false;
+      } else if (processTypeFilter === "alto_valor") {
+        if (getRequestValue(req, promaxRecords) < 500) return false;
       }
 
       // 3.6 Contingency Alert Filter (Requirement 4)
@@ -1977,6 +2154,8 @@ export default function PendingRequestsTab() {
           matchesStatus = isFaltaBaixada || hasReciboAssinado;
         } else if (historicoBaixasStatusFilter === "pendentes") {
           matchesStatus = isPendente;
+        } else if (historicoBaixasStatusFilter === "duplicatas") {
+          matchesStatus = duplicateAnalysis.duplicateMap.has(req.id);
         } else {
           // "todos": Consolidate all occurrences regardless of origin flow
           matchesStatus = true;
@@ -2012,19 +2191,34 @@ export default function PendingRequestsTab() {
         return matchSearch && matchStatus && matchSector;
       }
     }).sort((a, b) => {
+      // Custom process sorting by Volume (HL) or Financial Value (R$)
+      if (processTypeFilter === "maior_hl") {
+        return getRequestHL(b) - getRequestHL(a);
+      }
+      if (processTypeFilter === "menor_hl") {
+        return getRequestHL(a) - getRequestHL(b);
+      }
+      if (processTypeFilter === "maior_reais") {
+        return getRequestValue(b, promaxRecords) - getRequestValue(a, promaxRecords);
+      }
+      if (processTypeFilter === "menor_reais") {
+        return getRequestValue(a, promaxRecords) - getRequestValue(b, promaxRecords);
+      }
+
+      // Default sorting: Subtle Date sort order
+      const dateA = getReqDate(a)?.getTime() || a.timestamp || 0;
+      const dateB = getReqDate(b)?.getTime() || b.timestamp || 0;
+      const dateDiff = dateSortOrder === "desc" ? (dateB - dateA) : (dateA - dateB);
+      if (dateDiff !== 0) return dateDiff;
+
       const db = getPdvDatabase();
       const pdvA = getClientDetails(a.nb, db, promaxRecords);
       const pdvB = getClientDetails(b.nb, db, promaxRecords);
       const cityA = (a as any).municipioRecibo || pdvA.municipio || "";
       const cityB = (b as any).municipioRecibo || pdvB.municipio || "";
-      const cityCompare = cityA.localeCompare(cityB, "pt-BR", { sensitivity: "base" });
-      if (cityCompare !== 0) return cityCompare;
-
-      const dateA = getReqDate(a)?.getTime() || a.timestamp || 0;
-      const dateB = getReqDate(b)?.getTime() || b.timestamp || 0;
-      return dateB - dateA;
+      return cityA.localeCompare(cityB, "pt-BR", { sensitivity: "base" });
     });
-  }, [requests, searchTerm, activeTab, sectorFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType, processTypeFilter, historicoBaixasStatusFilter, onlyContingenciaFilter, promaxRecords]);
+  }, [requests, searchTerm, activeTab, sectorFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType, processTypeFilter, dateSortOrder, historicoBaixasStatusFilter, onlyContingenciaFilter, promaxRecords, duplicateAnalysis]);
 
   // Process type summary breakdown for dashboard cards (Reposição vs. Troca vs. Contingências)
   const processSummary = useMemo(() => {
@@ -2078,8 +2272,9 @@ export default function PendingRequestsTab() {
 
   // Trigger handlers to open custom interactive modals
   const triggerRegister = (id: string) => {
+    const loggedUser = sessionStorage.getItem("sstr_current_manager_name") || "Gestor";
     setModalAction({ type: "register", requestId: id });
-    setModalInput("Responsável pelo Controle");
+    setModalInput(loggedUser);
     setModalError("");
   };
 
@@ -2105,25 +2300,26 @@ export default function PendingRequestsTab() {
     if (!modalAction) return;
     const { type, requestId } = modalAction;
 
-    if (type === "reject" || type === "corrigir") {
-      if (!modalInput.trim()) {
-        const errMsg = type === "reject" ? "O motivo da reprovação é obrigatório!" : "Descreva o que preencher ou corrigir (Obrigatório)!";
-        setModalError(errMsg);
-        return;
-      }
-      const targetReq = requests.find(r => r.id === requestId);
-      if (targetReq) {
-        savePendingRequest({
-          ...targetReq,
-          statusPromax: type === "reject" ? ("reprovado" as const) : ("corrigir" as const),
-          notified: false,
-          rejeitadoObs: modalInput.trim(),
-          reprovadoUser: "Responsável pelo Controle",
-          reprovadoDate: new Date().toLocaleDateString("pt-BR") + " " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
-        });
-      }
-    } else if (type === "register") {
-      const name = modalInput.trim() || "Responsável pelo Controle";
+      const loggedUser = sessionStorage.getItem("sstr_current_manager_name") || "Gestor";
+      if (type === "reject" || type === "corrigir") {
+        if (!modalInput.trim()) {
+          const errMsg = type === "reject" ? "O motivo da reprovação é obrigatório!" : "Descreva o que preencher ou corrigir (Obrigatório)!";
+          setModalError(errMsg);
+          return;
+        }
+        const targetReq = requests.find(r => r.id === requestId);
+        if (targetReq) {
+          savePendingRequest({
+            ...targetReq,
+            statusPromax: type === "reject" ? ("reprovado" as const) : ("corrigir" as const),
+            notified: false,
+            rejeitadoObs: modalInput.trim(),
+            reprovadoUser: loggedUser,
+            reprovadoDate: new Date().toLocaleDateString("pt-BR") + " " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+          });
+        }
+      } else if (type === "register") {
+        const name = modalInput.trim() || loggedUser;
       const targetReq = requests.find(r => r.id === requestId);
       if (targetReq) {
         const reqToExport = {
@@ -2168,8 +2364,8 @@ export default function PendingRequestsTab() {
           contingenciaBaixada: false,
           contingenciaBaixadaDate: undefined,
           contingenciaBaixadaUser: undefined,
-          cadastroUser: undefined,
-          cadastroDate: undefined,
+          cadastroUser: targetReq.cadastroUser || loggedUser || undefined,
+          cadastroDate: targetReq.cadastroDate,
           rejeitadoObs: undefined,
           reprovadoUser: undefined,
           reprovadoDate: undefined,
@@ -3001,6 +3197,48 @@ export default function PendingRequestsTab() {
         </div>
       )}
 
+      {/* CRITICAL OPERATIONAL ALERT BANNER FOR DUPLICATES IN HISTORICAL REGISTRATIONS */}
+      {duplicateAnalysis.totalDuplicateCount > 0 && (
+        <div className="bg-amber-955/90 border-2 border-amber-500/80 p-4 rounded-2xl shadow-xl shadow-amber-950/60 card-3d flex flex-col md:flex-row items-start md:items-center justify-between gap-4 animate-fadeIn no-print my-2">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-amber-600/30 border border-amber-400/50 rounded-xl text-amber-300 shrink-0 badge-3d">
+              <Copy className="w-6 h-6 animate-pulse text-amber-400" />
+            </div>
+            <div>
+              <h4 className="text-sm font-extrabold font-mono text-amber-300 uppercase tracking-wide flex items-center gap-2">
+                <span>⚠️ REGISTROS DUPLICADOS IDENTIFICADOS NO HISTÓRICO</span>
+                <span className="px-2.5 py-0.5 bg-amber-500 text-slate-950 text-xs font-black rounded-full font-mono shadow-sm">
+                  {duplicateAnalysis.totalDuplicateCount} registros ({duplicateAnalysis.totalExcessCount} cópias excedentes)
+                </span>
+              </h4>
+              <p className="text-xs text-slate-300 mt-1 font-sans leading-relaxed">
+                Foram identificados <strong>{duplicateAnalysis.duplicateGroups.length} grupos de solicitações idênticas</strong> (mesmo Código NB, Nota Fiscal e SKU/Mapa) cadastrados na plataforma.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              onClick={() => {
+                setActiveTab("historico_baixas");
+                setHistoricoBaixasStatusFilter("duplicatas");
+              }}
+              className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold font-mono rounded-xl border border-amber-400 shadow-md transition-all cursor-pointer btn-3d whitespace-nowrap flex items-center gap-1.5"
+            >
+              <ListFilter className="w-3.5 h-3.5" />
+              <span>Filtrar Duplicatas</span>
+            </button>
+            <button
+              onClick={handlePurgeExcessDuplicates}
+              className="px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold font-mono rounded-xl border border-rose-400 shadow-md transition-all cursor-pointer btn-3d whitespace-nowrap flex items-center gap-1.5"
+              title="Excluir automaticamente todas as cópias excedentes mantendo 1 registro original de cada grupo"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Excluir {duplicateAnalysis.totalExcessCount} Excedentes</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* SIX FILTER SUB-TABS (ALIGNED GRID) */}
       <div className="bg-slate-950 p-2 rounded-2xl border border-slate-850/80 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2 no-print">
         <button
@@ -3142,7 +3380,7 @@ export default function PendingRequestsTab() {
             </div>
 
             {/* Sector filter */}
-            <div className="md:col-span-2 space-y-1">
+            <div className="md:col-span-3 space-y-1">
               <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Setor / Rota RN:</span>
               <select
                 value={sectorFilter}
@@ -3167,19 +3405,17 @@ export default function PendingRequestsTab() {
               </select>
             </div>
 
-            {/* Process Type filter */}
-            <div className="md:col-span-2 space-y-1">
-              <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Tipo de Processo:</span>
-              <select
-                value={processTypeFilter}
-                onChange={(e) => setProcessTypeFilter(e.target.value as any)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 h-10 text-xs text-slate-350 font-semibold cursor-pointer focus:outline-none"
+            {/* Subtle Date Sort order selector */}
+            <div className="md:col-span-1 space-y-1">
+              <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Ordem Data:</span>
+              <button
+                type="button"
+                onClick={() => setDateSortOrder(prev => prev === "desc" ? "asc" : "desc")}
+                className="w-full h-10 px-2 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-[10px] font-mono font-bold text-slate-300 flex items-center justify-center gap-1 cursor-pointer transition-all"
+                title="Alternar ordenação sutil por data (Mais Recentes vs Mais Antigos)"
               >
-                <option value="todos">🔄 Todos os Cadastros</option>
-                <option value="reposicao">📦 Reposição (Falta Prod.)</option>
-                <option value="troca">🔁 Troca (Outros Motivos)</option>
-                <option value="troca_exceto_sku_fechado">⚠️ Exceto SKU Fechado</option>
-              </select>
+                <span>{dateSortOrder === "desc" ? "⬇️ Recente" : "⬆️ Antigo"}</span>
+              </button>
             </div>
 
             {/* Contingency Filter Toggle (Requirement 4) */}
@@ -3240,23 +3476,29 @@ export default function PendingRequestsTab() {
             </div>
 
             <div className="flex flex-wrap items-center gap-1.5 text-xs font-mono">
-              {(
-                [
-                  { id: "todos", label: "📋 Todas as Ocorrências" },
-                  { id: "aprovados", label: "✅ Aprovadas / Promax" },
-                  { id: "reprovados", label: "❌ Reprovadas" },
-                  { id: "baixados", label: "🟢 Baixadas" },
-                  { id: "pendentes", label: "⏳ Pendentes" }
-                ] as const
-              ).map((st) => (
+              {[
+                { id: "todos", label: "📋 Todas as Ocorrências" },
+                { id: "aprovados", label: "✅ Aprovadas / Promax" },
+                { id: "reprovados", label: "❌ Reprovadas" },
+                { id: "baixados", label: "🟢 Baixadas" },
+                { id: "pendentes", label: "⏳ Pendentes" },
+                { 
+                  id: "duplicatas", 
+                  label: `⚠️ Duplicatas ${duplicateAnalysis.totalDuplicateCount > 0 ? `(${duplicateAnalysis.totalDuplicateCount})` : ""}` 
+                }
+              ].map((st) => (
                 <button
                   key={st.id}
                   type="button"
-                  onClick={() => setHistoricoBaixasStatusFilter(st.id)}
+                  onClick={() => setHistoricoBaixasStatusFilter(st.id as any)}
                   className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer ${
                     historicoBaixasStatusFilter === st.id
-                      ? "bg-emerald-600 text-white shadow-md shadow-emerald-950 border border-emerald-500"
-                      : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800 hover:bg-slate-850"
+                      ? st.id === "duplicatas"
+                        ? "bg-rose-600 text-white shadow-md shadow-rose-950 border border-rose-500 animate-pulse"
+                        : "bg-emerald-600 text-white shadow-md shadow-emerald-950 border border-emerald-500"
+                      : st.id === "duplicatas" && duplicateAnalysis.totalDuplicateCount > 0
+                        ? "bg-rose-955/80 text-rose-300 hover:text-white border border-rose-800/80 hover:bg-rose-900"
+                        : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800 hover:bg-slate-850"
                   }`}
                 >
                   {st.label}
@@ -3526,23 +3768,52 @@ export default function PendingRequestsTab() {
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-10 text-xs font-mono text-slate-200 placeholder:text-slate-700 focus:outline-none focus:border-emerald-500"
                   />
                   {sectorLoadingInfo && (
-                    <div className="space-y-1 mt-1 font-sans leading-tight text-[10.5px]">
+                    <div className="space-y-1.5 mt-1.5 font-sans leading-tight text-[11px]">
                       {sectorLoadingInfo.isRegistered ? (
-                        <span className="text-emerald-400 block font-semibold">
-                          ✅ PDV: {sectorLoadingInfo.clientName}
-                        </span>
+                        <div className="bg-emerald-950/60 border border-emerald-800/60 p-2.5 rounded-xl space-y-1">
+                          <span className="text-emerald-300 block font-bold text-xs flex items-center gap-1.5">
+                            <span>✅ PDV:</span>
+                            <span className="text-white font-extrabold">{sectorLoadingInfo.clientName}</span>
+                          </span>
+                          {sectorLoadingInfo.clientCity ? (
+                            <span className="text-emerald-300 font-bold block flex items-center gap-1.5 text-[11px] pt-0.5">
+                              <span className="text-amber-300 shrink-0">📍 CIDADE DO PDV:</span>
+                              <span className="text-white font-mono bg-emerald-900/90 px-2 py-0.5 rounded-md border border-emerald-600/50 text-[11px] uppercase tracking-wide">
+                                {sectorLoadingInfo.clientCity}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-amber-300/90 font-medium block text-[10.5px]">
+                              📍 Cidade: Não cadastrada no banco de PDVs
+                            </span>
+                          )}
+                        </div>
                       ) : (
-                        <span className="text-amber-500 block leading-normal font-semibold">
-                          ⚠️ NB não cadastrado no banco do PDV. Cadastre o PDV manualmente no Painel de Gestores para puxar o setor de venda automaticamente ou selecione o setor manualmente.
-                        </span>
+                        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl space-y-1">
+                          <span className="text-amber-400 block font-semibold text-[11px]">
+                            ⚠️ NB não cadastrado no banco do PDV.
+                          </span>
+                          {sectorLoadingInfo.clientCity ? (
+                            <span className="text-emerald-400 font-bold block flex items-center gap-1.5 text-[11px] pt-0.5">
+                              <span className="text-amber-300 shrink-0">📍 CIDADE DO PDV (registros):</span>
+                              <span className="text-white font-mono bg-slate-800 px-2 py-0.5 rounded text-[11px] uppercase tracking-wide">
+                                {sectorLoadingInfo.clientCity}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 block text-[10.5px]">
+                              📍 Cidade: Não localizada
+                            </span>
+                          )}
+                        </div>
                       )}
 
                       {sectorLoadingInfo.foundSector ? (
-                        <span className="text-emerald-400 font-bold block font-mono">
+                        <span className="text-emerald-400 font-bold block font-mono text-[11px]">
                           📍 Setor auto-identificado: Setor {sectorLoadingInfo.foundSector}
                         </span>
                       ) : (
-                        <span className="text-slate-500 block font-medium">
+                        <span className="text-slate-500 block font-medium text-[10.5px]">
                           🔍 Nenhum setor associado a este NB nos registros.
                         </span>
                       )}
@@ -3577,6 +3848,56 @@ export default function PendingRequestsTab() {
                     onChange={(e) => setReqDataEntrega(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-10 text-xs font-mono text-slate-200 focus:outline-none focus:border-emerald-500"
                   />
+                  {reqDataEntrega && (() => {
+                    const parts = reqDataEntrega.split("-");
+                    if (parts.length === 3) {
+                      const year = parseInt(parts[0], 10);
+                      const month = parseInt(parts[1], 10) - 1;
+                      const day = parseInt(parts[2], 10);
+                      const deliveryDateObj = new Date(year, month, day);
+                      const dayOfWeek = deliveryDateObj.getDay();
+
+                      const dayNames = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
+                      const dayName = dayNames[dayOfWeek];
+                      const isMonday = dayOfWeek === 1;
+
+                      let fridayDateStr = "";
+                      if (isMonday) {
+                        const fridayObj = new Date(deliveryDateObj);
+                        fridayObj.setDate(fridayObj.getDate() - 3);
+                        const fDay = String(fridayObj.getDate()).padStart(2, '0');
+                        const fMonth = String(fridayObj.getMonth() + 1).padStart(2, '0');
+                        fridayDateStr = `${fDay}/${fMonth}/${fridayObj.getFullYear()}`;
+                      }
+
+                      return (
+                        <div className="space-y-1.5 mt-2">
+                          <div className="text-[11px] font-medium text-slate-300 font-mono flex items-center gap-1.5">
+                            <span>📅 Dia da semana alinhado:</span>
+                            <span className={`font-bold ${isMonday ? "text-amber-400" : "text-emerald-400"}`}>
+                              {dayName} ({String(day).padStart(2, '0')}/{String(month + 1).padStart(2, '0')}/{year})
+                            </span>
+                          </div>
+
+                          {isMonday && (
+                            <div className="p-3 bg-amber-950/80 border-2 border-amber-500/80 rounded-xl space-y-1.5 animate-fadeIn shadow-lg shadow-amber-950/50">
+                              <div className="flex items-center gap-2 text-amber-300 font-extrabold text-xs">
+                                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                                <span className="uppercase tracking-wide">⚠️ LEMBRETE: CARREGAMENTO NA SEXTA-FEIRA</span>
+                              </div>
+                              <p className="text-[11px] text-amber-100 leading-relaxed font-sans font-medium">
+                                Esta entrega está agendada para <strong>Segunda-feira ({String(day).padStart(2, '0')}/{String(month + 1).padStart(2, '0')})</strong>.
+                              </p>
+                              <div className="text-amber-200 text-[11px] font-bold bg-amber-900/90 px-2.5 py-1.5 rounded-lg border border-amber-500/50 leading-normal font-sans">
+                                🚛 <strong>Atenção operacional:</strong> Como a entrega ocorre na Segunda-feira, o carregamento da carga deve ser feito na <strong>Sexta-feira anterior ({fridayDateStr})</strong>! Por favor, alinhe a separação e o carregamento na sexta-feira.
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
               </div>
 
@@ -3984,6 +4305,7 @@ export default function PendingRequestsTab() {
               onReimprimir={(vale) => setSelectedPrintDoc({ type: "vale", request: vale.originalRequest })} 
               onDeleteSingleVale={handleDeleteSingleVale}
               onUpdateValeStatus={handleUpdateValeStatus}
+              onCreateAvulsoVale={handleCreateAvulsoVale}
             />
           </div>
         ) : activeTab === "espelho" ? (
@@ -4351,6 +4673,7 @@ export default function PendingRequestsTab() {
                 (req.nb && r.codigoCliente && r.codigoCliente === req.nb)
               );
               const promaxUser = req.usuarioAcao || matchedPromax?.usuarioAcao;
+              const dupInfo = duplicateAnalysis.duplicateMap.get(req.id);
               
               return (
                 <div 
@@ -4360,10 +4683,38 @@ export default function PendingRequestsTab() {
                       ? "border-emerald-900/30 opacity-75" 
                       : (activeTab === "faltas_inversoes" || activeTab === "historico_baixas") && cast.faltaBaixa
                         ? "border-emerald-950 opacity-80"
-                        : "border-slate-800 hover:border-slate-755"
+                        : dupInfo
+                          ? "border-rose-500/70 shadow-rose-950/20"
+                          : "border-slate-800 hover:border-slate-755"
                   }`}
                 >
                   <div className="space-y-3">
+                    {/* DUPLICATE WARNING BADGE ON CARD */}
+                    {dupInfo && (
+                      <div className="p-2.5 bg-rose-955/90 border border-rose-500/80 rounded-xl flex items-center justify-between gap-2 text-rose-200 text-xs font-mono shadow-md animate-fadeIn">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <Copy className="w-4 h-4 text-rose-400 shrink-0 animate-pulse" />
+                          <span className="font-bold text-[10.5px] leading-tight truncate">
+                            ⚠️ DUPLICATA DETECTADA ({dupInfo.totalInGroup} reg. idênticos)
+                            {dupInfo.isExcess && (
+                              <span className="ml-1 text-amber-300 font-extrabold text-[9px] uppercase border border-amber-500/50 bg-amber-950/80 px-1.5 py-0.5 rounded">
+                                Cópia Excedente
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handlePermanentDelete(req.id)}
+                          className="px-2 py-1 bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-extrabold font-mono rounded-lg flex items-center gap-1 shrink-0 transition-colors shadow cursor-pointer border border-rose-400"
+                          title="Excluir este cadastro duplicado do histórico"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Excluir</span>
+                        </button>
+                      </div>
+                    )}
+
                     {/* Header bar of card */}
                     <div className="flex justify-between items-start gap-1">
                       <div className="flex items-center space-x-2">
@@ -4546,7 +4897,7 @@ export default function PendingRequestsTab() {
                                       #{sub.item} - <span className="font-sans font-medium text-slate-400">{sub.descricao || "Item SSTR"}</span>
                                     </span>
                                     <strong className="text-emerald-400 whitespace-nowrap">
-                                      {sub.quantidade} {sub.unidadeMedida ? sub.unidadeMedida.toUpperCase() : "cx"}
+                                      {sub.quantidade} {((sub.unidadeMedida || "").toLowerCase() === "cx" || (sub.unidadeMedida || "").toLowerCase() === "caixa") ? "CX" : "UN"}
                                     </strong>
                                   </div>
                                   <div className="flex justify-between text-[8.5px] text-slate-500">
@@ -4893,6 +5244,16 @@ export default function PendingRequestsTab() {
                           >
                             <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
                           </button>
+
+                          {/* Permanent Delete option (Icon-only, Red) */}
+                          <button
+                            type="button"
+                            onClick={() => handlePermanentDelete(req.id)}
+                            className="p-1.5 bg-rose-500/10 hover:bg-rose-500/25 border border-rose-500/40 hover:border-rose-400 text-rose-400 rounded-lg transition-all cursor-pointer shrink-0 flex items-center justify-center group"
+                            title="Excluir permanentemente este registro do histórico"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-rose-400 group-hover:scale-110 transition-transform" />
+                          </button>
                         </div>
                       </div>
                     ) : (
@@ -5019,6 +5380,9 @@ export default function PendingRequestsTab() {
         )}
       </div>
 
+      {/* DASHBOARD DE AVARIAS POR EMBALAGEM (RGB RETORNÁVEL VS ONE WAY DESCARTÁVEL) */}
+      <AvariasPackagingChart requests={filteredRequests} promaxRecords={promaxRecords} />
+
       {/* Discreet Instructions Box (fluxo de ações) */}
       <footer className="mt-8 pt-4 border-t border-slate-900/60 flex justify-center no-print text-left">
         <div className="max-w-2xl bg-slate-950/40 p-3.5 rounded-xl border border-slate-850/50 text-[10.5px] text-slate-550 leading-relaxed font-sans flex items-start gap-2.5">
@@ -5075,7 +5439,7 @@ export default function PendingRequestsTab() {
                             </div>
                           );
                         })() : (
-                          <span>📦 SKU: {sub.item} - {sub.descricao || "Falta"} (Qtd: {sub.quantidade} {sub.unidadeMedida ? sub.unidadeMedida.toUpperCase() : "cx"})</span>
+                          <span>📦 SKU: {sub.item} - {sub.descricao || "Falta"} (Qtd: {sub.quantidade} {((sub.unidadeMedida || "").toLowerCase() === "cx" || (sub.unidadeMedida || "").toLowerCase() === "caixa") ? "CX" : "UN"})</span>
                         )}
                       </li>
                     ))}

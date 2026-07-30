@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { ExchangeRecord, REPRESENTATIVOS_SETOR } from "../types";
 import { Search, Eye, Filter, CheckCircle2, AlertCircle, HelpCircle, X, ExternalLink, RefreshCw, UserCheck, Calendar, AlertTriangle, Layers, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, DollarSign, ClipboardList, Percent, TrendingUp, Package, Tag } from "lucide-react";
-import { calculateHL } from "../utils/hectoFactors";
+import { getRecordHL } from "../utils/hectoFactors";
 import { isRecordReposicao, isRecordTroca } from "../utils/processTypes";
 
 interface TrackingViewProps {
@@ -337,8 +337,8 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
       } else if (sortBy === "valor") {
         comparison = a.valorTotal - b.valorTotal;
       } else if (sortBy === "hecto") {
-        const hlA = calculateHL(a.produto, a.quantidade);
-        const hlB = calculateHL(b.produto, b.quantidade);
+        const hlA = getRecordHL(a);
+        const hlB = getRecordHL(b);
         comparison = hlA - hlB;
       }
 
@@ -377,7 +377,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
         records: recs,
         productsKey,
         totalValue: recs.reduce((sum, r) => sum + r.valorTotal, 0),
-        totalHL: recs.reduce((sum, r) => sum + calculateHL(r.produto, r.quantidade), 0)
+        totalHL: recs.reduce((sum, r) => sum + getRecordHL(r), 0)
       };
     });
 
@@ -505,7 +505,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
       if (matchSearch && matchSector && matchDate && matchReason && matchGv && matchProcessType) {
         const statusClean = r.status.toLowerCase().trim();
         const val = r.valorTotal || 0;
-        const hl = r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
+        const hl = getRecordHL(r);
         const isRecadastrar = recadastrarSolIds.has(r.solicitacao);
 
         if (isRecadastrar) {
@@ -536,7 +536,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
     filteredRecords.forEach(r => {
       // Show total of everything in the filtered records (respecting whichever status filter is selected, or all if "todos")
       totalValor += r.valorTotal || 0;
-      totalHl += r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
+      totalHl += getRecordHL(r);
       if (r.solicitacao) {
         uniqueSols.add(r.solicitacao);
       }
@@ -601,7 +601,7 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
       if (matchStatus && matchSector && matchDate && matchReason && matchGv) {
         // Sum all records matching active filters for baseline comparison
         baselineValor += r.valorTotal || 0;
-        baselineHl += r.hectolitros || calculateHL(r.produto, r.quantidade || 0);
+        baselineHl += getRecordHL(r);
         if (r.solicitacao) {
           baselineSols.add(r.solicitacao);
         }

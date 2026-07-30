@@ -1,6 +1,8 @@
 import React, { useMemo } from "react";
 import { ExchangeRecord } from "../types";
-import { Download, Printer, Table, CheckSquare, RefreshCw, AlertTriangle, Layers } from "lucide-react";
+import { Download, Printer, Table, CheckSquare, RefreshCw, AlertTriangle, Layers, FileSpreadsheet } from "lucide-react";
+import { exportHectoliterAuditReport } from "../utils/hectoAuditExport";
+import { isRecordApproved } from "../utils/hectoFactors";
 
 interface ReportViewProps {
   records: ExchangeRecord[];
@@ -231,7 +233,17 @@ export default function ReportView({ records: rawRecords }: ReportViewProps) {
           <p className="text-xs text-slate-400 font-mono">Gere planilhas nos padrões Excel ou baixe relatórios formatados em PDF de trocas.</p>
         </div>
 
-        <div className="flex items-center space-x-3 w-full sm:w-auto shrink-0">
+        <div className="flex items-center space-x-3 w-full sm:w-auto shrink-0 flex-wrap gap-2">
+          <button
+            onClick={() => exportHectoliterAuditReport((rawRecords.length > 0 ? rawRecords : records).filter(isRecordApproved), "auditoria_hectolitros_aprovados")}
+            disabled={rawRecords.length === 0}
+            className="flex-1 sm:flex-none px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center justify-center space-x-2 transition-colors cursor-pointer shadow-lg shadow-emerald-900/20"
+            title="Exportar planilha Excel auditada com todos os itens e hectolitros (HL)"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>Exportar HL Auditado (.xlsx)</span>
+          </button>
+
           <button
             onClick={handleDownloadCSV}
             disabled={records.length === 0}

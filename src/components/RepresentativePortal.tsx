@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { ExchangeRecord, REPRESENTATIVOS_SETOR, PendingRequest, MOTORISTAS_ROTAS, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, RouteDriverInfo, getDisplayCadastroUser, LISTA_CREW } from "../types";
 import { getApiUrl } from "../utils/apiUrl";
 import { useSstrData } from "../context/SstrDataContext";
-import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros } from "../data/products";
+import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, calculateItemValue, calculateItemHL } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
 import { 
   Search, 
@@ -538,6 +538,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
   const [formNf, setFormNf] = useState("");
   const [formItem, setFormItem] = useState("");
   const [formQuantidade, setFormQuantidade] = useState("");
+  const [formUnidadeMedida, setFormUnidadeMedida] = useState<"cx" | "und">("und");
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   // States for inversion ("Inversão")
@@ -1363,7 +1364,17 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     }
 
     const qty = parseInt(formQuantidade) || 1;
-    const calculatedHl = productDef ? Number((qty * productDef.fatorHecto).toFixed(4)) : 0;
+    const isUnd = (formUnidadeMedida || "").toLowerCase() === "und";
+    const calculatedHl = productDef ? calculateItemHL({
+      codigo: productDef.codigo,
+      quantidade: qty,
+      unidadeMedida: isUnd ? "und" : "cx"
+    }) : 0;
+    const calculatedPrice = productDef ? calculateItemValue({
+      codigo: productDef.codigo,
+      quantidade: qty,
+      unidadeMedida: isUnd ? "und" : "cx"
+    }) : 0;
     
     // Choose specific motive display string
     let finalMotive = formMotiveType;
@@ -1384,9 +1395,13 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       itemCode: productDef ? productDef.codigo : "INVERSÃO",
       itemDesc: productDef ? productDef.descricao : `Inversão: ${formInversaoIr.trim()} 🔄 ${formInversaoRecolher.trim()}`,
       quantidade: qty,
+      unidadeMedida: formUnidadeMedida || "und",
       motivo: finalMotive,
+      fatorEmbalagem: productDef ? productDef.fator : 12,
       fatorHecto: productDef ? productDef.fatorHecto : 0,
       hectolitros: calculatedHl,
+      precoCalculated: calculatedPrice,
+      customUnitPrice: productDef ? productDef.valor : 0,
       produtoAhEnviar: formMotiveType === "Inversão" ? `${formInversaoIr.trim()} (Qtd: ${formInversaoIrQtd.trim() || qty} un)` : undefined,
       produtoARecolher: formMotiveType === "Inversão" ? `${formInversaoRecolher.trim()} (Qtd: ${formInversaoRecolherQtd.trim() || qty} un)` : undefined,
     };
@@ -1404,10 +1419,12 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
   };
 
   // Submit New Request form containing multiple draft items
-  const handleFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleFormSubmit = async (e?: React.FormEvent, bypassDuplicateCheck: boolean = false) => {
+    if (e) e.preventDefault();
     setFormError(null);
-    setDuplicateFound(null);
+    if (!bypassDuplicateCheck) {
+      setDuplicateFound(null);
+    }
 
     // Validation 7: Mandatory fields Mapa, NB, NF are required for all registrations
     const cleanMapa = formMapa.trim();
@@ -1515,69 +1532,71 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     const inputNf = finalNf.toLowerCase();
 
     // Check duplicate check for each item in currentDrafts list
-    for (const dItem of currentDrafts) {
-      const inputItem = dItem.itemCode.toLowerCase();
-      const inputQty = dItem.quantidade;
+    if (!bypassDuplicateCheck) {
+      for (const dItem of currentDrafts) {
+        const inputItem = dItem.itemCode.toLowerCase();
+        const inputQty = dItem.quantidade;
 
-      // 1. Check duplicate inside faturado/database records
-      const duplicateInDb = records.find(r => {
-        const dbNf = (r.nf || "").trim().toLowerCase();
-        const dbProdCode = (r.produto || "").trim().toLowerCase();
-        const dbProdDesc = (r.descricaoProduto || "").trim().toLowerCase();
-        
-        const nfMatch = dbNf === inputNf;
-        const itemMatch = dbProdCode === inputItem || dbProdDesc === inputItem || dbProdDesc.includes(inputItem) || inputItem.includes(dbProdCode);
-        const qtyMatch = r.quantidade === inputQty;
+        // 1. Check duplicate inside faturado/database records
+        const duplicateInDb = records.find(r => {
+          const dbNf = (r.nf || "").trim().toLowerCase();
+          const dbProdCode = (r.produto || "").trim().toLowerCase();
+          const dbProdDesc = (r.descricaoProduto || "").trim().toLowerCase();
+          
+          const nfMatch = dbNf === inputNf;
+          const itemMatch = dbProdCode === inputItem || dbProdDesc === inputItem || dbProdDesc.includes(inputItem) || inputItem.includes(dbProdCode);
+          const qtyMatch = r.quantidade === inputQty;
 
-        return nfMatch && itemMatch && qtyMatch;
-      });
-
-      if (duplicateInDb) {
-        setDuplicateFound({
-          type: "base",
-          record: {
-            id: duplicateInDb.id,
-            nf: duplicateInDb.nf,
-            cliente: duplicateInDb.nomeCliente,
-            codigoCliente: duplicateInDb.codigoCliente,
-            produto: duplicateInDb.descricaoProduto,
-            quantidade: duplicateInDb.quantidade,
-            data: duplicateInDb.dataSolicitacao,
-            status: duplicateInDb.status
-          }
+          return nfMatch && itemMatch && qtyMatch;
         });
-        return;
-      }
 
-      // 2. Check duplicate inside pending requests
-      const duplicateInPending = pendingRequests.find(req => {
-        const pendingNf = (req.nf || "").trim().toLowerCase();
-        const nfMatch = pendingNf === inputNf;
-        if (!nfMatch) return false;
+        if (duplicateInDb) {
+          setDuplicateFound({
+            type: "base",
+            record: {
+              id: duplicateInDb.id,
+              nf: duplicateInDb.nf,
+              cliente: duplicateInDb.nomeCliente,
+              codigoCliente: duplicateInDb.codigoCliente,
+              produto: duplicateInDb.descricaoProduto,
+              quantidade: duplicateInDb.quantidade,
+              data: duplicateInDb.dataSolicitacao,
+              status: duplicateInDb.status
+            }
+          });
+          return;
+        }
 
-        // Check if item is matching in the items list of pending request
-        const hasMatchingItemObj = req.items 
-          ? req.items.some(i => i.item.toLowerCase() === inputItem && i.quantidade === inputQty)
-          : ((req.item || "").trim().toLowerCase() === inputItem && (req.quantidade || 0) === inputQty);
+        // 2. Check duplicate inside pending requests
+        const duplicateInPending = pendingRequests.find(req => {
+          const pendingNf = (req.nf || "").trim().toLowerCase();
+          const nfMatch = pendingNf === inputNf;
+          if (!nfMatch) return false;
 
-        return hasMatchingItemObj;
-      });
+          // Check if item is matching in the items list of pending request
+          const hasMatchingItemObj = req.items 
+            ? req.items.some(i => i.item.toLowerCase() === inputItem && i.quantidade === inputQty)
+            : ((req.item || "").trim().toLowerCase() === inputItem && (req.quantidade || 0) === inputQty);
 
-      if (duplicateInPending) {
-        setDuplicateFound({
-          type: "pendente",
-          record: {
-            id: duplicateInPending.id,
-            nf: duplicateInPending.nf,
-            cliente: `Canal de Campo • Setor/Rota ${duplicateInPending.setor}`,
-            codigoCliente: duplicateInPending.nb,
-            produto: dItem.itemDesc,
-            quantidade: inputQty,
-            data: duplicateInPending.data,
-            status: "pendente_controle"
-          }
+          return hasMatchingItemObj;
         });
-        return;
+
+        if (duplicateInPending) {
+          setDuplicateFound({
+            type: "pendente",
+            record: {
+              id: duplicateInPending.id,
+              nf: duplicateInPending.nf,
+              cliente: `Canal de Campo • Setor/Rota ${duplicateInPending.setor}`,
+              codigoCliente: duplicateInPending.nb,
+              produto: dItem.itemDesc,
+              quantidade: inputQty,
+              data: duplicateInPending.data,
+              status: "pendente_controle"
+            }
+          });
+          return;
+        }
       }
     }
 
@@ -3526,9 +3545,9 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
               <div className="w-12 h-12 bg-amber-950/80 border border-amber-500/40 text-amber-400 rounded-full flex items-center justify-center mx-auto animate-pulse">
                 <AlertTriangle className="w-6 h-6" />
               </div>
-              <h3 className="text-md font-extrabold text-amber-400 font-sans tracking-wide uppercase">🚫 Troca Já Cadastrada!</h3>
+              <h3 className="text-md font-extrabold text-amber-400 font-sans tracking-wide uppercase">🚫 ALERTA: Troca Já Cadastrada!</h3>
               <p className="text-[10.5px] text-slate-300 font-sans leading-normal">
-                Não é permitido cadastrar duplicidades. Encontramos uma solicitação idêntica com a mesma NF-e, SKU e Quantidade:
+                Identificamos um cadastro idêntico com a mesma NF-e, SKU e Quantidade. Você pode revisar os dados ou cadastrar mesmo assim:
               </p>
             </div>
 
@@ -3576,13 +3595,26 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setDuplicateFound(null)}
-              className="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer shadow-lg active:scale-95"
-            >
-              Fazer outra solicitação
-            </button>
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setDuplicateFound(null);
+                  handleFormSubmit(undefined, true);
+                }}
+                className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-xl text-xs transition-all cursor-pointer shadow-lg active:scale-95 flex items-center justify-center gap-1.5 font-sans"
+              >
+                ⚠️ Cadastrar Mesmo Assim
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDuplicateFound(null)}
+                className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs transition-colors cursor-pointer text-center font-sans"
+              >
+                ❌ Cancelar / Fazer outra solicitação
+              </button>
+            </div>
           </div>
         </div>
       )}

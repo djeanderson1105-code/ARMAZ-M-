@@ -3827,6 +3827,44 @@ export default function ManagersTab() {
                     onChange={(e) => setReqDataEntrega(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-emerald-500 focus:outline-none"
                   />
+                  {reqDataEntrega && (() => {
+                    const parts = reqDataEntrega.split("-");
+                    if (parts.length === 3) {
+                      const year = parseInt(parts[0], 10);
+                      const month = parseInt(parts[1], 10) - 1;
+                      const day = parseInt(parts[2], 10);
+                      const deliveryDateObj = new Date(year, month, day);
+                      const dayOfWeek = deliveryDateObj.getDay();
+
+                      const dayNames = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
+                      const dayName = dayNames[dayOfWeek];
+                      const isMonday = dayOfWeek === 1;
+
+                      let fridayDateStr = "";
+                      if (isMonday) {
+                        const fridayObj = new Date(deliveryDateObj);
+                        fridayObj.setDate(fridayObj.getDate() - 3);
+                        const fDay = String(fridayObj.getDate()).padStart(2, '0');
+                        const fMonth = String(fridayObj.getMonth() + 1).padStart(2, '0');
+                        fridayDateStr = `${fDay}/${fMonth}/${fridayObj.getFullYear()}`;
+                      }
+
+                      return (
+                        <div className="space-y-1 mt-1.5 font-sans">
+                          <span className={`text-[10.5px] font-bold block ${isMonday ? "text-amber-400" : "text-emerald-400"}`}>
+                            📅 {dayName} ({String(day).padStart(2, '0')}/{String(month + 1).padStart(2, '0')}/{year})
+                          </span>
+                          {isMonday && (
+                            <div className="p-2.5 bg-amber-950/80 border border-amber-500/70 rounded-lg text-[10.5px] text-amber-100 font-medium space-y-1 leading-normal">
+                              <span className="font-extrabold text-amber-300 block uppercase">⚠️ LEMBRETE DE CARREGAMENTO (SEXTA-FEIRA)</span>
+                              <span>Carregamento na <strong>Sexta-feira anterior ({fridayDateStr})</strong> para entrega na Segunda-feira!</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
               </div>
 
@@ -3843,6 +3881,28 @@ export default function ManagersTab() {
                     onChange={(e) => setReqNb(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-emerald-500 focus:outline-none"
                   />
+                  {reqNb.trim() && (() => {
+                    const db = getPdvDatabase();
+                    const cleanNb = reqNb.trim();
+                    let client = db[cleanNb];
+                    if (!client) {
+                      const nbAsNum = parseInt(cleanNb, 10);
+                      if (!isNaN(nbAsNum)) {
+                        const foundKey = Object.keys(db).find(k => parseInt(k, 10) === nbAsNum);
+                        if (foundKey) client = db[foundKey];
+                      }
+                    }
+                    const city = client?.municipio ? (client.uf ? `${client.municipio} - ${client.uf}` : client.municipio) : "";
+                    if (client || city) {
+                      return (
+                        <div className="mt-1 text-[10.5px] font-sans leading-tight">
+                          {client && <span className="text-emerald-400 block font-semibold">✅ {client.nomeFantasia}</span>}
+                          {city && <span className="text-amber-300 font-bold block mt-0.5">📍 Cidade: {city}</span>}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
 
                 {/* Motorista */}

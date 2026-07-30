@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { Search, Printer, DollarSign, TrendingUp, Layers, UserCheck, AlertCircle, Trash2 } from "lucide-react";
+import { Search, Printer, DollarSign, TrendingUp, Layers, UserCheck, AlertCircle, Trash2, PlusCircle, X } from "lucide-react";
 
 export interface ValeEntry {
   id: string;
@@ -26,13 +26,37 @@ interface ValesHistoryDashboardProps {
   onReimprimir: (vale: ValeEntry) => void;
   onDeleteSingleVale?: (id: string) => void;
   onUpdateValeStatus?: (id: string, newStatus: "emitido" | "pendente" | "assinado" | "compensado") => void;
+  onCreateAvulsoVale?: (data: {
+    mapa: string;
+    itemCode: string;
+    itemDesc?: string;
+    data: string;
+    quantidade: number;
+    unidadeMedida: "cx" | "und";
+    motorista: string;
+    ajudantes: string;
+    observacao: string;
+  }) => void;
 }
 
-export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSingleVale, onUpdateValeStatus }: ValesHistoryDashboardProps) {
+export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSingleVale, onUpdateValeStatus, onCreateAvulsoVale }: ValesHistoryDashboardProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedRoute, setSelectedRoute] = useState("todas");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>("todos");
   const [confirmDeleteValeId, setConfirmDeleteValeId] = useState<string | null>(null);
+
+  // Vale Avulso Modal State
+  const [isAvulsoModalOpen, setIsAvulsoModalOpen] = useState(false);
+  const [avulsoMapa, setAvulsoMapa] = useState("");
+  const [avulsoItemCode, setAvulsoItemCode] = useState("");
+  const [avulsoItemDesc, setAvulsoItemDesc] = useState("");
+  const [avulsoData, setAvulsoData] = useState(new Date().toISOString().split("T")[0]);
+  const [avulsoQuantidade, setAvulsoQuantidade] = useState("1");
+  const [avulsoUnidade, setAvulsoUnidade] = useState<"cx" | "und">("cx");
+  const [avulsoMotorista, setAvulsoMotorista] = useState("");
+  const [avulsoAjudantes, setAvulsoAjudantes] = useState("");
+  const [avulsoObs, setAvulsoObs] = useState("");
+  const [avulsoError, setAvulsoError] = useState<string | null>(null);
 
   // Format currency helper
   const formatCurrency = (val: number) => {
@@ -315,6 +339,22 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                 <option key={r} value={r}>Rota {r}</option>
               ))}
             </select>
+
+            {/* Gerar Vale Avulso Button */}
+            {onCreateAvulsoVale && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAvulsoError(null);
+                  setIsAvulsoModalOpen(true);
+                }}
+                className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold px-3 py-1.5 rounded-xl text-xs font-mono transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:scale-[1.02] active:scale-95 shrink-0"
+                title="Criar um vale manual/avulso digitando mapa, item, data e motorista"
+              >
+                <PlusCircle className="w-4 h-4" />
+                <span>Gerar Vale Avulso</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -474,6 +514,214 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
         </div>
       </div>
       
+      {/* Modal: Gerar Vale Avulso */}
+      {isAvulsoModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl text-left">
+            <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-950/50">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
+                  <PlusCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-white font-mono uppercase">Gerar Vale Avulso</h3>
+                  <p className="text-[10px] text-slate-400">Emissão direta de recibo de vale com cálculo automático de Hectolitro</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsAvulsoModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!avulsoMapa.trim()) {
+                  setAvulsoError("Informe o Mapa / Número do Documento.");
+                  return;
+                }
+                if (!avulsoItemCode.trim()) {
+                  setAvulsoError("Informe o Código do Item / SKU.");
+                  return;
+                }
+                const q = parseInt(avulsoQuantidade, 10);
+                if (isNaN(q) || q <= 0) {
+                  setAvulsoError("Informe uma quantidade válida.");
+                  return;
+                }
+                if (!avulsoMotorista.trim()) {
+                  setAvulsoError("Informe o Nome do Motorista.");
+                  return;
+                }
+
+                if (onCreateAvulsoVale) {
+                  onCreateAvulsoVale({
+                    mapa: avulsoMapa.trim(),
+                    itemCode: avulsoItemCode.trim(),
+                    itemDesc: avulsoItemDesc.trim(),
+                    data: avulsoData,
+                    quantidade: q,
+                    unidadeMedida: avulsoUnidade,
+                    motorista: avulsoMotorista.trim(),
+                    ajudantes: avulsoAjudantes.trim(),
+                    observacao: avulsoObs.trim()
+                  });
+                }
+
+                setIsAvulsoModalOpen(false);
+                // Reset fields
+                setAvulsoMapa("");
+                setAvulsoItemCode("");
+                setAvulsoItemDesc("");
+                setAvulsoQuantidade("1");
+                setAvulsoMotorista("");
+                setAvulsoAjudantes("");
+                setAvulsoObs("");
+                setAvulsoError(null);
+              }}
+              className="p-5 space-y-4"
+            >
+              {avulsoError && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 font-mono flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                  <span>{avulsoError}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Número do Mapa *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: 84920"
+                    value={avulsoMapa}
+                    onChange={(e) => setAvulsoMapa(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Data da Emissão *</label>
+                  <input
+                    type="date"
+                    required
+                    value={avulsoData}
+                    onChange={(e) => setAvulsoData(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2 space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Código Item / SKU *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: 34608 ou SKOL 350ML"
+                    value={avulsoItemCode}
+                    onChange={(e) => setAvulsoItemCode(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Medida</label>
+                  <select
+                    value={avulsoUnidade}
+                    onChange={(e) => setAvulsoUnidade(e.target.value as "cx" | "und")}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                  >
+                    <option value="cx">📦 CX (Caixa)</option>
+                    <option value="und">🥫 UND (Lata/Avulso)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Quantidade *</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={avulsoQuantidade}
+                    onChange={(e) => setAvulsoQuantidade(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Descrição (Opcional)</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: SKOL LATA 350ML"
+                    value={avulsoItemDesc}
+                    onChange={(e) => setAvulsoItemDesc(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Motorista *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Nome do motorista"
+                    value={avulsoMotorista}
+                    onChange={(e) => setAvulsoMotorista(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Ajudante(s)</label>
+                  <input
+                    type="text"
+                    placeholder="Nome do ajudante"
+                    value={avulsoAjudantes}
+                    onChange={(e) => setAvulsoAjudantes(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Observações / Motivo</label>
+                <textarea
+                  rows={2}
+                  placeholder="Observação referente ao vale avulso..."
+                  value={avulsoObs}
+                  onChange={(e) => setAvulsoObs(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white font-mono focus:border-amber-500 focus:outline-none resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsAvulsoModalOpen(false)}
+                  className="px-4 h-9 bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 h-9 bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-xs font-extrabold rounded-xl cursor-pointer transition-all shadow-md hover:scale-[1.02]"
+                >
+                  Confirmar & Gerar Vale
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

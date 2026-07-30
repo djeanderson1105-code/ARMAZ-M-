@@ -1,5 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { ExchangeRecord } from "../types";
+import { useSstrData } from "../context/SstrDataContext";
+import AvariasPackagingChart from "./AvariasPackagingChart";
 import { getApiUrl } from "../utils/apiUrl";
 import { 
   TrendingUp, 
@@ -20,9 +22,11 @@ import {
   ChevronRight,
   Calendar,
   ArrowLeft,
-  AlertCircle
+  AlertCircle,
+  FileSpreadsheet
 } from "lucide-react";
-import { calculateHL } from "../utils/hectoFactors";
+import { getRecordHL, isRecordApproved } from "../utils/hectoFactors";
+import { exportHectoliterAuditReport } from "../utils/hectoAuditExport";
 
 interface ConsolidatedViewProps {
   records: ExchangeRecord[];
@@ -60,7 +64,23 @@ interface ConsolidatedViewProps {
   selectedMonthYear: string;
   setSelectedMonthYear: (val: string) => void;
   setFilterMode: (val: "mes" | "dias") => void;
+  dashboardMetricView?: "hl" | "reais";
 }
+
+const META_HL_BY_MONTH: Record<string, number> = {
+  "01": 5.61,  // JANEIRO
+  "02": 12.02, // FEVEREIRO
+  "03": 7.03,  // MARÇO
+  "04": 8.44,  // ABRIL
+  "05": 9.88,  // MAIO
+  "06": 15.44, // JUNHO
+  "07": 10.02, // JULHO
+  "08": 8.27,  // AGOSTO
+  "09": 13.80, // SETEMBRO
+  "10": 15.30, // OUTUBRO
+  "11": 10.70, // NOVEMBRO
+  "12": 12.90, // DEZEMBRO
+};
 
 export default function ConsolidatedView({
   records,
@@ -81,8 +101,66 @@ export default function ConsolidatedView({
   formatCurrency,
   selectedMonthYear,
   setSelectedMonthYear,
-  setFilterMode
+  setFilterMode,
+  dashboardMetricView = "hl"
 }: ConsolidatedViewProps) {
+
+  const { pendingRequests } = useSstrData();
+
+  // Sync chart metric with active dashboard metric view
+  React.useEffect(() => {
+    if (dashboardMetricView === "hl") {
+      setChartMetric("volume");
+    } else if (dashboardMetricView === "reais") {
+      setChartMetric("cost");
+    }
+  }, [dashboardMetricView]);
+
+  const getRecordVal = (r: ExchangeRecord) => {
+    if (dashboardMetricView === "hl") {
+      return getRecordHL(r);
+    }
+    return r.valorTotal || 0;
+  };
+
+  // Dynamically identify the current/vigent date (data vigente) of the platform based on the records
+  const today = useMemo(() => {
+    if (records.length === 0) return new Date();
+    
+    let maxDateObj: Date | null = null;
+    records.forEach(r => {
+      if (!r.dataSolicitacao) return;
+      const parts = r.dataSolicitacao.split("/");
+      if (parts.length === 3) {
+        const d = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        const y = parseInt(parts[2], 10);
+        const dt = new Date(y, m, d);
+        if (!isNaN(dt.getTime())) {
+          if (!maxDateObj || dt > maxDateObj) {
+            maxDateObj = dt;
+          }
+        }
+      }
+    });
+
+    const sysToday = new Date();
+    
+    if (maxDateObj) {
+      if (sysToday.getFullYear() === (maxDateObj as Date).getFullYear()) {
+        return sysToday;
+      }
+      return maxDateObj;
+    }
+    return sysToday;
+  }, [records]);
+
+  const formatVal = (val: number) => {
+    if (dashboardMetricView === "hl") {
+      return `${val.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} HL`;
+    }
+    return formatCurrency(val);
+  };
 
   // Timeline interactive visualization states
   const [timelineViewMode, setTimelineViewMode] = useState<"months" | "days">("months");
@@ -122,12 +200,12 @@ export default function ConsolidatedView({
     return new Date(year, month, day);
   };
 
-  // Scope filter: "todas" vs "aprovadas" for Top 10 items/clients and temporal analysis
-  const [statusScopeFilter, setStatusScopeFilter] = useState<"todas" | "aprovadas">("todas");
+  // Scope filter: "todas" vs "aprovadas" for Top 10 items/clients and temporal analysis (Default: aprovadas)
+  const [statusScopeFilter, setStatusScopeFilter] = useState<"todas" | "aprovadas">("aprovadas");
 
   const analysisRecords = useMemo(() => {
     if (statusScopeFilter === "aprovadas") {
-      return filteredRecords.filter(r => (r.status || "").toLowerCase().trim().includes("aprov"));
+      return filteredRecords.filter(r => isRecordApproved(r));
     }
     return filteredRecords;
   }, [filteredRecords, statusScopeFilter]);
@@ -144,7 +222,7 @@ export default function ConsolidatedView({
       }
       prodMap[pCode].quantity += r.quantidade;
       prodMap[pCode].totalSpent += r.valorTotal;
-      prodMap[pCode].hl += calculateHL(pCode, r.quantidade);
+      prodMap[pCode].hl += getRecordHL(r);
     });
 
     return Object.values(prodMap)
@@ -165,7 +243,7 @@ export default function ConsolidatedView({
       }
       clientMap[cCode].requestCount += 1;
       clientMap[cCode].totalSpent += r.valorTotal;
-      clientMap[cCode].hl += calculateHL(r.produto, r.quantidade);
+      clientMap[cCode].hl += getRecordHL(r);
     });
 
     return Object.values(clientMap)
@@ -212,7 +290,7 @@ export default function ConsolidatedView({
         const mId = parts[1];
         if (monthMap[mId]) {
           monthMap[mId].totalSpent += r.valorTotal;
-          monthMap[mId].totalHL += calculateHL(r.produto, r.quantidade);
+          monthMap[mId].totalHL += getRecordHL(r);
           monthMap[mId].count += 1;
           if (r.codigoCliente) {
             monthMap[mId].clientSet.add(r.codigoCliente);
@@ -256,7 +334,7 @@ export default function ConsolidatedView({
         };
       }
       dayMap[dayNum].totalSpent += r.valorTotal;
-      dayMap[dayNum].totalHL += calculateHL(r.produto, r.quantidade);
+      dayMap[dayNum].totalHL += getRecordHL(r);
       dayMap[dayNum].count += 1;
       if (r.status.toLowerCase().trim().includes("aprov")) {
         dayMap[dayNum].approvedCount += 1;
@@ -278,22 +356,20 @@ export default function ConsolidatedView({
   const monthlyPoints = useMemo(() => {
     if (monthlyTimelineData.length === 0) return [];
     const monthlyMetaSpent = 12000;
-    const totalSpentAll = records.reduce((acc, r) => acc + (r.valorTotal || 0), 0);
-    const totalHLAllCalc = records.reduce((acc, r) => acc + calculateHL(r.produto, r.quantidade), 0);
-    const avgCostPerHL = totalHLAllCalc > 0 ? totalSpentAll / totalHLAllCalc : 120;
-    const monthlyMetaHL = 12000 / (avgCostPerHL || 120);
 
     const maxSpent = Math.max(...monthlyTimelineData.map(d => d.totalSpent), monthlyMetaSpent, 1) * 1.12;
-    const maxHL = Math.max(...monthlyTimelineData.map(d => d.totalHL), monthlyMetaHL, 1) * 1.12;
+    const maxHL = Math.max(...monthlyTimelineData.map(d => d.totalHL), 15.44, 1) * 1.12;
     
     return monthlyTimelineData.map((d) => {
-      // Space Jan (01) through Dec (12) perfectly across 5% to 95%
       const mNum = parseInt(d.monthId, 10);
+      const mStr = String(mNum).padStart(2, "0");
+      const mMetaHL = META_HL_BY_MONTH[mStr] || 10.0;
+
       const x = 5 + ((mNum - 1) / 11) * 90;
       const ySpent = 90 - (d.totalSpent / maxSpent) * 75; 
       const ySpentMeta = 90 - (monthlyMetaSpent / maxSpent) * 75;
       const yHL = 90 - (d.totalHL / maxHL) * 75;
-      const yHLMeta = 90 - (monthlyMetaHL / maxHL) * 75;
+      const yHLMeta = 90 - (mMetaHL / maxHL) * 75;
       return {
         ...d,
         x,
@@ -302,27 +378,23 @@ export default function ConsolidatedView({
         yHL,
         yHLMeta,
         metaSpent: monthlyMetaSpent,
-        metaHL: monthlyMetaHL
+        metaHL: mMetaHL
       };
     });
-  }, [monthlyTimelineData, records]);
+  }, [monthlyTimelineData]);
 
   // Daily points coordinates
   const dailyPoints = useMemo(() => {
     if (dailyTimelineData.length === 0) return [];
     const totalDaysInMonth = dailyTimelineData.length || 30;
     const dailyMetaSpent = 12000 / totalDaysInMonth;
-    const totalSpentAll = records.reduce((acc, r) => acc + (r.valorTotal || 0), 0);
-    const totalHLAllCalc = records.reduce((acc, r) => acc + calculateHL(r.produto, r.quantidade), 0);
-    const avgCostPerHL = totalHLAllCalc > 0 ? totalSpentAll / totalHLAllCalc : 120;
-    const monthlyMetaHL = 12000 / (avgCostPerHL || 120);
+    const monthlyMetaHL = META_HL_BY_MONTH[selectedMonth] || 10.0;
     const dailyMetaHL = monthlyMetaHL / totalDaysInMonth;
 
     const maxSpent = Math.max(...dailyTimelineData.map(d => d.totalSpent), dailyMetaSpent, 1) * 1.12;
     const maxHL = Math.max(...dailyTimelineData.map(d => d.totalHL), dailyMetaHL, 1) * 1.12;
     
     return dailyTimelineData.map((d) => {
-      // Space Day 1 through Day 31 perfectly across 5% to 95%
       const x = 5 + ((d.day - 1) / 30) * 90;
       const ySpent = 90 - (d.totalSpent / maxSpent) * 75; 
       const ySpentMeta = 90 - (dailyMetaSpent / maxSpent) * 75;
@@ -339,7 +411,7 @@ export default function ConsolidatedView({
         metaHL: dailyMetaHL
       };
     });
-  }, [dailyTimelineData, records]);
+  }, [dailyTimelineData, selectedMonth]);
 
   // Quick helper to determine peak day in selected month for highlighting
   const peakDayInfo = useMemo(() => {
@@ -347,93 +419,125 @@ export default function ConsolidatedView({
     return [...dailyTimelineData].sort((a, b) => b.approvedCount - a.approvedCount || b.totalSpent - a.totalSpent)[0];
   }, [dailyTimelineData]);
 
+  const targetYear = useMemo(() => {
+    if (selectedMonthYear && selectedMonthYear !== "todos") {
+      const parts = selectedMonthYear.split("/");
+      if (parts.length === 2) return parseInt(parts[1], 10);
+    }
+    return today.getFullYear();
+  }, [selectedMonthYear, today]);
+
   // Semester 1 (1º H Semestral) Approved Accumulated
   const semester1ApprovedAccumulated = useMemo(() => {
     return records.reduce((acc, r) => {
-      const statusClean = (r.status || "").toLowerCase().trim();
-      if (statusClean.includes("aprov")) {
-        if (r.dataSolicitacao) {
-          const parts = r.dataSolicitacao.split("/");
-          if (parts.length === 3) {
-            const m = parseInt(parts[1], 10);
-            if (m >= 1 && m <= 6) {
-              return acc + r.valorTotal;
-            }
-            return acc;
+      const s = (r.status || "").toLowerCase().trim();
+      const isApproved = (s.includes("aprov") || s === "atendido" || s === "concluido") && !s.includes("reprov") && !s.includes("cancela") && !s.includes("pendent");
+      if (isApproved && r.dataSolicitacao) {
+        const parts = r.dataSolicitacao.split("/");
+        if (parts.length === 3) {
+          const m = parseInt(parts[1], 10);
+          const y = parseInt(parts[2], 10);
+          if (y === targetYear && m >= 1 && m <= 6) {
+            return acc + getRecordVal(r);
           }
         }
       }
       return acc;
     }, 0);
-  }, [records]);
+  }, [records, dashboardMetricView, targetYear]);
 
   // Semester 2 (2º H Semestral) Approved Accumulated
   const semester2ApprovedAccumulated = useMemo(() => {
     return records.reduce((acc, r) => {
-      const statusClean = (r.status || "").toLowerCase().trim();
-      if (statusClean.includes("aprov")) {
-        if (r.dataSolicitacao) {
-          const parts = r.dataSolicitacao.split("/");
-          if (parts.length === 3) {
-            const m = parseInt(parts[1], 10);
-            if (m >= 7 && m <= 12) {
-              return acc + r.valorTotal;
-            }
-            return acc;
+      const s = (r.status || "").toLowerCase().trim();
+      const isApproved = (s.includes("aprov") || s === "atendido" || s === "concluido") && !s.includes("reprov") && !s.includes("cancela") && !s.includes("pendent");
+      if (isApproved && r.dataSolicitacao) {
+        const parts = r.dataSolicitacao.split("/");
+        if (parts.length === 3) {
+          const m = parseInt(parts[1], 10);
+          const y = parseInt(parts[2], 10);
+          if (y === targetYear && m >= 7 && m <= 12) {
+            return acc + getRecordVal(r);
           }
         }
       }
       return acc;
     }, 0);
-  }, [records]);
+  }, [records, dashboardMetricView, targetYear]);
 
-  const META_SEMESTRAL = 12000 * 6; // R$ 72.000,00
+  // Annual Approved Accumulated
+  const annualApprovedAccumulatedVal = useMemo(() => {
+    return records.reduce((acc, r) => {
+      const s = (r.status || "").toLowerCase().trim();
+      const isApproved = (s.includes("aprov") || s === "atendido" || s === "concluido") && !s.includes("reprov") && !s.includes("cancela") && !s.includes("pendent");
+      if (isApproved && r.dataSolicitacao) {
+        const parts = r.dataSolicitacao.split("/");
+        if (parts.length === 3) {
+          const m = parseInt(parts[1], 10);
+          const y = parseInt(parts[2], 10);
+          if (y === targetYear && m >= 1 && m <= 12) {
+            return acc + getRecordVal(r);
+          }
+        }
+      }
+      return acc;
+    }, 0);
+  }, [records, dashboardMetricView, targetYear]);
+
+  const META_SEMESTRAL_1 = dashboardMetricView === "hl" ? 58.42 : 72000;
+  const META_SEMESTRAL_2 = dashboardMetricView === "hl" ? 70.99 : 72000;
+  const META_ANUAL_VAL = dashboardMetricView === "hl" ? 129.41 : 144000;
+
   const semester1Atingimento = useMemo(() => {
-    return (semester1ApprovedAccumulated / META_SEMESTRAL) * 100;
-  }, [semester1ApprovedAccumulated, META_SEMESTRAL]);
+    return (semester1ApprovedAccumulated / META_SEMESTRAL_1) * 100;
+  }, [semester1ApprovedAccumulated, META_SEMESTRAL_1]);
 
   const semester2Atingimento = useMemo(() => {
-    return (semester2ApprovedAccumulated / META_SEMESTRAL) * 100;
-  }, [semester2ApprovedAccumulated, META_SEMESTRAL]);
+    return (semester2ApprovedAccumulated / META_SEMESTRAL_2) * 100;
+  }, [semester2ApprovedAccumulated, META_SEMESTRAL_2]);
+
+  const annualAtingimentoVal = useMemo(() => {
+    return (annualApprovedAccumulatedVal / META_ANUAL_VAL) * 100;
+  }, [annualApprovedAccumulatedVal, META_ANUAL_VAL]);
 
   // Top Product overall by spent
   const topProductBySpent = useMemo(() => {
-    if (filteredRecords.length === 0) return null;
+    if (analysisRecords.length === 0) return null;
     const prodMap: { [code: string]: { code: string; descricao: string; quantity: number; totalSpent: number; hl: number } } = {};
     
-    filteredRecords.forEach(r => {
+    analysisRecords.forEach(r => {
       const pCode = r.produto;
       if (!prodMap[pCode]) {
         prodMap[pCode] = { code: pCode, descricao: r.descricaoProduto, quantity: 0, totalSpent: 0, hl: 0 };
       }
       prodMap[pCode].quantity += r.quantidade;
       prodMap[pCode].totalSpent += r.valorTotal;
-      prodMap[pCode].hl += calculateHL(pCode, r.quantidade);
+      prodMap[pCode].hl += getRecordHL(r);
     });
 
     const sorted = Object.values(prodMap).sort((a, b) => b.totalSpent - a.totalSpent);
     return sorted[0] || null;
-  }, [filteredRecords]);
+  }, [analysisRecords]);
 
   // Peak Day of filtered records
   const peakDayAllTime = useMemo(() => {
-    if (filteredRecords.length === 0) return null;
+    if (analysisRecords.length === 0) return null;
     const dateMap: { [date: string]: { date: string; totalSpent: number; totalHL: number; count: number } } = {};
     
-    filteredRecords.forEach(r => {
+    analysisRecords.forEach(r => {
       if (!r.dataSolicitacao) return;
       const dStr = r.dataSolicitacao;
       if (!dateMap[dStr]) {
         dateMap[dStr] = { date: dStr, totalSpent: 0, totalHL: 0, count: 0 };
       }
       dateMap[dStr].totalSpent += r.valorTotal;
-      dateMap[dStr].totalHL += calculateHL(r.produto, r.quantidade);
+      dateMap[dStr].totalHL += getRecordHL(r);
       dateMap[dStr].count += 1;
     });
 
     const sorted = Object.values(dateMap).sort((a, b) => b.totalSpent - a.totalSpent);
     return sorted[0] || null;
-  }, [filteredRecords]);
+  }, [analysisRecords]);
 
   const timelineData = useMemo(() => {
     return timelineViewMode === "months" ? monthlyTimelineData : dailyTimelineData;
@@ -501,42 +605,6 @@ export default function ConsolidatedView({
       setAiLoading(false);
     }
   };
-
-  // Dynamically identify the current/vigent date (data vigente) of the platform based on the records
-  const today = useMemo(() => {
-    if (records.length === 0) return new Date();
-    
-    let maxDateObj: Date | null = null;
-    records.forEach(r => {
-      if (!r.dataSolicitacao) return;
-      const parts = r.dataSolicitacao.split("/");
-      if (parts.length === 3) {
-        const d = parseInt(parts[0], 10);
-        const m = parseInt(parts[1], 10) - 1;
-        const y = parseInt(parts[2], 10);
-        const dt = new Date(y, m, d);
-        if (!isNaN(dt.getTime())) {
-          if (!maxDateObj || dt > maxDateObj) {
-            maxDateObj = dt;
-          }
-        }
-      }
-    });
-
-    const sysToday = new Date();
-    
-    // If we have a max date from records, and it's in the same year as system today or the system year is later,
-    // we can use the actual system today. This ensures that in live/active operations, 
-    // the system date is the absolute source of truth.
-    // If we are viewing a historical year, we use the maximum record date in that dataset.
-    if (maxDateObj) {
-      if (sysToday.getFullYear() === (maxDateObj as Date).getFullYear()) {
-        return sysToday;
-      }
-      return maxDateObj;
-    }
-    return sysToday;
-  }, [records]);
 
   // Active year dynamically determined
   const activeYear = useMemo(() => {
@@ -627,7 +695,7 @@ export default function ConsolidatedView({
 
     const approvedValue = mRecords
       .filter(r => r.status.toLowerCase().trim().includes("aprov"))
-      .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
+      .reduce((sum, r) => sum + getRecordVal(r), 0);
 
     const isCurrentMonth = today.getFullYear() === y && (today.getMonth() + 1) === m;
     const totalDays = new Date(y, m, 0).getDate();
@@ -640,7 +708,7 @@ export default function ConsolidatedView({
       elapsedDays: days,
       label: `${mStr}/${yStr}`
     };
-  }, [records, selectedMonthYear, today]);
+  }, [records, selectedMonthYear, today, dashboardMetricView]);
 
   // Calculate annual average based on everything registered in the year so far
   const yearAverages = useMemo(() => {
@@ -653,7 +721,7 @@ export default function ConsolidatedView({
 
     const approvedValue = yearRecords
       .filter(r => r.status.toLowerCase().trim().includes("aprov"))
-      .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
+      .reduce((sum, r) => sum + getRecordVal(r), 0);
 
     const startOfYear = new Date(activeYearLocal, 0, 1);
     const diffTime = Math.abs(today.getTime() - startOfYear.getTime());
@@ -664,7 +732,7 @@ export default function ConsolidatedView({
       dailyReal: approvedValue / days,
       elapsedDays: days
     };
-  }, [records, today]);
+  }, [records, today, dashboardMetricView]);
 
   // Calculate semester average based on the active semester window
   const semesterAverages = useMemo(() => {
@@ -708,7 +776,7 @@ export default function ConsolidatedView({
 
     const approvedValue = semesterRecords
       .filter(r => r.status.toLowerCase().trim().includes("aprov"))
-      .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
+      .reduce((sum, r) => sum + getRecordVal(r), 0);
 
     let elapsedDays = 180;
     let totalDays = 180;
@@ -755,29 +823,34 @@ export default function ConsolidatedView({
       semesterLabel: activeSemester === 1 ? "1º Semestre" : "2º Semestre",
       semesterNumber: activeSemester
     };
-  }, [records, selectedMonthYear, today]);
+  }, [records, selectedMonthYear, today, dashboardMetricView]);
 
   // Triple Projection (Mensal, Semestral, Anual)
   const tripleTrend = useMemo(() => {
     // 1. Monthly (projection of the active or current month using currentMonthDailyReal)
+    let targetMonthStr = String(today.getMonth() + 1).padStart(2, "0");
+    if (selectedMonthYear && selectedMonthYear !== "todos") {
+      targetMonthStr = selectedMonthYear.split("/")[0];
+    }
+
     const mDailyReal = currentMonthDailyReal.dailyReal;
     const mDays = currentMonthDailyReal.fullPeriodDays;
     const mProjected = mDailyReal * mDays;
-    const mMeta = 12000;
+    const mMeta = dashboardMetricView === "hl" ? (META_HL_BY_MONTH[targetMonthStr] || 10.0) : 12000;
     const mPercent = mMeta > 0 ? (mProjected / mMeta) * 100 : 0;
     
     // 2. Semestral (dynamically using active semester)
     const sDailyReal = semesterAverages.dailyReal;
     const sDays = semesterAverages.totalDays;
     const sProjected = sDailyReal * sDays;
-    const sMeta = 72000;
+    const sMeta = dashboardMetricView === "hl" ? (semesterAverages.semesterNumber === 1 ? 58.42 : 70.99) : 72000;
     const sPercent = sMeta > 0 ? (sProjected / sMeta) * 100 : 0;
     
     // 3. Annual (365 days based on the annual average)
     const aDailyReal = yearAverages.dailyReal;
     const aDays = 365;
     const aProjected = aDailyReal * aDays;
-    const aMeta = 144000;
+    const aMeta = dashboardMetricView === "hl" ? 129.41 : 144000;
     const aPercent = aMeta > 0 ? (aProjected / aMeta) * 100 : 0;
     
     return {
@@ -809,60 +882,35 @@ export default function ConsolidatedView({
         diff: Math.abs(aProjected - aMeta)
       }
     };
-  }, [currentMonthDailyReal, semesterAverages, yearAverages]);
+  }, [currentMonthDailyReal, semesterAverages, yearAverages, dashboardMetricView, selectedMonthYear, today]);
 
   // Dedicated monthly metric state for the "Atingimento do Mês" card
   const monthlyCardMetrics = useMemo(() => {
-    // 1. If a specific month is selected, use it!
-    if (selectedMonthYear && selectedMonthYear !== "todos") {
-      const [mStr, yStr] = selectedMonthYear.split("/");
-      const m = parseInt(mStr, 10);
-      const y = parseInt(yStr, 10);
-      
-      const mRecords = records.filter(r => {
-        if (!r.dataSolicitacao) return false;
-        const parts = r.dataSolicitacao.split("/");
-        return parts.length === 3 && parseInt(parts[1], 10) === m && parseInt(parts[2], 10) === y;
-      });
-
-      const approvedValue = mRecords
-        .filter(r => r.status.toLowerCase().trim().includes("aprov"))
-        .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
-
-      const limit = 12000;
-      const percent = limit > 0 ? (approvedValue / limit) * 100 : 0;
-
-      return {
-        value: approvedValue,
-        limit,
-        percent,
-        label: `${mStr}/${yStr}`
-      };
-    }
-
-    // 2. If "todos" is selected, find the "vigent/current" month within the current filtered records or calendar
     let targetMonth = today.getMonth() + 1;
     let targetYear = today.getFullYear();
 
-    // If we have filtered records and our current month/year is NOT in the filtered set (e.g. historical 1º Semestre),
-    // let's use the latest month/year from the filtered records
-    const filteredMonthYears = Array.from(new Set(filteredRecords.map(r => {
-      if (!r.dataSolicitacao) return "";
-      const parts = r.dataSolicitacao.split("/");
-      return parts.length === 3 ? `${parts[1]}/${parts[2]}` : "";
-    }).filter(Boolean)));
+    if (selectedMonthYear && selectedMonthYear !== "todos") {
+      const [mStr, yStr] = selectedMonthYear.split("/");
+      targetMonth = parseInt(mStr, 10);
+      targetYear = parseInt(yStr, 10);
+    } else {
+      const filteredMonthYears = Array.from(new Set(filteredRecords.map(r => {
+        if (!r.dataSolicitacao) return "";
+        const parts = r.dataSolicitacao.split("/");
+        return parts.length === 3 ? `${parts[1]}/${parts[2]}` : "";
+      }).filter(Boolean)));
 
-    const todayStr = `${String(today.getMonth() + 1).padStart(2, "0")}/${today.getFullYear()}`;
-    if (filteredMonthYears.length > 0 && !filteredMonthYears.includes(todayStr)) {
-      // Sort filtered month/years chronologically and take the latest
-      filteredMonthYears.sort((a, b) => {
-        const [mA, yA] = a.split("/").map(Number);
-        const [mB, yB] = b.split("/").map(Number);
-        return (yB - yA) || (mB - mA);
-      });
-      const [latestM, latestY] = filteredMonthYears[0].split("/").map(Number);
-      targetMonth = latestM;
-      targetYear = latestY;
+      const todayStr = `${String(today.getMonth() + 1).padStart(2, "0")}/${today.getFullYear()}`;
+      if (filteredMonthYears.length > 0 && !filteredMonthYears.includes(todayStr)) {
+        filteredMonthYears.sort((a, b) => {
+          const [mA, yA] = a.split("/").map(Number);
+          const [mB, yB] = b.split("/").map(Number);
+          return (yB - yA) || (mB - mA);
+        });
+        const [latestM, latestY] = filteredMonthYears[0].split("/").map(Number);
+        targetMonth = latestM;
+        targetYear = latestY;
+      }
     }
 
     const mRecords = records.filter(r => {
@@ -871,20 +919,21 @@ export default function ConsolidatedView({
       return parts.length === 3 && parseInt(parts[1], 10) === targetMonth && parseInt(parts[2], 10) === targetYear;
     });
 
+    const mStr = String(targetMonth).padStart(2, "0");
     const approvedValue = mRecords
       .filter(r => r.status.toLowerCase().trim().includes("aprov"))
-      .reduce((sum, r) => sum + (r.valorTotal || 0), 0);
+      .reduce((sum, r) => sum + getRecordVal(r), 0);
 
-    const limit = 12000;
+    const limit = dashboardMetricView === "hl" ? (META_HL_BY_MONTH[mStr] || 10.0) : 12000;
     const percent = limit > 0 ? (approvedValue / limit) * 100 : 0;
 
     return {
       value: approvedValue,
       limit,
       percent,
-      label: `${String(targetMonth).padStart(2, "0")}/${targetYear}`
+      label: `${mStr}/${targetYear}`
     };
-  }, [records, filteredRecords, selectedMonthYear, today]);
+  }, [records, filteredRecords, selectedMonthYear, today, dashboardMetricView]);
 
   return (
     <div className="space-y-6">
@@ -895,10 +944,22 @@ export default function ConsolidatedView({
         {/* Painel de Metas & Atingimentos */}
         <div className="lg:col-span-7 bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl flex flex-col justify-between space-y-4">
           <div>
-            <h3 className="text-sm font-bold font-display text-white flex items-center gap-2 mb-4">
-              <Target className="w-4 h-4 text-blue-400" />
-              Metas & Percentuais de Atingimento SSTR
-            </h3>
+            <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
+              <h3 className="text-sm font-bold font-display text-white flex items-center gap-2">
+                <Target className="w-4 h-4 text-blue-400" />
+                Metas & Percentuais de Atingimento SSTR
+              </h3>
+
+              <button
+                type="button"
+                onClick={() => exportHectoliterAuditReport(analysisRecords.length > 0 ? analysisRecords : records.filter(isRecordApproved), "auditoria_hectolitros_metas")}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-extrabold px-3 py-1.5 rounded-xl border border-emerald-400/30 flex items-center gap-1.5 transition-all shadow-md active:scale-95 cursor-pointer font-sans"
+                title="Baixar planilha Excel com auditoria detalhada de itens, quantidades e hectolitros (HL)"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>📊 Baixar Relatório HL (Excel)</span>
+              </button>
+            </div>
             
             <div className="space-y-4">
               {/* Mês Section */}
@@ -909,7 +970,7 @@ export default function ConsolidatedView({
                       Atingimento do Mês ({monthlyCardMetrics.label})
                     </span>
                     <p className="text-white font-bold font-mono text-base mt-0.5">
-                      {formatCurrency(monthlyCardMetrics.value)} <span className="text-slate-500 font-normal text-xs">de {formatCurrency(monthlyCardMetrics.limit)}</span>
+                      {formatVal(monthlyCardMetrics.value)} <span className="text-slate-500 font-normal text-xs">de {formatVal(monthlyCardMetrics.limit)}</span>
                     </p>
                   </div>
                   <div className="text-right">
@@ -937,7 +998,7 @@ export default function ConsolidatedView({
                   <div>
                     <span className="text-[10px] uppercase font-bold tracking-wider font-mono text-indigo-400">Atingimento 1º Semestre (1º H)</span>
                     <p className="text-white font-bold font-mono text-base mt-0.5">
-                      {formatCurrency(semester1ApprovedAccumulated)} <span className="text-slate-500 font-normal text-xs">de {formatCurrency(META_SEMESTRAL)}</span>
+                      {formatVal(semester1ApprovedAccumulated)} <span className="text-slate-500 font-normal text-xs">de {formatVal(META_SEMESTRAL_1)}</span>
                     </p>
                   </div>
                   <div className="text-right">
@@ -965,7 +1026,7 @@ export default function ConsolidatedView({
                   <div>
                     <span className="text-[10px] uppercase font-bold tracking-wider font-mono text-cyan-400">Atingimento 2º Semestre (2º H)</span>
                     <p className="text-white font-bold font-mono text-base mt-0.5">
-                      {formatCurrency(semester2ApprovedAccumulated)} <span className="text-slate-500 font-normal text-xs">de {formatCurrency(META_SEMESTRAL)}</span>
+                      {formatVal(semester2ApprovedAccumulated)} <span className="text-slate-500 font-normal text-xs">de {formatVal(META_SEMESTRAL_2)}</span>
                     </p>
                   </div>
                   <div className="text-right">
@@ -993,24 +1054,24 @@ export default function ConsolidatedView({
                   <div>
                     <span className="text-[10px] uppercase font-bold tracking-wider font-mono text-violet-400">Atingimento do Ano (YTD)</span>
                     <p className="text-white font-bold font-mono text-base mt-0.5">
-                      {formatCurrency(annualApprovedAccumulated)} <span className="text-slate-500 font-normal text-xs">de {formatCurrency(META_ANUAL)}</span>
+                      {formatVal(annualApprovedAccumulatedVal)} <span className="text-slate-500 font-normal text-xs">de {formatVal(META_ANUAL_VAL)}</span>
                     </p>
                   </div>
                   <div className="text-right">
                     <span className="text-[10px] text-slate-400 block font-mono">Status da Meta</span>
-                    <span className={`font-bold font-mono text-sm ${annualAtingimento > 100 ? "text-rose-450" : "text-violet-400"}`}>
-                      {annualAtingimento.toFixed(1)}% {annualAtingimento > 100 ? "⚠️" : "✓"}
+                    <span className={`font-bold font-mono text-sm ${annualAtingimentoVal > 100 ? "text-rose-450" : "text-violet-400"}`}>
+                      {annualAtingimentoVal.toFixed(1)}% {annualAtingimentoVal > 100 ? "⚠️" : "✓"}
                     </span>
                   </div>
                 </div>
                 <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden relative">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ease-out ${
-                      annualAtingimento > 100 
+                      annualAtingimentoVal > 100 
                         ? "bg-gradient-to-r from-violet-600 to-rose-600" 
                         : "bg-gradient-to-r from-violet-600 to-violet-400"
                     }`}
-                    style={{ width: `${Math.min(annualAtingimento, 100)}%` }}
+                    style={{ width: `${Math.min(annualAtingimentoVal, 100)}%` }}
                   ></div>
                 </div>
               </div>
@@ -1019,7 +1080,12 @@ export default function ConsolidatedView({
           
           <div className="text-[10px] text-slate-450 font-mono bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/60 leading-relaxed mt-2 flex items-center gap-1.5">
             <AlertCircle className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-            <span>As metas de trocas corporativas são divididas proporcionalmente (Mensal: R$ 12.000 | Semestral: R$ 72.000 | Anual: R$ 144.000).</span>
+            <span>
+              {dashboardMetricView === "hl"
+                ? "As metas de trocas corporativas em Hectolítro são acompanhadas mensalmente conforme o orçamento de volume (1º H: 58,42 HL | 2º H: 70,99 HL | Anual: 129,41 HL)."
+                : "As metas de trocas corporativas são divididas proporcionalmente (Mensal: R$ 12.000 | Semestral: R$ 72.000 | Anual: R$ 144.000)."
+              }
+            </span>
           </div>
         </div>
 
@@ -1215,13 +1281,13 @@ export default function ConsolidatedView({
                 <div>
                   <span className="text-[9px] text-slate-400 block">Previsão</span>
                   <span className={`text-base font-extrabold ${tripleTrend.monthly.isExceeding ? "text-rose-400" : "text-emerald-400"}`}>
-                    {formatCurrency(tripleTrend.monthly.projected)}
+                    {formatVal(tripleTrend.monthly.projected)}
                   </span>
                 </div>
                 <div className="text-right">
                   <span className="text-[9px] text-slate-400 block">Meta Limite</span>
                   <span className="text-slate-300 font-bold">
-                    {formatCurrency(tripleTrend.monthly.meta)}
+                    {formatVal(tripleTrend.monthly.meta)}
                   </span>
                 </div>
               </div>
@@ -1257,13 +1323,13 @@ export default function ConsolidatedView({
                 <div>
                   <span className="text-[9px] text-slate-400 block">Previsão</span>
                   <span className={`text-base font-extrabold ${tripleTrend.semestral.isExceeding ? "text-rose-400" : "text-emerald-400"}`}>
-                    {formatCurrency(tripleTrend.semestral.projected)}
+                    {formatVal(tripleTrend.semestral.projected)}
                   </span>
                 </div>
                 <div className="text-right">
                   <span className="text-[9px] text-slate-400 block">Meta Limite</span>
                   <span className="text-slate-300 font-bold">
-                    {formatCurrency(tripleTrend.semestral.meta)}
+                    {formatVal(tripleTrend.semestral.meta)}
                   </span>
                 </div>
               </div>
@@ -1299,13 +1365,13 @@ export default function ConsolidatedView({
                 <div>
                   <span className="text-[9px] text-slate-400 block">Previsão</span>
                   <span className={`text-base font-extrabold ${tripleTrend.annual.isExceeding ? "text-rose-400" : "text-emerald-400"}`}>
-                    {formatCurrency(tripleTrend.annual.projected)}
+                    {formatVal(tripleTrend.annual.projected)}
                   </span>
                 </div>
                 <div className="text-right">
                   <span className="text-[9px] text-slate-400 block">Meta Limite</span>
                   <span className="text-slate-300 font-bold">
-                    {formatCurrency(tripleTrend.annual.meta)}
+                    {formatVal(tripleTrend.annual.meta)}
                   </span>
                 </div>
               </div>
@@ -2064,6 +2130,9 @@ export default function ConsolidatedView({
         </div>
 
       </div>
+
+      {/* DASHBOARD DE AVARIAS POR EMBALAGEM (RGB RETORNÁVEL VS ONE WAY DESCARTÁVEL) */}
+      <AvariasPackagingChart requests={pendingRequests} records={filteredRecords} />
 
       {/* 5. INTERACTIVE SSTR AI DATABASE ASSISTANT */}
       <div className="bg-slate-900/90 p-5 rounded-2xl border border-slate-800 shadow-xl space-y-4">

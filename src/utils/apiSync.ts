@@ -572,6 +572,20 @@ function subscribeCollection(collectionName: string, localKey: string, isObject:
       }
 
       const localStr = safeGetItem(localKey);
+      if (localKey === "sstr_products_database" && Array.isArray(remoteVal)) {
+        try {
+          const localArr = localStr ? JSON.parse(localStr) : [];
+          if (Array.isArray(localArr) && localArr.length > remoteVal.length) {
+            // Merge local products into remoteVal to prevent wiping user uploaded catalog
+            const prodMap = new Map<string, any>();
+            remoteVal.forEach(p => p.codigo && prodMap.set(p.codigo.trim(), p));
+            localArr.forEach(p => p.codigo && !prodMap.has(p.codigo.trim()) && prodMap.set(p.codigo.trim(), p));
+            remoteVal = Array.from(prodMap.values());
+            remoteStr = JSON.stringify(remoteVal);
+          }
+        } catch (e) {}
+      }
+
       if (localStr !== remoteStr) {
         isSyncingFromFirestore = true;
         safeSetItem(localKey, remoteStr);
