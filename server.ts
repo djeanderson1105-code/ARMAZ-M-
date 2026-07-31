@@ -512,7 +512,10 @@ async function startServer() {
       let base64Data = "";
       let extension = "png";
 
-      if (image.startsWith("data:image/jpeg;base64,")) {
+      if (image.startsWith("data:application/pdf;base64,")) {
+        base64Data = image.replace(/^data:application\/pdf;base64,/, "");
+        extension = "pdf";
+      } else if (image.startsWith("data:image/jpeg;base64,")) {
         base64Data = image.replace(/^data:image\/jpeg;base64,/, "");
         extension = "jpg";
       } else if (image.startsWith("data:image/png;base64,")) {
@@ -525,6 +528,14 @@ async function startServer() {
         const matches = image.match(/^data:image\/([A-Za-z+]+);base64,(.+)$/);
         if (matches && matches.length === 3) {
           extension = matches[1];
+          base64Data = matches[2];
+        } else {
+          base64Data = image;
+        }
+      } else if (image.startsWith("data:application/")) {
+        const matches = image.match(/^data:application\/([A-Za-z+]+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          extension = matches[1] === "pdf" ? "pdf" : "bin";
           base64Data = matches[2];
         } else {
           base64Data = image;

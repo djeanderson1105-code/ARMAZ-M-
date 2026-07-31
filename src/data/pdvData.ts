@@ -16,26 +16,44 @@ export const getPdvDatabase = (): Record<string, PdvInfo> => {
   for (const line of lines) {
     if (!line.trim()) continue;
     const parts = line.split(";");
-    if (parts.length >= 10) {
+    if (parts.length >= 8) {
       const codigo = parts[0].trim();
-      if (codigo && codigo !== "CdPDV" && codigo !== "CódPDV" && codigo !== "Cód PDV" && codigo !== "Codigo PDV" && !codigo.startsWith("Cód") && !codigo.startsWith("Cd")) {
+      if (
+        codigo &&
+        codigo !== "CdPDV" &&
+        codigo !== "CódPDV" &&
+        codigo !== "Cód PDV" &&
+        codigo !== "Codigo PDV" &&
+        !codigo.startsWith("Cód") &&
+        !codigo.startsWith("Cd")
+      ) {
+        const doc = parts[1]?.trim() || "";
+        const fantasia = (parts[2]?.trim() || "").toUpperCase();
+        const razao = (parts[3]?.trim() || "").toUpperCase();
+        const end = (parts[4]?.trim() || "").toUpperCase();
+        const comp = (parts[5]?.trim() || "").toUpperCase();
+        const bairro = (parts[6]?.trim() || "").toUpperCase();
+        const muni = (parts[7]?.trim() || "").toUpperCase();
+        const uf = (parts[8]?.trim() || "").toUpperCase();
+        const cep = parts[9]?.trim() || "";
+
         db[codigo] = {
           codigo,
-          documento: parts[1]?.trim() || "",
-          nomeFantasia: parts[2]?.trim() || "",
-          razaoSocial: parts[3]?.trim() || "",
-          endereco: parts[4]?.trim() || "",
-          complemento: parts[5]?.trim() || "",
-          bairro: parts[6]?.trim() || "",
-          municipio: parts[7]?.trim() || "", // Cidade -> Municipio
-          uf: parts[8]?.trim() || "",
-          cep: parts[9]?.trim() || ""
+          documento: doc,
+          nomeFantasia: fantasia || razao || `PDV #${codigo}`,
+          razaoSocial: razao || fantasia || `PDV #${codigo}`,
+          endereco: end,
+          complemento: comp,
+          bairro: bairro,
+          municipio: muni,
+          uf: uf,
+          cep: cep
         };
       }
     }
   }
 
-  // Load custom registered NBs from localStorage
+  // Load custom registered NBs from localStorage without wiping user base
   if (typeof window !== "undefined") {
     const customPdvsRaw = localStorage.getItem("sstr_custom_pdvs_v1");
     if (customPdvsRaw) {
@@ -43,17 +61,19 @@ export const getPdvDatabase = (): Record<string, PdvInfo> => {
         const customPdvs: PdvInfo[] = JSON.parse(customPdvsRaw);
         for (const pdv of customPdvs) {
           if (pdv.codigo) {
-            db[pdv.codigo] = {
-              codigo: pdv.codigo.trim(),
-              razaoSocial: pdv.razaoSocial.trim(),
-              nomeFantasia: pdv.nomeFantasia.trim(),
-              municipio: pdv.municipio.trim(),
-              documento: pdv.documento || "",
-              endereco: pdv.endereco || "",
-              complemento: pdv.complemento || "",
-              bairro: pdv.bairro || "",
-              uf: pdv.uf || "",
-              cep: pdv.cep || ""
+            const code = pdv.codigo.trim();
+            const existing = db[code];
+            db[code] = {
+              codigo: code,
+              razaoSocial: (pdv.razaoSocial || existing?.razaoSocial || "").trim().toUpperCase(),
+              nomeFantasia: (pdv.nomeFantasia || pdv.razaoSocial || existing?.nomeFantasia || "").trim().toUpperCase(),
+              municipio: (pdv.municipio || existing?.municipio || "").trim().toUpperCase(),
+              documento: pdv.documento || existing?.documento || "",
+              endereco: (pdv.endereco || existing?.endereco || "").trim().toUpperCase(),
+              complemento: (pdv.complemento || existing?.complemento || "").trim().toUpperCase(),
+              bairro: (pdv.bairro || existing?.bairro || "").trim().toUpperCase(),
+              uf: (pdv.uf || existing?.uf || "").trim().toUpperCase(),
+              cep: pdv.cep || existing?.cep || ""
             };
           }
         }

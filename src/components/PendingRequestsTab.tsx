@@ -426,6 +426,7 @@ export default function PendingRequestsTab() {
   const [processTypeFilter, setProcessTypeFilter] = useState<string>("todos");
   const [dateSortOrder, setDateSortOrder] = useState<"desc" | "asc">("desc");
   const [zoomPhoto, setZoomPhoto] = useState<string | null>(null);
+  const [inspectRequest, setInspectRequest] = useState<PendingRequest | null>(null);
 
   // Espelho de Reposições state variables
   const [searchEspelho, setSearchEspelho] = useState("");
@@ -561,6 +562,7 @@ export default function PendingRequestsTab() {
   } | null>(null);
   const [customPrintCidade, setCustomPrintCidade] = useState("");
   const [customPrintNome, setCustomPrintNome] = useState("");
+  const [customPrintFantasia, setCustomPrintFantasia] = useState("");
   const [customPrintDocumento, setCustomPrintDocumento] = useState("");
   const [customPrintEndereco, setCustomPrintEndereco] = useState("");
 
@@ -571,11 +573,13 @@ export default function PendingRequestsTab() {
       const clientInfo = getClientDetails(selectedPrintDoc.request.nb, pdvDb, promaxRecords);
       setCustomPrintCidade(cast.municipioRecibo || clientInfo.municipio || "");
       setCustomPrintNome(cast.nomeRecibo || clientInfo.razaoSocial || "");
+      setCustomPrintFantasia(cast.nomeFantasiaRecibo || clientInfo.nomeFantasia || clientInfo.razaoSocial || "");
       setCustomPrintDocumento(cast.documentoRecibo || clientInfo.documento || "");
       setCustomPrintEndereco(cast.enderecoRecibo || clientInfo.endereco || "");
     } else {
       setCustomPrintCidade("");
       setCustomPrintNome("");
+      setCustomPrintFantasia("");
       setCustomPrintDocumento("");
       setCustomPrintEndereco("");
     }
@@ -1736,9 +1740,9 @@ export default function PendingRequestsTab() {
     });
   }, [requests]);
 
-  // Approved replacements list Memo (flattened and filtered by date)
+  // Approved replacements list Memo (flattened and filtered by date) - Includes ALL launched requests
   const approvedReplacements = useMemo(() => {
-    const approved = requests.filter(r => r.statusPromax === "cadastrado");
+    const approved = requests;
     const flattened: any[] = [];
     const db = getPdvDatabase();
 
@@ -1747,28 +1751,31 @@ export default function PendingRequestsTab() {
       const cast = req as any;
       const displayMunicipio = cast.municipioRecibo || pdv.municipio || "Guarabira";
 
-      const dateOnly = req.cadastroDate ? req.cadastroDate.split(" ")[0] : "";
+      const rawDateStr = req.cadastroDate || req.data || "";
+      const dateOnly = rawDateStr ? rawDateStr.split(" ")[0] : "";
 
       if (req.items && req.items.length > 0) {
         for (const item of req.items) {
           const isFaltaSkuCompleto = (item.motivo || req.motivo || "").toLowerCase().includes("completo") || (item.motivo || req.motivo || "").toLowerCase().includes("fechado");
-          const rawUm = (item.unidadeMedida || req.unidadeMedida || "").toLowerCase();
-          const isSkuUnit = rawUm === "sku" || isFaltaSkuCompleto;
-          const prodCode = item.item || item.itemCode;
+          const rawUm = (item.unidadeMedida || (item as any).um || req.unidadeMedida || (req as any).um || "").toLowerCase().trim();
+          const isUnd = rawUm === "und" || rawUm === "un" || rawUm === "unidade" || rawUm === "unid" || rawUm.startsWith("un");
+          const isSkuUnit = (rawUm === "sku" || rawUm === "cx" || rawUm === "caixa" || isFaltaSkuCompleto) && !isUnd;
+          
+          const prodCode = item.item || item.itemCode || "SKU_GENERIC";
           const itemPlate = (cast.itemPlates && cast.itemPlates[prodCode]) || req.placaVeiculo || cast.placa || "";
 
           flattened.push({
             requestId: req.id,
-            cadastroDate: req.cadastroDate || "",
+            cadastroDate: req.cadastroDate || req.data || "",
             dateOnly,
             nb: req.nb,
             razaoSocial: pdv.razaoSocial,
             nomeFantasia: pdv.nomeFantasia,
             municipio: displayMunicipio,
             productCode: prodCode,
-            productDesc: item.descricao || item.itemDesc || "Produto sem descrição",
-            quantidade: item.quantidade,
-            unidadeType: isSkuUnit ? "SKU" : "UND",
+            productDesc: item.descricao || item.itemDesc || req.descricaoProduto || "Produto SSTR",
+            quantidade: item.quantidade || 1,
+            unidadeType: isSkuUnit ? "SKU" : "UN",
             solicitante: req.setor,
             nf: req.nf,
             mapa: req.mapa,
@@ -1777,22 +1784,24 @@ export default function PendingRequestsTab() {
         }
       } else if (req.item) {
         const isFaltaSkuCompleto = (req.motivo || "").toLowerCase().includes("completo") || (req.motivo || "").toLowerCase().includes("fechado");
-        const rawUm = (req.unidadeMedida || "").toLowerCase();
-        const isSkuUnit = rawUm === "sku" || isFaltaSkuCompleto;
+        const rawUm = (req.unidadeMedida || (req as any).um || "").toLowerCase().trim();
+        const isUnd = rawUm === "und" || rawUm === "un" || rawUm === "unidade" || rawUm === "unid" || rawUm.startsWith("un");
+        const isSkuUnit = (rawUm === "sku" || rawUm === "cx" || rawUm === "caixa" || isFaltaSkuCompleto) && !isUnd;
+        
         const itemPlate = (cast.itemPlates && cast.itemPlates[req.item]) || req.placaVeiculo || cast.placa || "";
 
         flattened.push({
           requestId: req.id,
-          cadastroDate: req.cadastroDate || "",
+          cadastroDate: req.cadastroDate || req.data || "",
           dateOnly,
           nb: req.nb,
           razaoSocial: pdv.razaoSocial,
           nomeFantasia: pdv.nomeFantasia,
           municipio: displayMunicipio,
           productCode: req.item,
-          productDesc: req.descricaoProduto || "Produto sem descrição",
+          productDesc: req.descricaoProduto || req.productDesc || "Produto SSTR",
           quantidade: req.quantidade || 0,
-          unidadeType: isSkuUnit ? "SKU" : "UND",
+          unidadeType: isSkuUnit ? "SKU" : "UN",
           solicitante: req.setor,
           nf: req.nf,
           mapa: req.mapa,
@@ -1809,9 +1818,25 @@ export default function PendingRequestsTab() {
 
   // Filtered Approved Replacements Base Memo (based on selected date and search text)
   const espelhoFiltradoBase = useMemo(() => {
+    const normalizeDateStr = (dStr: string) => {
+      if (!dStr) return "";
+      const clean = dStr.split(" ")[0].trim();
+      if (clean.includes("-")) {
+        const parts = clean.split("-");
+        if (parts.length === 3) {
+          const [y, m, d] = parts;
+          return `${d.padStart(2, "0")}/${m.padStart(2, "0")}/${y}`;
+        }
+      }
+      return clean;
+    };
+
+    const targetDateNorm = normalizeDateStr(filterEspelhoDate);
+
     return approvedReplacements.filter((item: any) => {
       // Date filter
-      const matchesDate = item.dateOnly === filterEspelhoDate;
+      const itemDateNorm = normalizeDateStr(item.dateOnly || item.cadastroDate);
+      const matchesDate = !targetDateNorm || itemDateNorm === targetDateNorm || item.dateOnly === filterEspelhoDate;
       if (!matchesDate) return false;
 
       // Search filter
@@ -2138,11 +2163,12 @@ export default function PendingRequestsTab() {
 
       // 4. Tab filters
       if (activeTab === "historico_baixas") {
-        const isCadastrado = req.statusPromax === "cadastrado";
-        const isReprovado = req.statusPromax === "reprovado" || req.statusPromax === "corrigir";
-        const hasReciboAssinado = !!(req as any).faltaBaixaReciboUrl || !!(req as any).faltaBaixaReciboName || (!!(req as any).faltaBaixa && !!(req as any).fotoUrl);
-        const isFaltaBaixada = (!!(req as any).faltaBaixa || !!(req as any).faltaBaixaDate) && hasReciboAssinado;
-        const isPendente = req.statusPromax === "pendente" && !(req as any).faltaBaixa;
+        const cast = req as any;
+        const isCadastrado = req.statusPromax === "cadastrado" || cast.status === "cadastrado";
+        const isReprovado = req.statusPromax === "reprovado" || req.statusPromax === "corrigir" || cast.status === "reprovado";
+        const hasReciboAssinado = !!cast.faltaBaixaReciboUrl || !!cast.faltaBaixaReciboName || (!!cast.faltaBaixa && !!cast.fotoUrl);
+        const isBaixadoDirect = !!cast.faltaBaixa || !!cast.contingenciaBaixada || cast.status === "baixado" || cast.status === "concluido" || isCadastrado || !!cast.faltaBaixaDate;
+        const isPendente = req.statusPromax === "pendente" && !isBaixadoDirect;
 
         let matchesStatus = true;
         if (historicoBaixasStatusFilter === "aprovados") {
@@ -2150,8 +2176,7 @@ export default function PendingRequestsTab() {
         } else if (historicoBaixasStatusFilter === "reprovados") {
           matchesStatus = isReprovado;
         } else if (historicoBaixasStatusFilter === "baixados") {
-          // Baixados: Apenas aquelas cujo recibo assinado já tenha sido importado/anexado
-          matchesStatus = isFaltaBaixada || hasReciboAssinado;
+          matchesStatus = isBaixadoDirect || hasReciboAssinado;
         } else if (historicoBaixasStatusFilter === "pendentes") {
           matchesStatus = isPendente;
         } else if (historicoBaixasStatusFilter === "duplicatas") {
@@ -2165,14 +2190,14 @@ export default function PendingRequestsTab() {
       }
 
       if (activeTab === "faltas_inversoes") {
+        const cast = req as any;
         const isFalta = isFaltaOrInversao(req);
         if (!isFalta) return false;
 
         // Faltas specificity status filter
-        const isBaixada = !!(req as any).faltaBaixa;
-        const hasRecibo = !!(req as any).faltaBaixaReciboUrl || !!(req as any).faltaBaixaReciboName || !!(req as any).fotoUrl;
+        const isBaixada = !!cast.faltaBaixa || !!cast.contingenciaBaixada || cast.status === "baixado" || !!cast.faltaBaixaDate;
         if (lackFilterStatus === "abertos" && isBaixada) return false;
-        if (lackFilterStatus === "baixados" && (!isBaixada || !hasRecibo)) return false;
+        if (lackFilterStatus === "baixados" && !isBaixada) return false;
 
         // Faltas typo erro filter
         const errType = (req as any).faltaTipoErro;
@@ -2566,9 +2591,9 @@ export default function PendingRequestsTab() {
       console.error("Falha ao iniciar o download automático do PDF:", dlErr);
     }
 
-    // Now upload physical settlement receipt image/file if needed
+    // Now upload physical settlement receipt image/file (PDF or Image) if needed
     let finalReciboUrl = baixaReciboFile?.dataUrl || baixandoFalta.fotoUrl || "";
-    if (baixaReciboFile?.dataUrl && baixaReciboFile.dataUrl.startsWith("data:image/")) {
+    if (baixaReciboFile?.dataUrl && (baixaReciboFile.dataUrl.startsWith("data:image/") || baixaReciboFile.dataUrl.startsWith("data:application/pdf"))) {
       try {
         const upRes = await fetch(getApiUrl("/api/upload"), {
           method: "POST",
@@ -2582,20 +2607,36 @@ export default function PendingRequestsTab() {
           }
         }
       } catch (uploadErr) {
-        console.error("Error uploading physical settlement image:", uploadErr);
+        console.error("Error uploading physical settlement image/pdf:", uploadErr);
+      }
+    }
+
+    // Trigger user attachment download if attached file exists
+    if (baixaReciboFile?.dataUrl) {
+      try {
+        const fileLink = document.createElement("a");
+        fileLink.href = baixaReciboFile.dataUrl;
+        fileLink.download = baixaReciboFile.name || `COMPROVANTE_${baixandoFalta.id}.pdf`;
+        document.body.appendChild(fileLink);
+        fileLink.click();
+        document.body.removeChild(fileLink);
+      } catch (e) {
+        console.warn("Could not auto-download user attached file:", e);
       }
     }
 
     const updatedRequestObj = {
       ...baixandoFalta,
+      status: "baixado" as const,
+      statusPromax: "cadastrado" as const,
       faltaBaixa: true,
       faltaBaixaDate: new Date().toLocaleDateString("pt-BR") + " às " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
       faltaBaixaUser: "Controle Operacional",
       faltaBaixaReciboName: baixaReciboFile?.name || "Baixa Interna (Erro de Armazém)",
       faltaBaixaReciboUrl: finalReciboUrl,
-      faltaBaixaReciboType: baixaReciboFile?.type || "image/png",
+      faltaBaixaReciboType: baixaReciboFile?.type || "application/pdf",
       faltaBaixaObs: baixaObservacao.trim() || undefined,
-      fotoUrl: compiledPdfUrl || baixandoFalta.fotoUrl // Replace original heavy image with the complete compiled PDF URL
+      fotoUrl: compiledPdfUrl || finalReciboUrl || baixandoFalta.fotoUrl
     } as PendingRequest;
 
     savePendingRequest(updatedRequestObj);
@@ -3480,7 +3521,7 @@ export default function PendingRequestsTab() {
                 { id: "todos", label: "📋 Todas as Ocorrências" },
                 { id: "aprovados", label: "✅ Aprovadas / Promax" },
                 { id: "reprovados", label: "❌ Reprovadas" },
-                { id: "baixados", label: "🟢 Baixadas" },
+                { id: "baixados", label: "🟢 Baixadas (Com Recibo)" },
                 { id: "pendentes", label: "⏳ Pendentes" },
                 { 
                   id: "duplicatas", 
@@ -4675,17 +4716,22 @@ export default function PendingRequestsTab() {
               const promaxUser = req.usuarioAcao || matchedPromax?.usuarioAcao;
               const dupInfo = duplicateAnalysis.duplicateMap.get(req.id);
               
+              const isBaixadoCard = !!cast.faltaBaixa || !!(req as any).faltaBaixa || req.status === "baixado" || req.statusPromax === "cadastrado";
+              const isReprovadoCard = req.statusPromax === "reprovado" || req.status === "reprovado";
+              
+              // Determine if overdue (>2 days without settlement)
+              const reqAgeMs = req.timestamp ? (Date.now() - req.timestamp) : 0;
+              const isAtrasadoCard = !isBaixadoCard && (reqAgeMs > 172800000 || isReprovadoCard || !!dupInfo);
+
               return (
                 <div 
                   key={req.id} 
                   className={`bg-slate-900 border rounded-2xl p-4 flex flex-col justify-between space-y-4 shadow-xl transition-all ${
-                    req.statusPromax === "cadastrado" && activeTab !== "faltas_inversoes" && activeTab !== "historico_baixas"
-                      ? "border-emerald-900/30 opacity-75" 
-                      : (activeTab === "faltas_inversoes" || activeTab === "historico_baixas") && cast.faltaBaixa
-                        ? "border-emerald-950 opacity-80"
-                        : dupInfo
-                          ? "border-rose-500/70 shadow-rose-950/20"
-                          : "border-slate-800 hover:border-slate-755"
+                    isBaixadoCard
+                      ? "border-emerald-500/70 bg-emerald-950/20 shadow-emerald-950/20" 
+                      : isAtrasadoCard
+                        ? "border-rose-500/80 bg-rose-950/20 shadow-rose-950/20"
+                        : "border-amber-500/80 bg-amber-950/20 shadow-amber-950/20 hover:border-amber-400"
                   }`}
                 >
                   <div className="space-y-3">
@@ -4735,76 +4781,87 @@ export default function PendingRequestsTab() {
                         </div>
                       </div>
 
-                      {(activeTab === "faltas_inversoes" || activeTab === "historico_baixas") ? (
-                        <div className="flex flex-col items-end gap-1 shrink-0">
-                          {cast.faltaBaixa ? (
-                            <span className="px-2 py-0.5 bg-emerald-950 border border-emerald-900/40 rounded-full text-[8.5px] font-bold font-mono text-emerald-450 flex items-center gap-1 leading-none uppercase">
-                              <CheckCircle2 className="w-2.5 h-2.5" />
-                              <span>Baixada</span>
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 bg-indigo-950/70 border border-indigo-900/50 rounded-full text-[8.5px] font-bold font-mono text-indigo-400 flex items-center gap-1 leading-none uppercase animate-pulse">
-                              <span className="w-1.5 h-1.5 rounded-full bg-indigo-450"></span>
-                              <span>Pendente</span>
-                            </span>
-                          )}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setInspectRequest(req)}
+                          className="p-1.5 bg-slate-900 hover:bg-blue-950 border border-slate-750 hover:border-blue-500 rounded-lg text-blue-400 hover:text-blue-300 transition-all shadow cursor-pointer flex items-center justify-center shrink-0"
+                          title="Analisar card, observações e anexos em detalhes"
+                        >
+                          <Eye className="w-4 h-4 text-blue-400" />
+                        </button>
 
-                          {cast.faltaTipoErro === "carregamento" ? (
-                            <span className="text-[7.5px] uppercase font-bold font-mono text-blue-400 bg-blue-950/45 px-1.5 py-0.5 rounded border border-blue-900/30">
-                              📦 Carregamento
-                            </span>
-                          ) : cast.faltaTipoErro === "entrega" ? (
-                            <span className="text-[7.5px] uppercase font-bold font-mono text-amber-500 bg-amber-955/35 px-1.5 py-0.5 rounded border border-amber-900/30">
-                              🚚 Descarregamento
-                            </span>
-                          ) : (
-                            <span className="text-[7.5px] uppercase font-bold font-mono text-red-400 bg-red-955/20 px-1.5 py-0.5 rounded border border-red-900/20">
-                              ⚠️ Indefinido
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-end gap-1 shrink-0">
-                          {req.statusPromax === "cadastrado" ? (
-                            <span className="px-2 py-0.5 bg-emerald-950/60 border border-emerald-900/55 rounded-full text-[9px] font-bold font-mono text-emerald-400 flex items-center gap-1 shrink-0">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-450" />
-                              <span>Promax Ok</span>
-                            </span>
-                          ) : (cast.faltaBaixa || (req as any).faltaBaixa) ? (
-                            <span className="px-2 py-0.5 bg-emerald-950/60 border border-emerald-900/55 rounded-full text-[9px] font-bold font-mono text-emerald-400 flex items-center gap-1 shrink-0">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-450" />
-                              <span>🟢 Baixada</span>
-                            </span>
-                          ) : req.statusPromax === "reprovado" ? (
-                            <span className="px-2 py-0.5 bg-red-950/60 border border-red-900/55 rounded-full text-[9px] font-bold font-mono text-red-400 flex items-center gap-1 shrink-0">
-                              <XCircle className="w-3 h-3 text-red-450" />
-                              <span>Reprovado</span>
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 bg-amber-950 text-amber-450 border border-amber-900/60 text-[9px] font-bold font-mono rounded-full flex items-center gap-1 shrink-0">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
-                              <span>Pendente</span>
-                            </span>
-                          )}
+                        {(activeTab === "faltas_inversoes" || activeTab === "historico_baixas") ? (
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            {isBaixadoCard ? (
+                              <span className="px-2 py-0.5 bg-emerald-950 border border-emerald-500/50 rounded-full text-[8.5px] font-bold font-mono text-emerald-400 flex items-center gap-1 leading-none uppercase shadow">
+                                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
+                                <span>🟢 Baixada</span>
+                              </span>
+                            ) : isAtrasadoCard ? (
+                              <span className="px-2 py-0.5 bg-rose-950/90 border border-rose-500/60 rounded-full text-[8.5px] font-bold font-mono text-rose-300 flex items-center gap-1 leading-none uppercase shadow">
+                                <AlertCircle className="w-2.5 h-2.5 text-rose-400 animate-pulse" />
+                                <span>🔴 Atrasado</span>
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-amber-950/80 border border-amber-500/60 rounded-full text-[8.5px] font-bold font-mono text-amber-300 flex items-center gap-1 leading-none uppercase">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                                <span>🟡 Pendente</span>
+                              </span>
+                            )}
 
-                          {/* Process Type Badge */}
-                          {isReposicaoReq(req) ? (
-                            <span className="text-[7.5px] uppercase font-bold font-mono text-indigo-300 bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-800/40" title="Reposição por Falta de Produto">
-                              📦 Reposição
-                            </span>
-                          ) : (
-                            <span className="text-[7.5px] uppercase font-bold font-mono text-emerald-300 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/40" title="Troca (Avaria/Inversão/Outros Motivos)">
-                              🔁 Troca
-                            </span>
-                          )}
+                            {cast.faltaTipoErro === "carregamento" ? (
+                              <span className="text-[7.5px] uppercase font-bold font-mono text-blue-400 bg-blue-950/45 px-1.5 py-0.5 rounded border border-blue-900/30">
+                                📦 Carregamento
+                              </span>
+                            ) : cast.faltaTipoErro === "entrega" ? (
+                              <span className="text-[7.5px] uppercase font-bold font-mono text-amber-500 bg-amber-955/35 px-1.5 py-0.5 rounded border border-amber-900/30">
+                                🚚 Descarregamento
+                              </span>
+                            ) : (
+                              <span className="text-[7.5px] uppercase font-bold font-mono text-red-400 bg-red-955/20 px-1.5 py-0.5 rounded border border-red-900/20">
+                                ⚠️ Indefinido
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            {isBaixadoCard ? (
+                              <span className="px-2 py-0.5 bg-emerald-950/80 border border-emerald-500/60 rounded-full text-[9px] font-bold font-mono text-emerald-400 flex items-center gap-1 shrink-0 shadow">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                <span>🟢 Baixada</span>
+                              </span>
+                            ) : isAtrasadoCard ? (
+                              <span className="px-2 py-0.5 bg-rose-950/80 border border-rose-500/60 rounded-full text-[9px] font-bold font-mono text-rose-300 flex items-center gap-1 shrink-0 shadow">
+                                <AlertCircle className="w-3 h-3 text-rose-400 animate-pulse" />
+                                <span>🔴 Atrasado</span>
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-amber-950/80 border border-amber-500/60 text-amber-300 text-[9px] font-bold font-mono rounded-full flex items-center gap-1 shrink-0">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                                <span>🟡 Pendente</span>
+                              </span>
+                            )}
 
-                          {!isFaltaSkuCompletoReq(req) && (
-                            <span className="text-[7.5px] uppercase font-bold font-mono text-amber-400 bg-amber-955/40 px-1.5 py-0.5 rounded border border-amber-800/40" title="Elegível para Recibo PDV de Contingência">
-                              ⚠️ Contingência
-                            </span>
-                          )}
-                        </div>
-                      )}
+                            {/* Process Type Badge */}
+                            {isReposicaoReq(req) ? (
+                              <span className="text-[7.5px] uppercase font-bold font-mono text-indigo-300 bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-800/40" title="Reposição por Falta de Produto">
+                                📦 Reposição
+                              </span>
+                            ) : (
+                              <span className="text-[7.5px] uppercase font-bold font-mono text-emerald-300 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/40" title="Troca (Avaria/Inversão/Outros Motivos)">
+                                🔁 Troca
+                              </span>
+                            )}
+
+                            {!isFaltaSkuCompletoReq(req) && (
+                              <span className="text-[7.5px] uppercase font-bold font-mono text-amber-400 bg-amber-955/40 px-1.5 py-0.5 rounded border border-amber-800/40" title="Elegível para Recibo PDV de Contingência">
+                                ⚠️ Contingência
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     {/* Client Info Block on card */}
@@ -4813,6 +4870,11 @@ export default function PendingRequestsTab() {
                       <h4 className="font-extrabold text-slate-200 text-xs uppercase leading-tight mt-1" title={clientDetails.razaoSocial}>
                         {clientDetails.razaoSocial}
                       </h4>
+                      {clientDetails.nomeFantasia && clientDetails.nomeFantasia !== clientDetails.razaoSocial && (
+                        <p className="text-[10px] font-extrabold text-blue-400 uppercase font-mono mt-0.5 tracking-wide truncate" title={clientDetails.nomeFantasia}>
+                          🏷️ N. FANTASIA: {clientDetails.nomeFantasia}
+                        </p>
+                      )}
                       <p className="text-[10px] text-emerald-450 font-bold uppercase mt-1">
                         📍 {clientDetails.municipio} - {clientDetails.uf}
                       </p>
@@ -5120,44 +5182,73 @@ export default function PendingRequestsTab() {
                           Confirmado envio e entrega do produto por <strong className="text-emerald-400">{cast.faltaBaixaUser}</strong>.
                         </p>
                         
-                        {cast.faltaBaixaObs && (
-                          <div className="p-2 bg-slate-950/40 border border-slate-900 rounded-lg text-[10.5px] text-slate-350 italic">
-                            "{cast.faltaBaixaObs}"
-                          </div>
-                        )}
+                         {/* Observations block */}
+                         {(cast.faltaBaixaObs || req.observacao) && (
+                           <div className="p-2.5 bg-slate-950 border border-slate-900 rounded-xl text-[11px] text-slate-300 font-sans space-y-0.5">
+                             <span className="text-[9px] uppercase font-mono font-bold text-emerald-400 block">📝 Observações Importadas na Baixa:</span>
+                             <p className="italic leading-relaxed">"{cast.faltaBaixaObs || req.observacao}"</p>
+                           </div>
+                         )}
 
-                        {cast.faltaBaixaReciboUrl && (
-                          <div className="pt-2 border-t border-emerald-900/30 flex items-center justify-between">
-                            <span className="text-[10px] text-slate-400 font-mono truncate max-w-[140px] flex items-center gap-1" title={cast.faltaBaixaReciboName}>
-                              📎 <span className="hover:underline">{cast.faltaBaixaReciboName || "Recibo_Assinado"}</span>
-                            </span>
-                            {cast.faltaBaixaReciboUrl === "pdf_placeholder" || (cast.faltaBaixaReciboType && cast.faltaBaixaReciboType.includes("pdf")) ? (
-                              <button
-                                onClick={() => {
-                                  // Open a safe info notification or download
-                                  const link = document.createElement("a");
-                                  link.href = cast.faltaBaixaReciboUrl === "pdf_placeholder" ? "#" : cast.faltaBaixaReciboUrl;
-                                  link.download = cast.faltaBaixaReciboName || "recibo_assinado.pdf";
-                                  if (cast.faltaBaixaReciboUrl === "pdf_placeholder") {
-                                    alert(`Documento PDF "${cast.faltaBaixaReciboName || "recibo.pdf"}" registrado no sistema devidamente.`);
-                                  } else {
-                                    link.click();
-                                  }
-                                }}
-                                className="px-2.5 py-1 bg-emerald-900/60 hover:bg-emerald-850 border border-emerald-850 text-[10px] text-emerald-355 hover:text-white rounded-md cursor-pointer transition-colors"
-                              >
-                                Baixar/Abrir PDF
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => setZoomPhoto(cast.faltaBaixaReciboUrl)}
-                                className="px-2.5 py-1 bg-emerald-900/60 hover:bg-emerald-850 border border-emerald-850 text-[10px] text-emerald-355 hover:text-white rounded-md cursor-pointer transition-colors"
-                              >
-                                Visualizar Foto
-                              </button>
-                            )}
-                          </div>
-                        )}
+                         {/* Receipt Image Thumbnail & Fullscreen Zoom Preview */}
+                         {cast.faltaBaixaReciboUrl && (
+                           <div className="pt-2 border-t border-emerald-900/30 space-y-2">
+                             {typeof cast.faltaBaixaReciboUrl === "string" && !cast.faltaBaixaReciboUrl.endsWith(".pdf") && cast.faltaBaixaReciboUrl !== "pdf_placeholder" && (
+                               <div className="relative group rounded-xl overflow-hidden border border-emerald-700/50 bg-slate-950 p-1 flex items-center gap-2">
+                                 <img 
+                                   src={cast.faltaBaixaReciboUrl} 
+                                   alt="Foto do Recibo Assinado" 
+                                   className="w-16 h-16 object-cover rounded-lg cursor-pointer hover:opacity-85 transition-opacity shrink-0"
+                                   onClick={() => setZoomPhoto(cast.faltaBaixaReciboUrl)}
+                                   referrerPolicy="no-referrer"
+                                 />
+                                 <div className="min-w-0 flex-1 text-left font-mono">
+                                   <span className="text-[10px] font-bold text-emerald-400 block truncate">📷 Imagem do Recibo Assinado</span>
+                                   <span className="text-[9px] text-slate-400 block truncate">{cast.faltaBaixaReciboName || "recibo_assinado.jpg"}</span>
+                                   <button
+                                     type="button"
+                                     onClick={() => setZoomPhoto(cast.faltaBaixaReciboUrl)}
+                                     className="mt-1 px-2 py-0.5 bg-emerald-900 hover:bg-emerald-800 text-emerald-200 text-[9px] font-bold rounded cursor-pointer transition-colors flex items-center gap-1"
+                                   >
+                                     <Eye className="w-3 h-3 text-emerald-300" />
+                                     <span>Analisar / Ampliar Imagem</span>
+                                   </button>
+                                 </div>
+                               </div>
+                             )}
+
+                             <div className="flex items-center justify-between pt-1">
+                               <span className="text-[10px] text-slate-400 font-mono truncate max-w-[140px] flex items-center gap-1" title={cast.faltaBaixaReciboName}>
+                                 📎 <span className="hover:underline">{cast.faltaBaixaReciboName || "Recibo_Assinado"}</span>
+                               </span>
+                               {cast.faltaBaixaReciboUrl === "pdf_placeholder" || (cast.faltaBaixaReciboType && cast.faltaBaixaReciboType.includes("pdf")) ? (
+                                 <button
+                                   onClick={() => {
+                                     const link = document.createElement("a");
+                                     link.href = cast.faltaBaixaReciboUrl === "pdf_placeholder" ? "#" : cast.faltaBaixaReciboUrl;
+                                     link.download = cast.faltaBaixaReciboName || "recibo_assinado.pdf";
+                                     if (cast.faltaBaixaReciboUrl === "pdf_placeholder") {
+                                       alert(`Documento PDF "${cast.faltaBaixaReciboName || "recibo.pdf"}" registrado no sistema devidamente.`);
+                                     } else {
+                                       link.click();
+                                     }
+                                   }}
+                                   className="px-2.5 py-1 bg-emerald-900/60 hover:bg-emerald-850 border border-emerald-850 text-[10px] text-emerald-355 hover:text-white rounded-md cursor-pointer transition-colors"
+                                 >
+                                   Baixar/Abrir PDF
+                                 </button>
+                               ) : (
+                                 <button
+                                   onClick={() => setZoomPhoto(cast.faltaBaixaReciboUrl)}
+                                   className="px-2.5 py-1 bg-emerald-900/60 hover:bg-emerald-850 border border-emerald-850 text-[10px] text-emerald-355 hover:text-white rounded-md cursor-pointer transition-colors flex items-center gap-1 font-bold"
+                                 >
+                                   <Eye className="w-3 h-3 text-emerald-400" />
+                                   <span>Visualizar Foto</span>
+                                 </button>
+                               )}
+                             </div>
+                           </div>
+                         )}
                       </div>
                     )}
                   </div>
@@ -5379,9 +5470,6 @@ export default function PendingRequestsTab() {
           </div>
         )}
       </div>
-
-      {/* DASHBOARD DE AVARIAS POR EMBALAGEM (RGB RETORNÁVEL VS ONE WAY DESCARTÁVEL) */}
-      <AvariasPackagingChart requests={filteredRequests} promaxRecords={promaxRecords} />
 
       {/* Discreet Instructions Box (fluxo de ações) */}
       <footer className="mt-8 pt-4 border-t border-slate-900/60 flex justify-center no-print text-left">
@@ -5645,6 +5733,247 @@ export default function PendingRequestsTab() {
               referrerPolicy="no-referrer"
             />
             <p className="mt-3 text-[10px] font-mono text-slate-450">Clique fora ou no botão superior para fechar.</p>
+          </div>
+        </div>
+      )}
+
+      {/* DETAILED INSPECTION MODAL (ANÁLISE DE LANÇAMENTOS E ANEXOS) */}
+      {inspectRequest && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 animate-fade-in no-print"
+          onClick={() => setInspectRequest(null)}
+        >
+          <div 
+            className="bg-slate-950 border border-slate-800 w-full max-w-2xl max-h-[90vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden text-left"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="px-5 py-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <div className="p-2 bg-blue-950 border border-blue-800 rounded-xl text-blue-400">
+                  <Eye className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-white text-sm uppercase">Análise Detalhada do Lançamento</h3>
+                  <p className="text-[10.5px] font-mono text-slate-400">
+                    {isReposicaoReq(inspectRequest) ? "📦 Reposição por Falta" : "🔁 Troca (Avaria/Inversão/Outros)"} • Setor/Rota {inspectRequest.setor}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setInspectRequest(null)}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-4 custom-scrollbar text-xs">
+              
+              {/* Status Badge & Workflow Banner */}
+              {(() => {
+                const cast = inspectRequest as any;
+                const hasReceipt = !!cast.faltaBaixaReciboUrl || !!cast.faltaBaixaReciboName || (!!cast.faltaBaixa && !!inspectRequest.fotoUrl) || !!cast.contingenciaBaixada || cast.status === "baixado";
+                return (
+                  <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 ${
+                    hasReceipt 
+                      ? "bg-emerald-950/40 border-emerald-800 text-emerald-200" 
+                      : "bg-amber-950/40 border-amber-800 text-amber-200"
+                  }`}>
+                    <div>
+                      <span className="font-extrabold font-mono uppercase text-[10px] block">
+                        {hasReceipt ? "🟢 STATUS: BAIXADO (Recibo Anexado)" : "⏳ STATUS: LANÇADO PARA ENVIO (Pendente de Recibo)"}
+                      </span>
+                      <p className="text-[11px] font-sans text-slate-300 mt-0.5">
+                        {hasReceipt 
+                          ? `Baixa registrada por ${cast.faltaBaixaUser || "Sistema"} em ${cast.faltaBaixaDate || "Data Confirmada"}.` 
+                          : "Lançamento em trânsito/envio. Aguardando importação do recibo assinado para baixa."}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => exportRegistrationPdf(inspectRequest, { autoDownload: true })}
+                      className="px-3 py-1.5 bg-blue-950 hover:bg-blue-900 border border-blue-800 text-blue-200 rounded-lg text-xs font-bold font-mono shrink-0 transition-colors flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-blue-400" />
+                      <span>PDF Completo</span>
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {/* Client & PDV Card */}
+              {(() => {
+                const pdvDb = getPdvDatabase();
+                const pdv = pdvDb[inspectRequest.nb];
+                const clientName = pdv?.razaoSocial || `PDV #${inspectRequest.nb}`;
+                const clientFantasia = pdv?.nomeFantasia;
+                return (
+                  <div className="p-3.5 bg-slate-900/90 rounded-xl border border-slate-800 space-y-1.5">
+                    <span className="text-[9.5px] uppercase font-mono font-bold text-slate-400">Ponto de Venda (PDV):</span>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                      <div>
+                        <h4 className="font-black text-sm text-slate-100 uppercase">{clientName}</h4>
+                        {clientFantasia && clientFantasia !== clientName && (
+                          <p className="text-xs font-bold text-blue-400 font-mono uppercase mt-0.5">
+                            🏷️ Nome Fantasia: {clientFantasia}
+                          </p>
+                        )}
+                      </div>
+                      <span className="text-xs font-mono font-extrabold text-amber-400 bg-amber-950/60 px-2 py-1 rounded border border-amber-800/40 shrink-0">
+                        Cód. NB: {inspectRequest.nb}
+                      </span>
+                    </div>
+                    <div className="pt-2 border-t border-slate-800 text-[11px] text-slate-300 font-sans grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <p>📍 <strong>Local:</strong> {pdv?.endereco || "Endereço Cadastrado"}, {pdv?.bairro || "Bairro"}</p>
+                      <p>🏙️ <strong>Município:</strong> {pdv?.municipio || "Guarabira"} - {pdv?.uf || "PB"}</p>
+                      <p>📄 <strong>Documento:</strong> {pdv?.documento || "N/A"}</p>
+                      <p>📮 <strong>CEP:</strong> {pdv?.cep || "N/A"}</p>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Lançamento Metadata */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-left font-mono text-[11px]">
+                <div className="p-2.5 bg-slate-900 rounded-xl border border-slate-800">
+                  <span className="text-[9px] uppercase font-bold text-slate-500 block">NF-e Original</span>
+                  <span className="font-extrabold text-slate-200">{inspectRequest.nf || "N/A"}</span>
+                </div>
+                <div className="p-2.5 bg-slate-900 rounded-xl border border-slate-800">
+                  <span className="text-[9px] uppercase font-bold text-slate-500 block">Mapa de Carga</span>
+                  <span className="font-extrabold text-slate-200">{inspectRequest.mapa || "N/A"}</span>
+                </div>
+                <div className="p-2.5 bg-slate-900 rounded-xl border border-slate-800">
+                  <span className="text-[9px] uppercase font-bold text-slate-500 block">Data Lançamento</span>
+                  <span className="font-extrabold text-slate-200">{inspectRequest.data}</span>
+                </div>
+                <div className="p-2.5 bg-slate-900 rounded-xl border border-slate-800">
+                  <span className="text-[9px] uppercase font-bold text-slate-500 block">Solicitante</span>
+                  <span className="font-extrabold text-indigo-300 truncate block">
+                    {getDisplayCadastroUser(inspectRequest, repsList, motoristasList)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Product Items Table */}
+              <div className="space-y-1.5">
+                <span className="text-[10px] font-mono font-bold text-slate-400 uppercase">Itens Lançados no Pedido / Ocorrência:</span>
+                <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-900/60">
+                  <table className="w-full text-left font-mono text-[11px]">
+                    <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 text-[9.5px] uppercase">
+                      <tr>
+                        <th className="p-2">Cód</th>
+                        <th className="p-2">Produto</th>
+                        <th className="p-2 text-center">Qtd</th>
+                        <th className="p-2 text-right">Volume (HL)</th>
+                        <th className="p-2 text-right">Total (R$)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                      {inspectRequest.skus && inspectRequest.skus.length > 0 ? (
+                        inspectRequest.skus.map((sku, idx) => (
+                          <tr key={idx} className="hover:bg-slate-800/40">
+                            <td className="p-2 font-bold text-blue-400">{sku.code}</td>
+                            <td className="p-2 max-w-[180px] truncate">{sku.name}</td>
+                            <td className="p-2 text-center font-bold">{sku.quantity} {sku.unit || "UN"}</td>
+                            <td className="p-2 text-right text-indigo-300 font-bold">{sku.hectolitros ? sku.hectolitros.toFixed(4) : "0.0000"} HL</td>
+                            <td className="p-2 text-right text-emerald-400 font-extrabold">{formatCurrency(sku.valorTotal || 0)}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td className="p-2 font-bold text-blue-400">{inspectRequest.codPromax || "N/A"}</td>
+                          <td className="p-2">{inspectRequest.descricaoSku || "Produto não discriminado"}</td>
+                          <td className="p-2 text-center font-bold">{inspectRequest.quantidade || 1} UN</td>
+                          <td className="p-2 text-right text-indigo-300 font-bold">{inspectRequest.hectolitros?.toFixed(4) || "0.0000"} HL</td>
+                          <td className="p-2 text-right text-emerald-400 font-extrabold">{formatCurrency(getRequestValue(inspectRequest, promaxRecords))}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Observations & Motivo */}
+              {(inspectRequest.observacao || (inspectRequest as any).faltaBaixaObs) && (
+                <div className="p-3 bg-slate-900/90 rounded-xl border border-slate-800 space-y-1 font-sans text-[11px] text-slate-300">
+                  <span className="text-[9.5px] uppercase font-mono font-bold text-amber-400 block">📝 Observações & Motivos:</span>
+                  {inspectRequest.observacao && <p className="italic">"Lançamento: {inspectRequest.observacao}"</p>}
+                  {(inspectRequest as any).faltaBaixaObs && <p className="italic text-emerald-300">"Baixa: {(inspectRequest as any).faltaBaixaObs}"</p>}
+                </div>
+              )}
+
+              {/* Attachments Section (Original Evidence & Signed Receipt) */}
+              <div className="space-y-2 pt-2 border-t border-slate-800">
+                <span className="text-[10px] font-mono font-bold text-slate-400 uppercase block">Anexos e Imagens Importadas:</span>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Original Evidence Photo */}
+                  {inspectRequest.fotoUrl && !inspectRequest.fotoUrl.endsWith(".pdf") && (
+                    <div className="p-2.5 bg-slate-900 rounded-xl border border-slate-800 flex items-center gap-3">
+                      <img 
+                        src={inspectRequest.fotoUrl} 
+                        alt="Evidência" 
+                        className="w-16 h-16 object-cover rounded-lg border border-slate-700 cursor-pointer hover:opacity-85 shrink-0"
+                        onClick={() => setZoomPhoto(inspectRequest.fotoUrl)}
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="min-w-0 flex-1 font-mono">
+                        <span className="text-[10px] font-bold text-amber-400 block truncate">📷 Evidência do Cadastro</span>
+                        <span className="text-[9px] text-slate-400 block truncate">Foto enviada ao lançar</span>
+                        <button
+                          type="button"
+                          onClick={() => setZoomPhoto(inspectRequest.fotoUrl)}
+                          className="mt-1.5 px-2 py-1 bg-amber-950 hover:bg-amber-900 border border-amber-800 text-amber-300 text-[9px] font-bold rounded cursor-pointer transition-colors flex items-center gap-1"
+                        >
+                          <Eye className="w-3 h-3 text-amber-400" />
+                          <span>Ampliar Foto</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Signed Receipt Photo */}
+                  {(inspectRequest as any).faltaBaixaReciboUrl && typeof (inspectRequest as any).faltaBaixaReciboUrl === "string" && !(inspectRequest as any).faltaBaixaReciboUrl.endsWith(".pdf") && (inspectRequest as any).faltaBaixaReciboUrl !== "pdf_placeholder" && (
+                    <div className="p-2.5 bg-slate-900 rounded-xl border border-emerald-800/80 flex items-center gap-3">
+                      <img 
+                        src={(inspectRequest as any).faltaBaixaReciboUrl} 
+                        alt="Recibo Assinado" 
+                        className="w-16 h-16 object-cover rounded-lg border border-emerald-700 cursor-pointer hover:opacity-85 shrink-0"
+                        onClick={() => setZoomPhoto((inspectRequest as any).faltaBaixaReciboUrl)}
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="min-w-0 flex-1 font-mono">
+                        <span className="text-[10px] font-bold text-emerald-400 block truncate">📝 Recibo Assinado</span>
+                        <span className="text-[9px] text-slate-400 block truncate">{(inspectRequest as any).faltaBaixaReciboName || "recibo_assinado.jpg"}</span>
+                        <button
+                          type="button"
+                          onClick={() => setZoomPhoto((inspectRequest as any).faltaBaixaReciboUrl)}
+                          className="mt-1.5 px-2 py-1 bg-emerald-950 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[9px] font-bold rounded cursor-pointer transition-colors flex items-center gap-1"
+                        >
+                          <Eye className="w-3 h-3 text-emerald-400" />
+                          <span>Ampliar Recibo</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-5 py-3 bg-slate-900 border-t border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setInspectRequest(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold font-mono rounded-xl cursor-pointer transition-colors"
+              >
+                Fechar
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -6299,13 +6628,13 @@ export default function PendingRequestsTab() {
                         {!isFound ? (
                           <input
                             type="text"
-                            value={customPrintNome}
-                            onChange={(e) => handleUpdatePrintNome(e.target.value)}
+                            value={customPrintFantasia}
+                            onChange={(e) => setCustomPrintFantasia(e.target.value)}
                             placeholder="DIGITE O NOME FANTASIA"
                             className="font-bold text-black uppercase bg-amber-50/30 hover:bg-amber-100/50 focus:bg-white border-b border-gray-300 hover:border-indigo-400 focus:border-indigo-600 focus:outline-none px-1 rounded text-xs leading-none transition-colors w-full max-w-[280px] no-print-border font-sans"
                           />
                         ) : (
-                          <span className="uppercase text-slate-800 font-medium">{customPrintNome || clientInfo.nomeFantasia || clientInfo.razaoSocial}</span>
+                          <span className="uppercase text-slate-800 font-medium">{customPrintFantasia || clientInfo.nomeFantasia || clientInfo.razaoSocial}</span>
                         )}
                       </p>
                     </div>

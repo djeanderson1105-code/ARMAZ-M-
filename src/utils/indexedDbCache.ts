@@ -117,29 +117,25 @@ export async function getPhotoFromCacheOrIDB(id: string): Promise<string | null>
  * stripping heavy images into IDB and replacing them with 'idb:ID'
  */
 export function extractImagesToIDB(jsonString: string): string {
-  if (!jsonString || !jsonString.includes("data:image")) return jsonString;
+  if (!jsonString || (!jsonString.includes("data:image") && !jsonString.includes("data:application"))) return jsonString;
   
   try {
     const data = JSON.parse(jsonString);
     let changed = false;
     
+    const fieldsToPrune = ["fotoUrl", "faltaBaixaReciboUrl", "comprovanteUrl", "reciboUrl"];
+
     const traverseAndPrune = (obj: any) => {
       if (!obj || typeof obj !== "object") return;
       
-      // If it's a request/vale with a heavy base64 fotoUrl
-      if (obj.id && obj.fotoUrl && obj.fotoUrl.startsWith("data:image")) {
-        const photoId = `photo_req_${obj.id}`;
-        savePhotoToIDB(photoId, obj.fotoUrl); // Async write in background
-        obj.fotoUrl = `idb:${photoId}`;
-        changed = true;
-      }
-      
-      // Support sub instances (like originalRequest inside Vales)
-      if (obj.originalRequest && obj.originalRequest.id && obj.originalRequest.fotoUrl && obj.originalRequest.fotoUrl.startsWith("data:image")) {
-        const photoId = `photo_req_${obj.originalRequest.id}`;
-        savePhotoToIDB(photoId, obj.originalRequest.fotoUrl); // Async write in background
-        obj.originalRequest.fotoUrl = `idb:${photoId}`;
-        changed = true;
+      for (const field of fieldsToPrune) {
+        if (obj[field] && typeof obj[field] === "string" && obj[field].startsWith("data:")) {
+          const keyId = obj.id || obj.requestId || Math.random().toString(36).substring(2, 9);
+          const photoId = `photo_${field}_${keyId}`;
+          savePhotoToIDB(photoId, obj[field]); // Async write in background
+          obj[field] = `idb:${photoId}`;
+          changed = true;
+        }
       }
       
       for (const key in obj) {
@@ -165,25 +161,20 @@ export function restoreImagesFromCache(jsonString: string): string {
   try {
     const data = JSON.parse(jsonString);
     let changed = false;
+
+    const fieldsToRestore = ["fotoUrl", "faltaBaixaReciboUrl", "comprovanteUrl", "reciboUrl"];
     
     const traverseAndRestore = (obj: any) => {
       if (!obj || typeof obj !== "object") return;
-      
-      if (obj.fotoUrl && obj.fotoUrl.startsWith("idb:")) {
-        const photoKey = obj.fotoUrl.substring(4);
-        const ramVal = (window as any).sstr_image_cache.get(photoKey);
-        if (ramVal) {
-          obj.fotoUrl = ramVal;
-          changed = true;
-        }
-      }
-      
-      if (obj.originalRequest && obj.originalRequest.fotoUrl && obj.originalRequest.fotoUrl.startsWith("idb:")) {
-        const photoKey = obj.originalRequest.fotoUrl.substring(4);
-        const ramVal = (window as any).sstr_image_cache.get(photoKey);
-        if (ramVal) {
-          obj.originalRequest.fotoUrl = ramVal;
-          changed = true;
+
+      for (const field of fieldsToRestore) {
+        if (obj[field] && typeof obj[field] === "string" && obj[field].startsWith("idb:")) {
+          const photoKey = obj[field].substring(4);
+          const ramVal = (window as any).sstr_image_cache?.get(photoKey);
+          if (ramVal) {
+            obj[field] = ramVal;
+            changed = true;
+          }
         }
       }
       

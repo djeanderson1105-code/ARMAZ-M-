@@ -487,16 +487,20 @@ export function calculateItemHL(item: {
   fatorEmbalagem?: number;
   fatorHecto?: number;
   hectolitros?: number;
+  descricao?: string;
 }): number {
   const code = item.item || item.itemCode || item.codigo || "";
-  if (!code) return 0;
-  const cleanCode = code.replace(/^0+/, "");
   const list = getProductsDatabase();
-  const dbProduct = list.find(p => p.codigo === code || p.codigo === cleanCode);
+  const cleanCode = code ? code.replace(/^0+/, "") : "";
+  let dbProduct = code ? list.find(p => p.codigo === code || p.codigo === cleanCode) : undefined;
+  if (!dbProduct && item.descricao) {
+    dbProduct = getProductByCodeOrName(item.descricao);
+  }
   
   const boxFactorHecto = dbProduct?.fatorHecto ?? item.fatorHecto ?? 0.04;
   const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (item.fatorEmbalagem || 12);
-  const isUnd = (item.unidadeMedida || "").toLowerCase() === "und";
+  const umStr = (item.unidadeMedida || "").toLowerCase().trim();
+  const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unid" || umStr.startsWith("un");
   const qty = item.quantidade || 1;
 
   const hl = isUnd ? ((qty / embalagem) * boxFactorHecto) : (qty * boxFactorHecto);
@@ -513,16 +517,20 @@ export function calculateItemValue(item: {
   fatorEmbalagem?: number;
   customUnitPrice?: number;
   precoCalculated?: number;
+  descricao?: string;
 }): number {
   const code = item.item || item.itemCode || item.codigo || "";
-  if (!code) return 0;
-  const cleanCode = code.replace(/^0+/, "");
   const list = getProductsDatabase();
-  const dbProduct = list.find(p => p.codigo === code || p.codigo === cleanCode);
+  const cleanCode = code ? code.replace(/^0+/, "") : "";
+  let dbProduct = code ? list.find(p => p.codigo === code || p.codigo === cleanCode) : undefined;
+  if (!dbProduct && item.descricao) {
+    dbProduct = getProductByCodeOrName(item.descricao);
+  }
 
   const boxPrice = dbProduct?.valor || 0;
   const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (item.fatorEmbalagem || 12);
-  const isUnd = (item.unidadeMedida || "").toLowerCase() === "und";
+  const umStr = (item.unidadeMedida || "").toLowerCase().trim();
+  const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unid" || umStr.startsWith("un");
   const qty = item.quantidade || 1;
 
   if (boxPrice > 0) {
@@ -531,7 +539,8 @@ export function calculateItemValue(item: {
   }
 
   if (item.customUnitPrice && item.customUnitPrice > 0 && item.customUnitPrice !== 98.50) {
-    return Number((item.customUnitPrice * qty).toFixed(2));
+    const actualUnitPrice = isUnd && item.customUnitPrice > 30 ? (item.customUnitPrice / embalagem) : item.customUnitPrice;
+    return Number((actualUnitPrice * qty).toFixed(2));
   }
   if (item.precoCalculated && item.precoCalculated > 0 && item.precoCalculated !== 98.50) {
     return Number(item.precoCalculated.toFixed(2));

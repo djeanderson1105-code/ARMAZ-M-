@@ -32,8 +32,42 @@ export default function AvariasPackagingChart({ requests = [], records = [], pro
     let rgb = { qty: 0, val: 0, hl: 0, count: 0, products: new Map<string, { code: string; desc: string; qty: number; val: number; hl: number }>() };
     let oneWay = { qty: 0, val: 0, hl: 0, count: 0, products: new Map<string, { code: string; desc: string; qty: number; val: number; hl: number }>() };
 
-    // 1. Process Pending Requests
-    if (requests && requests.length > 0) {
+    // Select primary dataset: prefer records/promaxRecords if available, otherwise requests
+    const hasRecords = (records && records.length > 0) || (promaxRecords && promaxRecords.length > 0);
+
+    if (hasRecords) {
+      const allRecords = [...records, ...promaxRecords];
+      allRecords.forEach(rec => {
+        const code = (rec.produto || "").toString().trim();
+        const desc = rec.descricaoProduto || `Produto ${code}`;
+        const qty = Number(rec.quantidade || 1);
+        const val = Number(rec.valorTotal || 0);
+        const hl = getRecordHL(rec) || Number(rec.hectolitros || 0);
+
+        const isRgb = isRGBProduct(code, desc);
+        const targetMap = isRgb ? rgb.products : oneWay.products;
+
+        if (isRgb) {
+          rgb.qty += qty;
+          rgb.val += val;
+          rgb.hl += hl;
+          rgb.count += 1;
+        } else {
+          oneWay.qty += qty;
+          oneWay.val += val;
+          oneWay.hl += hl;
+          oneWay.count += 1;
+        }
+
+        if (code) {
+          const existing = targetMap.get(code) || { code, desc, qty: 0, val: 0, hl: 0 };
+          existing.qty += qty;
+          existing.val += val;
+          existing.hl += hl;
+          targetMap.set(code, existing);
+        }
+      });
+    } else if (requests && requests.length > 0) {
       requests.forEach(req => {
         // Process items array if present
         if (req.items && req.items.length > 0) {
@@ -124,45 +158,10 @@ export default function AvariasPackagingChart({ requests = [], records = [], pro
       });
     }
 
-    // 2. Process Promax Records / ExchangeRecords
-    const allRecords = [...records, ...promaxRecords];
-    if (allRecords.length > 0) {
-      allRecords.forEach(rec => {
-        const code = (rec.produto || "").toString().trim();
-        const desc = rec.descricaoProduto || `Produto ${code}`;
-        const qty = Number(rec.quantidade || 0);
-        const val = Number(rec.valorTotal || 0);
-        const hl = Number(rec.hectolitros || getRecordHL(rec) || 0);
-
-        const isRgb = isRGBProduct(code);
-        const targetMap = isRgb ? rgb.products : oneWay.products;
-
-        if (isRgb) {
-          rgb.qty += qty;
-          rgb.val += val;
-          rgb.hl += hl;
-          rgb.count += 1;
-        } else {
-          oneWay.qty += qty;
-          oneWay.val += val;
-          oneWay.hl += hl;
-          oneWay.count += 1;
-        }
-
-        if (code) {
-          const existing = targetMap.get(code) || { code, desc, qty: 0, val: 0, hl: 0 };
-          existing.qty += qty;
-          existing.val += val;
-          existing.hl += hl;
-          targetMap.set(code, existing);
-        }
-      });
-    }
-
     const totalQty = rgb.qty + oneWay.qty;
     const totalVal = rgb.val + oneWay.val;
     const totalHl = rgb.hl + oneWay.hl;
-    const totalCount = requests.length + allRecords.length;
+    const totalCount = hasRecords ? (records.length + promaxRecords.length) : requests.length;
 
     const rgbHlPct = totalHl > 0 ? (rgb.hl / totalHl) * 100 : 0;
     const oneWayHlPct = totalHl > 0 ? (oneWay.hl / totalHl) * 100 : 0;

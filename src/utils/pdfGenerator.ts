@@ -1,6 +1,7 @@
 import { jsPDF } from "jspdf";
 import { PendingRequest } from "../types";
 import { PRODUCT_DATABASE } from "../data/products";
+import { getPdvDatabase } from "../data/pdvData";
 
 export const NETWORK_REGISTROS_PATH = "P:\\Guarabira\\2026\\04.LOGISTICA\\ARMAZÉM\\3.0 ACURACIDADE\\3.1 PACOTE PREJUIZO\\REGISTROS";
 
@@ -176,7 +177,44 @@ export async function exportRegistrationPdf(
     doc.text(`${baixadaUserStr || "Gestor Logística"}`, 155, y + 44);
   }
 
-  y += 54;
+  y += 52;
+
+  // Client / PDV Details Box
+  const pdvDb = getPdvDatabase();
+  const cleanNbStr = (nb || "").trim();
+  const pdvMatch = pdvDb[cleanNbStr] || Object.values(pdvDb).find(p => parseInt(p.codigo, 10) === parseInt(cleanNbStr, 10));
+  const pdfRazao = (pdvMatch?.razaoSocial || (req as any).nomeCliente || `CLIENTE PDV #${nb}`).toUpperCase();
+  const pdfFantasia = (pdvMatch?.nomeFantasia || pdfRazao).toUpperCase();
+  const pdfMuni = pdvMatch ? `${pdvMatch.municipio} - ${pdvMatch.uf}` : "GUARABIRA - PB";
+  const pdfDoc = pdvMatch?.documento || "N/A";
+
+  doc.setDrawColor(203, 213, 225);
+  doc.setFillColor(241, 245, 249);
+  doc.roundedRect(12, y, pageWidth - 24, 26, 3, 3, "FD");
+
+  doc.setTextColor(30, 41, 59);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.text("IDENTIFICAÇÃO DO PONTO DE VENDA (PDV)", 18, y + 6);
+
+  doc.setFontSize(8.5);
+  doc.setFont("helvetica", "bold");
+  doc.text(`Razão Social:`, 18, y + 13);
+  doc.text(`Nome Fantasia:`, 18, y + 19);
+
+  doc.setFont("helvetica", "normal");
+  doc.text(pdfRazao.slice(0, 52), 48, y + 13);
+  doc.text(pdfFantasia.slice(0, 52), 48, y + 19);
+
+  doc.setFont("helvetica", "bold");
+  doc.text(`Documento (CNPJ/CPF):`, 125, y + 13);
+  doc.text(`Município / UF:`, 125, y + 19);
+
+  doc.setFont("helvetica", "normal");
+  doc.text(`${pdfDoc}`, 162, y + 13);
+  doc.text(`${pdfMuni}`, 162, y + 19);
+
+  y += 30;
 
   // Description & Motive Box
   doc.setFillColor(241, 245, 249);
@@ -256,9 +294,66 @@ export async function exportRegistrationPdf(
 
   y += 6;
 
-  // Attached Photo / Evidence Section
+  // Attached Signed Receipt / Baixa Photo Section
+  const castReq = req as any;
+  const signedReceiptUrl = castReq.faltaBaixaReciboUrl || castReq.reciboUrl;
+  
+  if (signedReceiptUrl && typeof signedReceiptUrl === "string" && !signedReceiptUrl.endsWith(".pdf") && signedReceiptUrl !== "pdf_placeholder") {
+    let receiptDataUrl: string | null = null;
+    if (signedReceiptUrl.startsWith("data:image")) {
+      receiptDataUrl = signedReceiptUrl;
+    } else if (signedReceiptUrl.startsWith("http") || signedReceiptUrl.startsWith("blob:") || signedReceiptUrl.startsWith("/")) {
+      receiptDataUrl = await getImageDataUrl(signedReceiptUrl);
+    }
+
+    if (receiptDataUrl) {
+      if (y + 70 > 270) {
+        doc.addPage();
+        y = 20;
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.5);
+      doc.setTextColor(16, 185, 129); // emerald-600
+      doc.text("RECIBO ASSINADO / COMPROVANTE DE BAIXA ANEXADO:", 14, y);
+
+      y += 5;
+
+      try {
+        const imgWidth = 85;
+        const imgHeight = 55;
+        let imgFormat = "JPEG";
+        if (receiptDataUrl.includes("image/png")) imgFormat = "PNG";
+        else if (receiptDataUrl.includes("image/webp")) imgFormat = "WEBP";
+
+        doc.addImage(receiptDataUrl, imgFormat, 14, y, imgWidth, imgHeight);
+        doc.setDrawColor(16, 185, 129);
+        doc.setLineWidth(0.5);
+        doc.rect(14, y, imgWidth, imgHeight, "S");
+
+        if (castReq.faltaBaixaObs) {
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(15, 23, 42);
+          doc.text("OBSERVAÇÕES DA BAIXA:", 105, y + 6);
+
+          doc.setFont("helvetica", "italic");
+          doc.setFontSize(8);
+          doc.setTextColor(51, 65, 85);
+          const splitObs = doc.splitTextToSize(castReq.faltaBaixaObs, 85);
+          doc.text(splitObs, 105, y + 12);
+        }
+
+        y += imgHeight + 8;
+      } catch (e) {
+        console.warn("Could not embed signed receipt photo into PDF:", e);
+      }
+    }
+  }
+
+  // Attached Photo / Evidence Section (Original Request Photo)
   const isPdfPath = req.fotoUrl && req.fotoUrl.toLowerCase().endsWith(".pdf");
-  if (req.fotoUrl && !isPdfPath) {
+  if (req.fotoUrl && !isPdfPath && req.fotoUrl !== signedReceiptUrl) {
     let imgDataUrl: string | null = null;
     if (req.fotoUrl.startsWith("data:image")) {
       imgDataUrl = req.fotoUrl;
@@ -267,23 +362,21 @@ export async function exportRegistrationPdf(
     }
 
     if (imgDataUrl) {
+      if (y + 70 > 270) {
+        doc.addPage();
+        y = 20;
+      }
+
       doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
       doc.setTextColor(15, 23, 42);
-      doc.text("FOTOGRAFIA / EVIDÊNCIA ANEXADA:", 14, y);
+      doc.text("FOTOGRAFIA / EVIDÊNCIA ANEXADA AO REGISTRO:", 14, y);
 
       y += 4;
 
       try {
-        // Draw image into PDF
         const imgWidth = 80;
-        const imgHeight = 60;
-        
-        // Check if y + imgHeight exceeds page height
-        if (y + imgHeight > 270) {
-          doc.addPage();
-          y = 20;
-        }
+        const imgHeight = 55;
 
         let imgFormat = "JPEG";
         if (imgDataUrl.includes("image/png")) imgFormat = "PNG";

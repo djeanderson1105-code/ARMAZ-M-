@@ -29,7 +29,8 @@ import {
   FileText,
   User,
   Package,
-  Clock
+  Clock,
+  PieChart
 } from "lucide-react";
 
 interface DashboardViewProps {
@@ -85,6 +86,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
   }, [rawRecords]);
 
   const [selectedSector, setSelectedSector] = useState<string>("");
+  const [sectorChartMetric, setSectorChartMetric] = useState<"valor" | "hl" | "unidades">("valor");
   
   // Tab control: "consolidado" (Visão Geral) or "setores" (Explorador Individual de Audit)
   const [dashboardTab, setDashboardTab] = useState<"consolidado" | "setores">("consolidado");
@@ -824,6 +826,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
     // Group approved value and Hectoliter volume by sector
     const sectorMap: { [key: string]: number } = {};
     const sectorHlMap: { [key: string]: number } = {};
+    const sectorUnitsMap: { [key: string]: number } = {};
     
     filteredRecords.forEach(r => {
       const statusClean = r.status.toLowerCase().trim();
@@ -831,6 +834,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
         const sec = r.setorVenda.trim();
         sectorMap[sec] = (sectorMap[sec] || 0) + r.valorTotal;
         sectorHlMap[sec] = (sectorHlMap[sec] || 0) + getRecordHL(r);
+        sectorUnitsMap[sec] = (sectorUnitsMap[sec] || 0) + (r.quantidade || 1);
       }
     });
 
@@ -838,11 +842,13 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
       .map(([sector, approvedSum]) => {
         const percentOfMeta = activeGoal > 0 ? (approvedSum / activeGoal) * 100 : 0;
         const approvedHl = sectorHlMap[sector] || 0;
+        const approvedUnits = sectorUnitsMap[sector] || 0;
         return {
           sector,
           approvedSum,
           percentOfMeta,
-          approvedHl
+          approvedHl,
+          approvedUnits
         };
       })
       .sort((a, b) => b.approvedSum - a.approvedSum);
@@ -1544,17 +1550,30 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
           <div className="space-y-4">
             
             {/* SVG Visual Bars Layout for High-End aesthetic */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
               
-              {/* Left Bar list */}
-              <div className="space-y-3.5">
+              {/* Left Sector List */}
+              <div className="space-y-3">
+                <div className="text-xs font-semibold text-slate-400 font-mono uppercase tracking-wider mb-2 flex items-center justify-between">
+                  <span>Setores de Venda</span>
+                  <span className="text-[10px] text-blue-400">Clique para selecionar</span>
+                </div>
                 {sectorMetaConsumption.map((item, index) => {
+                  const isSelected = selectedSector === item.sector || (!selectedSector && index === 0);
                   return (
-                    <div key={item.sector} className="p-3 bg-slate-950/80 rounded-xl border border-slate-800/80 space-y-2 hover:border-blue-500/30 transition-colors">
+                    <div 
+                      key={item.sector} 
+                      onClick={() => setSelectedSector(item.sector)}
+                      className={`p-3 bg-slate-950/80 rounded-xl border cursor-pointer transition-all ${
+                        isSelected 
+                          ? "border-blue-500 shadow-lg shadow-blue-500/10 bg-slate-900/90" 
+                          : "border-slate-800/80 hover:border-slate-700"
+                      }`}
+                    >
                       <div className="flex justify-between items-center text-xs">
                         <div className="flex items-center space-x-2">
                           <span className={`w-5 h-5 rounded-full flex items-center justify-center font-bold text-[10px] font-mono ${
-                            index === 0 ? "bg-blue-600 text-white animate-pulse" : "bg-slate-800 text-slate-300"
+                            isSelected ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-300"
                           }`}>
                             {index + 1}
                           </span>
@@ -1565,19 +1584,25 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                             <span className="font-extrabold text-blue-400 font-mono">{formatCurrency(item.approvedSum)}</span>
                             <span className="text-[10px] text-slate-400 font-mono ml-2">({item.percentOfMeta.toFixed(1)}% da meta)</span>
                           </div>
-                          <span className="text-[10px] text-indigo-400 font-mono font-semibold">
-                            {item.approvedHl?.toFixed(3) || "0.000"} HL
-                          </span>
+                          <div className="flex items-center space-x-2 text-[10px]">
+                            <span className="text-indigo-400 font-mono font-semibold">
+                              {item.approvedHl?.toFixed(3) || "0.000"} HL
+                            </span>
+                            <span className="text-slate-500">|</span>
+                            <span className="text-emerald-400 font-mono">
+                              {item.approvedUnits} UN
+                            </span>
+                          </div>
                         </div>
                       </div>
 
                       {/* Bar comparison layout */}
-                      <div className="relative w-full bg-slate-900 h-2.5 rounded-full overflow-hidden">
+                      <div className="relative w-full bg-slate-900 h-2 mt-2 rounded-full overflow-hidden">
                         <div
                           className={`h-full rounded-full transition-all duration-300 ${
-                            index === 0 
-                              ? "bg-gradient-to-r from-blue-700 to-blue-400" 
-                              : "bg-slate-600"
+                            isSelected 
+                              ? "bg-gradient-to-r from-blue-600 to-indigo-400" 
+                              : "bg-slate-700"
                           }`}
                           style={{ width: `${Math.min(item.percentOfMeta, 100)}%` }}
                         ></div>
@@ -1587,34 +1612,219 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
                 })}
               </div>
 
-              {/* Right Graphical Summary Insights */}
-              <div className="bg-slate-950/90 p-5 rounded-xl border border-slate-800/60 flex flex-col justify-between h-full space-y-4">
-                <div className="space-y-2">
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-blue-500 font-mono">Destaque de Utilização</span>
-                  <p className="text-sm text-slate-300 leading-relaxed font-sans">
-                    O maior consumidor de verba do portal de trocas neste fluxo é o <strong className="text-white">Setor {sectorMetaConsumption[0]?.sector}</strong>, totalizando <strong className="text-blue-400 font-mono">{formatCurrency(sectorMetaConsumption[0]?.approvedSum)}</strong> aprovados. Isso consome sozinho <strong className="text-white">{sectorMetaConsumption[0]?.percentOfMeta.toFixed(1)}%</strong> de todo o limite de {formatCurrency(activeGoal)} da companhia.
-                  </p>
-                </div>
-
-                <div className="space-y-3 pt-3 border-t border-slate-800/80">
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 font-mono">Consumo Geral vs Meta Limite</span>
+              {/* Right Donut Chart & Interactive Sector Breakdown */}
+              <div className="bg-slate-950/90 p-5 rounded-2xl border border-slate-800/80 flex flex-col justify-between h-full space-y-5">
+                
+                {/* Metric Mode Selector Tabs */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+                  <span className="text-xs font-bold text-white font-mono uppercase tracking-wider flex items-center gap-1.5">
+                    <PieChart className="w-4 h-4 text-blue-400" />
+                    <span>Distribuição % por Setor (Donut)</span>
+                  </span>
                   
-                  {/* Gauge indicator */}
-                  <div className="flex items-center space-x-3 bg-slate-900/60 p-3 rounded-lg border border-slate-800/50">
-                    <div className="w-12 h-12 rounded-full border-4 border-blue-600 flex items-center justify-center font-mono font-bold text-xs text-blue-400 shrink-0">
-                      {Math.min(monthlyAtingimento, 999).toFixed(0)}%
-                    </div>
-                    <div>
-                      <h5 className="text-xs font-bold text-white">Percentual Restante</h5>
-                      <p className="text-[10px] text-slate-400 font-mono">
-                        {monthlyAtingimento <= 100 
-                          ? `Disponível ainda ${formatCurrency(activeGoal - stats.approvedValue)} (${(100 - monthlyAtingimento).toFixed(1)}%)`
-                          : `Ultrapassado em ${formatCurrency(stats.approvedValue - activeGoal)}`
-                        }
-                      </p>
-                    </div>
+                  <div className="flex items-center bg-slate-900 p-1 rounded-xl border border-slate-800 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setSectorChartMetric("valor")}
+                      className={`px-3 py-1.5 text-xs font-mono font-bold rounded-lg transition-all cursor-pointer ${
+                        sectorChartMetric === "valor" ? "bg-blue-600 text-white shadow-md shadow-blue-950" : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Valor (R$)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSectorChartMetric("hl")}
+                      className={`px-3 py-1.5 text-xs font-mono font-bold rounded-lg transition-all cursor-pointer ${
+                        sectorChartMetric === "hl" ? "bg-indigo-600 text-white shadow-md shadow-indigo-950" : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Hecto (HL)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSectorChartMetric("unidades")}
+                      className={`px-3 py-1.5 text-xs font-mono font-bold rounded-lg transition-all cursor-pointer ${
+                        sectorChartMetric === "unidades" ? "bg-emerald-600 text-white shadow-md shadow-emerald-950" : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Unidade (UN)
+                    </button>
                   </div>
                 </div>
+
+                {/* SVG Donut Chart + Legend Grid */}
+                <div className="flex flex-col md:flex-row items-center justify-center gap-6 py-2">
+                  
+                  {/* Proportional Donut SVG Rendering */}
+                  <div className="relative w-52 h-52 sm:w-60 sm:h-60 shrink-0 flex items-center justify-center">
+                    <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90 drop-shadow-md">
+                      {(() => {
+                        const totalSectorSum = sectorMetaConsumption.reduce((acc, curr) => {
+                          if (sectorChartMetric === "valor") return acc + curr.approvedSum;
+                          if (sectorChartMetric === "hl") return acc + curr.approvedHl;
+                          return acc + curr.approvedUnits;
+                        }, 0) || 1;
+
+                        const colors = [
+                          "#3b82f6", "#6366f1", "#10b981", "#f59e0b", "#ec4899", 
+                          "#8b5cf6", "#06b6d4", "#14b8a6", "#f97316"
+                        ];
+
+                        let accumulatedPercent = 0;
+
+                        return sectorMetaConsumption.map((sec, idx) => {
+                          const val = sectorChartMetric === "valor" 
+                            ? sec.approvedSum 
+                            : sectorChartMetric === "hl" 
+                            ? sec.approvedHl 
+                            : sec.approvedUnits;
+                          
+                          const slicePercent = (val / totalSectorSum) * 100;
+                          const strokeDasharray = `${slicePercent} ${100 - slicePercent}`;
+                          const strokeDashoffset = -accumulatedPercent;
+                          accumulatedPercent += slicePercent;
+
+                          const color = colors[idx % colors.length];
+                          const isSelected = selectedSector === sec.sector || (!selectedSector && idx === 0);
+
+                          return (
+                            <circle
+                              key={sec.sector}
+                              cx="50"
+                              cy="50"
+                              r="15.91549430918954" // radius for perimeter 100
+                              fill="transparent"
+                              stroke={color}
+                              strokeWidth={isSelected ? "11" : "7"}
+                              strokeDasharray={strokeDasharray}
+                              strokeDashoffset={strokeDashoffset}
+                              className="transition-all duration-300 cursor-pointer hover:opacity-85"
+                              onClick={() => setSelectedSector(sec.sector)}
+                            >
+                              <title>{`Setor ${sec.sector}: ${slicePercent.toFixed(1)}%`}</title>
+                            </circle>
+                          );
+                        });
+                      })()}
+                    </svg>
+
+                    {/* Donut Center Label */}
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-3 pointer-events-none">
+                      <span className="text-[10px] sm:text-xs font-mono text-slate-400 uppercase tracking-wider">
+                        {sectorChartMetric === "valor" ? "VALOR TOTAL" : sectorChartMetric === "hl" ? "VOLUME HL" : "UNIDADES TOTAL"}
+                      </span>
+                      <span className="text-sm sm:text-lg font-black text-white font-mono mt-0.5">
+                        {sectorChartMetric === "valor" 
+                          ? formatCurrency(sectorMetaConsumption.reduce((a, c) => a + c.approvedSum, 0))
+                          : sectorChartMetric === "hl"
+                          ? `${sectorMetaConsumption.reduce((a, c) => a + c.approvedHl, 0).toFixed(2)} HL`
+                          : `${sectorMetaConsumption.reduce((a, c) => a + c.approvedUnits, 0)} UN`
+                        }
+                      </span>
+                      <span className="text-[10px] text-blue-400 font-mono mt-1">
+                        {sectorMetaConsumption.length} setores
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Donut Legend & Percent Breakdown */}
+                  <div className="w-full space-y-2">
+                    <div className="text-[11px] font-mono text-slate-400 uppercase tracking-wider font-bold mb-1 border-b border-slate-800/80 pb-1 flex justify-between">
+                      <span>Setor</span>
+                      <span>{sectorChartMetric === "valor" ? "Valor / %" : sectorChartMetric === "hl" ? "Hecto / %" : "Físico / %"}</span>
+                    </div>
+                    <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1 custom-scrollbar">
+                      {sectorMetaConsumption.map((sec, idx) => {
+                        const colors = [
+                          "#3b82f6", "#6366f1", "#10b981", "#f59e0b", "#ec4899", 
+                          "#8b5cf6", "#06b6d4", "#14b8a6", "#f97316"
+                        ];
+                        const color = colors[idx % colors.length];
+                        const totalVal = sectorMetaConsumption.reduce((acc, curr) => {
+                          if (sectorChartMetric === "valor") return acc + curr.approvedSum;
+                          if (sectorChartMetric === "hl") return acc + curr.approvedHl;
+                          return acc + curr.approvedUnits;
+                        }, 0) || 1;
+
+                        const val = sectorChartMetric === "valor" 
+                          ? sec.approvedSum 
+                          : sectorChartMetric === "hl" 
+                          ? sec.approvedHl 
+                          : sec.approvedUnits;
+
+                        const percent = ((val / totalVal) * 100).toFixed(1);
+                        const isSelected = selectedSector === sec.sector || (!selectedSector && idx === 0);
+
+                        return (
+                          <div 
+                            key={sec.sector} 
+                            onClick={() => setSelectedSector(sec.sector)}
+                            className={`flex items-center justify-between text-xs cursor-pointer p-2 rounded-xl border transition-all ${
+                              isSelected 
+                                ? "bg-slate-900 border-blue-500 text-white shadow-md shadow-blue-950/30" 
+                                : "bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                            }`}
+                          >
+                            <div className="flex items-center space-x-2 truncate">
+                              <span className="w-3 h-3 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: color }}></span>
+                              <span className="font-mono text-xs font-bold truncate">SETOR {sec.sector}</span>
+                            </div>
+                            <div className="flex items-center space-x-2 text-right shrink-0">
+                              <span className="font-mono text-[11px] text-slate-300">
+                                {sectorChartMetric === "valor" 
+                                  ? formatCurrency(sec.approvedSum) 
+                                  : sectorChartMetric === "hl" 
+                                  ? `${sec.approvedHl.toFixed(2)} HL` 
+                                  : `${sec.approvedUnits} UN`}
+                              </span>
+                              <span className="font-mono font-extrabold text-xs text-blue-400 bg-blue-950/80 px-1.5 py-0.5 rounded border border-blue-800/50">
+                                {percent}%
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* Selected Sector Metric Detail Box */}
+                {(() => {
+                  const targetSec = sectorMetaConsumption.find(s => s.sector === selectedSector) || sectorMetaConsumption[0];
+                  if (!targetSec) return null;
+
+                  return (
+                    <div className="bg-slate-900/90 p-4 rounded-xl border border-slate-800 space-y-3">
+                      <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                        <span className="text-xs font-bold text-white font-mono flex items-center gap-1.5">
+                          <Target className="w-3.5 h-3.5 text-blue-400" />
+                          <span>Métricas do SETOR {targetSec.sector}</span>
+                        </span>
+                        <span className="text-[10px] bg-blue-950 text-blue-300 font-mono px-2 py-0.5 rounded border border-blue-800 font-bold">
+                          {targetSec.percentOfMeta.toFixed(1)}% do consumo da meta
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-center pt-1">
+                        <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                          <span className="text-[10px] uppercase font-mono text-slate-400 block font-semibold">Valor Total</span>
+                          <span className="text-xs sm:text-sm font-black font-mono text-blue-400 mt-0.5 block">{formatCurrency(targetSec.approvedSum)}</span>
+                        </div>
+                        <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                          <span className="text-[10px] uppercase font-mono text-slate-400 block font-semibold">Volume (HL)</span>
+                          <span className="text-xs sm:text-sm font-black font-mono text-indigo-400 mt-0.5 block">{targetSec.approvedHl.toFixed(3)} HL</span>
+                        </div>
+                        <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                          <span className="text-[10px] uppercase font-mono text-slate-400 block font-semibold">Físico (UN)</span>
+                          <span className="text-xs sm:text-sm font-black font-mono text-emerald-400 mt-0.5 block">{targetSec.approvedUnits} UN</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
               </div>
 
             </div>
