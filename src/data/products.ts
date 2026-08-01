@@ -372,8 +372,8 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "34454", descricao: "H2OH LIMONETO LT SLEEK 350ML SH C 12", fator: 12, valor: 33.60, fatorHecto: 0.04 },
   { codigo: "1708", descricao: "GUARANA ANTARCTICA ZERO PET 2,5L CAIXA C/6", fator: 6, valor: 48.00, fatorHecto: 0.15 },
   { codigo: "25303", descricao: "GARRAFEIRA PL. PRETO BEES 1 UN P/24 GFA 600ML", fator: 1, valor: 31.16, fatorHecto: 0.02 },
-  { codigo: "24486", descricao: "GALLO AZEITE OLIVA EX. VIR. GFA VDR 500ML", fator: 1, valor: 29.97, fatorHecto: 0.01 },
-  { codigo: "24488", descricao: "GALLO AZEITE OLIVA EX. VIR. GFA VDR 250ML", fator: 1, valor: 17.21, fatorHecto: 0.00 },
+  { codigo: "24486", descricao: "GALLO AZEITE OLIVA EX. VIR. GFA VDR 500ML", fator: 1, valor: 29.97, fatorHecto: 0.005 },
+  { codigo: "24488", descricao: "GALLO AZEITE OLIVA EX. VIR. GFA VDR 250ML", fator: 1, valor: 17.21, fatorHecto: 0.0025 },
   { codigo: "33857", descricao: "STELLA ARTOIS PURE GOLD 600ML", fator: 12, valor: 108.00, fatorHecto: 0.07 },
   { codigo: "37450", descricao: "BUDWEISER LT SLEEK 350ML SH C 12 MULTIPACK", fator: 12, valor: 41.69, fatorHecto: 0.04 },
   { codigo: "31795", descricao: "BRUTAL FRUIT LONG NECK 275ML SIX PACK SH C 2", fator: 12, valor: 103.80, fatorHecto: 0.03 },
@@ -489,18 +489,26 @@ export function calculateItemHL(item: {
   hectolitros?: number;
   descricao?: string;
 }): number {
-  const code = item.item || item.itemCode || item.codigo || "";
+  const rawCode = String(item.item || item.itemCode || item.codigo || "").trim();
   const list = getProductsDatabase();
-  const cleanCode = code ? code.replace(/^0+/, "") : "";
-  let dbProduct = code ? list.find(p => p.codigo === code || p.codigo === cleanCode) : undefined;
+  const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
+  const numericCode = rawCode.replace(/[^0-9]/g, "");
+
+  let dbProduct = rawCode ? list.find(p => 
+    p.codigo === rawCode || 
+    p.codigo === cleanCode || 
+    (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
+  ) : undefined;
+
   if (!dbProduct && item.descricao) {
     dbProduct = getProductByCodeOrName(item.descricao);
   }
   
   const boxFactorHecto = dbProduct?.fatorHecto ?? item.fatorHecto ?? 0.04;
   const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (item.fatorEmbalagem || 12);
-  const umStr = (item.unidadeMedida || "").toLowerCase().trim();
-  const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unid" || umStr.startsWith("un");
+  const umStr = (item.unidadeMedida || (item as any).um || "").toLowerCase().trim();
+  const isCx = umStr === "cx" || umStr === "caixa" || umStr === "cxs" || umStr === "caixas" || umStr === "cx.";
+  const isUnd = !isCx;
   const qty = item.quantidade || 1;
 
   const hl = isUnd ? ((qty / embalagem) * boxFactorHecto) : (qty * boxFactorHecto);
@@ -517,20 +525,29 @@ export function calculateItemValue(item: {
   fatorEmbalagem?: number;
   customUnitPrice?: number;
   precoCalculated?: number;
+  precoSugerido?: number;
   descricao?: string;
 }): number {
-  const code = item.item || item.itemCode || item.codigo || "";
+  const rawCode = String(item.item || item.itemCode || item.codigo || "").trim();
   const list = getProductsDatabase();
-  const cleanCode = code ? code.replace(/^0+/, "") : "";
-  let dbProduct = code ? list.find(p => p.codigo === code || p.codigo === cleanCode) : undefined;
+  const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
+  const numericCode = rawCode.replace(/[^0-9]/g, "");
+
+  let dbProduct = rawCode ? list.find(p => 
+    p.codigo === rawCode || 
+    p.codigo === cleanCode || 
+    (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
+  ) : undefined;
+
   if (!dbProduct && item.descricao) {
     dbProduct = getProductByCodeOrName(item.descricao);
   }
 
   const boxPrice = dbProduct?.valor || 0;
   const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (item.fatorEmbalagem || 12);
-  const umStr = (item.unidadeMedida || "").toLowerCase().trim();
-  const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unid" || umStr.startsWith("un");
+  const umStr = (item.unidadeMedida || (item as any).um || "").toLowerCase().trim();
+  const isCx = umStr === "cx" || umStr === "caixa" || umStr === "cxs" || umStr === "caixas" || umStr === "cx.";
+  const isUnd = !isCx;
   const qty = item.quantidade || 1;
 
   if (boxPrice > 0) {
@@ -538,12 +555,25 @@ export function calculateItemValue(item: {
     return Number((actualUnitPrice * qty).toFixed(2));
   }
 
-  if (item.customUnitPrice && item.customUnitPrice > 0 && item.customUnitPrice !== 98.50) {
-    const actualUnitPrice = isUnd && item.customUnitPrice > 30 ? (item.customUnitPrice / embalagem) : item.customUnitPrice;
+  const customP = item.customUnitPrice || item.precoSugerido;
+  if (customP && customP > 0 && customP !== 98.50) {
+    let unitP = customP;
+    if (unitP > 1000) unitP = unitP / 100;
+    const actualUnitPrice = isUnd && unitP > 15 ? (unitP / embalagem) : unitP;
     return Number((actualUnitPrice * qty).toFixed(2));
   }
+
   if (item.precoCalculated && item.precoCalculated > 0 && item.precoCalculated !== 98.50) {
-    return Number(item.precoCalculated.toFixed(2));
+    let price = item.precoCalculated;
+    if (price > 10000) price = price / 100;
+    else if (price > 1000) price = price / 100;
+
+    // If unit is UN and price was saved as boxPrice * qty (or inflated > 20 for UN), scale to UN price
+    if (isUnd && price > 20) {
+      const unitP = (price / qty) > 15 ? (price / qty / embalagem) : (price / qty);
+      return Number((unitP * qty).toFixed(2));
+    }
+    return Number(price.toFixed(2));
   }
 
   return 0;

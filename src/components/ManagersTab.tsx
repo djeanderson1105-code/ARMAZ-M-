@@ -377,9 +377,15 @@ export default function ManagersTab() {
       const isContingencia = !isFaltaSkuCompletoOrInversao;
 
       const calcTotalVal = finalDrafts.reduce((acc, curr) => {
+        const val = calculateItemValue({
+          ...curr,
+          unidadeMedida: curr.unidadeMedida || reqUnidade
+        });
+        if (val > 0) return acc + val;
         if (curr.precoCalculated !== undefined && curr.precoCalculated > 0) return acc + curr.precoCalculated;
         if (curr.precoSugerido !== undefined && curr.precoSugerido > 0) {
-          const isUnd = curr.unidadeMedida === 'und';
+          const isCx = (curr.unidadeMedida || "").toLowerCase().trim() === 'cx' || (curr.unidadeMedida || "").toLowerCase().trim() === 'caixa';
+          const isUnd = !isCx;
           const unitVal = isUnd ? (curr.precoSugerido / (curr.fatorEmbalagem || 12)) : curr.precoSugerido;
           return acc + (unitVal * curr.quantidade);
         }

@@ -213,7 +213,10 @@ const isSwapRequest = (req: PendingRequest): boolean => {
 // Pricing helper to determine standard request pricing based on platform registered data and promax database
 const getRequestValue = (req: PendingRequest, promaxRecords: ExchangeRecord[] = []): number => {
   if (req.items && req.items.length > 0) {
-    const total = req.items.reduce((sum, current) => sum + calculateItemValue(current), 0);
+    const total = req.items.reduce((sum, current) => sum + calculateItemValue({
+      ...current,
+      unidadeMedida: current.unidadeMedida || (req as any).unidadeMedida || (req as any).um
+    }), 0);
     if (total > 0) return total;
   }
 
@@ -222,12 +225,18 @@ const getRequestValue = (req: PendingRequest, promaxRecords: ExchangeRecord[] = 
       item: req.item,
       quantidade: req.quantidade,
       unidadeMedida: (req as any).unidadeMedida || (req as any).um,
-      customUnitPrice: (req as any).customUnitPrice || (req as any).precoSugerido
+      customUnitPrice: (req as any).customUnitPrice || (req as any).precoSugerido,
+      precoCalculated: (req as any).precoCalculated
     });
     if (val > 0) return val;
   }
 
-  if (req.valorTotal !== undefined && req.valorTotal > 0 && req.valorTotal !== 98.50) return req.valorTotal;
+  if (req.valorTotal !== undefined && req.valorTotal > 0 && req.valorTotal !== 98.50) {
+    let val = req.valorTotal;
+    if (val > 10000) val = val / 100;
+    else if (val > 1000) val = val / 100;
+    return val;
+  }
 
   return 0;
 };
@@ -235,7 +244,10 @@ const getRequestValue = (req: PendingRequest, promaxRecords: ExchangeRecord[] = 
 // Calculate accurate HL volume for any request accounting for single vs multi-items and unit of measure
 export const getRequestHL = (req: PendingRequest): number => {
   if (req.items && req.items.length > 0) {
-    const total = req.items.reduce((sum, item) => sum + calculateItemHL(item), 0);
+    const total = req.items.reduce((sum, item) => sum + calculateItemHL({
+      ...item,
+      unidadeMedida: item.unidadeMedida || (req as any).unidadeMedida || (req as any).um
+    }), 0);
     if (total > 0) return Number(total.toFixed(4));
   }
 
@@ -244,7 +256,8 @@ export const getRequestHL = (req: PendingRequest): number => {
       item: req.item,
       quantidade: req.quantidade,
       unidadeMedida: (req as any).unidadeMedida || (req as any).um,
-      fatorHecto: (req as any).fatorHecto
+      fatorHecto: (req as any).fatorHecto,
+      fatorEmbalagem: (req as any).fatorEmbalagem
     });
     if (hl > 0) return Number(hl.toFixed(4));
   }
@@ -1179,11 +1192,13 @@ export default function PendingRequestsTab() {
       const unitPrice = embalagem > 0 ? closedBoxPrice / embalagem : closedBoxPrice;
 
       const factor = productDef.fatorHecto || 0.0800;
-      const calculatedHl = reqUnidade === "und"
+      const isReqCx = reqUnidade === "cx" || reqUnidade === "caixa";
+      const isReqUnd = !isReqCx;
+      const calculatedHl = isReqUnd
         ? Number(((qty / embalagem) * factor).toFixed(4))
         : Number((qty * factor).toFixed(4));
 
-      const calculatedPrice = reqUnidade === "und"
+      const calculatedPrice = isReqUnd
         ? Number((qty * unitPrice).toFixed(2))
         : Number((qty * closedBoxPrice).toFixed(2));
 
@@ -1298,11 +1313,13 @@ export default function PendingRequestsTab() {
         const unitPrice = embalagem > 0 ? closedBoxPrice / embalagem : closedBoxPrice;
 
         const factor = productDef.fatorHecto || 0.0800;
-        const calculatedHl = reqUnidade === "und"
+        const isReqCx = reqUnidade === "cx" || reqUnidade === "caixa";
+        const isReqUnd = !isReqCx;
+        const calculatedHl = isReqUnd
           ? Number(((qty / embalagem) * factor).toFixed(4))
           : Number((qty * factor).toFixed(4));
 
-        const calculatedPrice = reqUnidade === "und"
+        const calculatedPrice = isReqUnd
           ? Number((qty * unitPrice).toFixed(2))
           : Number((qty * closedBoxPrice).toFixed(2));
 
@@ -1378,9 +1395,15 @@ export default function PendingRequestsTab() {
       const isContingencia = !isFaltaSkuCompletoOrInversao;
 
       const calcTotalVal = finalDrafts.reduce((acc, curr) => {
+        const val = calculateItemValue({
+          ...curr,
+          unidadeMedida: curr.unidadeMedida || reqUnidade
+        });
+        if (val > 0) return acc + val;
         if (curr.precoCalculated !== undefined && curr.precoCalculated > 0) return acc + curr.precoCalculated;
         if (curr.precoSugerido !== undefined && curr.precoSugerido > 0) {
-          const isUnd = curr.unidadeMedida === 'und';
+          const isCx = (curr.unidadeMedida || "").toLowerCase().trim() === 'cx' || (curr.unidadeMedida || "").toLowerCase().trim() === 'caixa';
+          const isUnd = !isCx;
           const unitVal = isUnd ? (curr.precoSugerido / (curr.fatorEmbalagem || 12)) : curr.precoSugerido;
           return acc + (unitVal * curr.quantidade);
         }
@@ -4964,10 +4987,10 @@ export default function PendingRequestsTab() {
                                   </div>
                                   <div className="flex justify-between text-[8.5px] text-slate-500">
                                     <span>
-                                      Hl: <strong className="text-amber-500 font-semibold">{sub.hectolitros?.toFixed(4) || "0.0000"}</strong>
+                                      Hl: <strong className="text-amber-500 font-semibold">{(calculateItemHL(sub) || sub.hectolitros || 0).toFixed(4)}</strong>
                                       {sub.precoCalculated !== undefined && (
                                         <span className="ml-1.5 border-l border-slate-850 pl-1.5">
-                                          Val: <strong className="text-emerald-400 font-bold">R$ {sub.precoCalculated.toFixed(2)}</strong>
+                                          Val: <strong className="text-emerald-400 font-bold">R$ {calculateItemValue(sub).toFixed(2)}</strong>
                                         </span>
                                       )}
                                     </span>
@@ -4995,7 +5018,7 @@ export default function PendingRequestsTab() {
                           <div className="pt-1.5 border-t border-slate-950 flex flex-col gap-1 font-bold text-[9.5px]">
                             <div className="flex justify-between">
                               <span className="text-slate-450 uppercase">Total Geral (Volume):</span>
-                              <span className="text-amber-500">{req.hectolitros?.toFixed(4) || "0.0000"} HL</span>
+                              <span className="text-amber-500">{getRequestHL(req).toFixed(4)} HL</span>
                             </div>
                             <div className="flex justify-between text-xs text-emerald-400">
                               <span className="uppercase text-[9.5px]">Total Geral (Financ.):</span>
@@ -5022,7 +5045,7 @@ export default function PendingRequestsTab() {
                           <div className="pt-1.5 border-t border-slate-950 flex flex-col gap-1 font-bold text-[9.5px] mt-1.5">
                             <div className="flex justify-between">
                               <span className="text-slate-450 uppercase">Total Geral (Volume):</span>
-                              <span className="text-amber-500">{req.hectolitros?.toFixed(4) || "0.0000"} HL</span>
+                              <span className="text-amber-500">{getRequestHL(req).toFixed(4)} HL</span>
                             </div>
                             <div className="flex justify-between text-xs text-emerald-400">
                               <span className="uppercase text-[9.5px]">Total Geral (Financ.):</span>

@@ -142,8 +142,14 @@ export function recalculateAllRecordsWithProducts(
 ): { updatedRequests: PendingRequest[]; updatedVales: ValeEntry[] } {
   const getProduct = (codeStr: string | undefined): ProductInfo | undefined => {
     if (!codeStr) return undefined;
-    const clean = codeStr.trim().replace(/^0+/, "");
-    return productsList.find(p => p.codigo === codeStr.trim() || p.codigo === clean || p.codigo.replace(/^0+/, "") === clean);
+    const raw = codeStr.trim();
+    const clean = raw.replace(/^#/, "").trim().replace(/^0+/, "");
+    const numOnly = raw.replace(/[^0-9]/g, "");
+    return productsList.find(p => 
+      p.codigo === raw || 
+      p.codigo === clean || 
+      (numOnly && (p.codigo === numOnly || p.codigo.replace(/^0+/, "") === numOnly))
+    );
   };
 
   const updatedRequests = requests.map(req => {

@@ -299,26 +299,31 @@ export function getHectoFactor(productCode: string): number {
  * - DZ / Dúzia: (quantity * 12) * (fatorHecto / fator)
  */
 export function calculateHL(productCode: string, quantity: number, um?: string): number {
-  const codeStr = String(productCode).trim();
-  const cleanCode = codeStr.replace(/^0+/, "");
+  const codeStr = String(productCode || "").trim();
+  const cleanCode = codeStr.replace(/^#/, "").trim().replace(/^0+/, "");
+  const numericCode = codeStr.replace(/[^0-9]/g, "");
   
-  const product = PRODUCT_DATABASE.find(p => p.codigo === codeStr || p.codigo === cleanCode);
+  const product = PRODUCT_DATABASE.find(p => 
+    p.codigo === codeStr || 
+    p.codigo === cleanCode || 
+    (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
+  );
   
-  const fatorHecto = product ? product.fatorHecto : getHectoFactor(codeStr);
+  const fatorHecto = product ? product.fatorHecto : getHectoFactor(numericCode || codeStr);
   const fatorUnits = (product && product.fator && product.fator > 0) ? product.fator : 12;
 
   const umClean = (um || "").trim().toUpperCase();
 
   let hl = 0;
-  if (umClean === "UN" || umClean === "UND" || umClean === "UNIDADE" || umClean === "UNID" || umClean.startsWith("UN")) {
-    // Quantity in individual units (UN)
-    hl = quantity * (fatorHecto / fatorUnits);
+  if (umClean === "CX" || umClean === "CAIXA" || umClean === "CXS" || umClean === "CAIXAS" || umClean === "CX.") {
+    // CX / SKU fechado
+    hl = quantity * fatorHecto;
   } else if (umClean === "DZ" || umClean === "DUZIA" || umClean.startsWith("DZ")) {
     // Quantity in dozen (DZ = 12 UN)
     hl = (quantity * 12) * (fatorHecto / fatorUnits);
   } else {
-    // Default or CX / SKU fechado
-    hl = quantity * fatorHecto;
+    // Default or UN / SKU avulso
+    hl = quantity * (fatorHecto / fatorUnits);
   }
 
   return Number(hl.toFixed(5));
@@ -330,18 +335,19 @@ export function calculateHL(productCode: string, quantity: number, um?: string):
 export function getRecordHL(r: { produto?: string; quantidade?: number; um?: string; unidadeMedida?: string; hectolitros?: number }): number {
   const code = r.produto || "";
   const qty = r.quantidade || 0;
-  const um = (r.unidadeMedida || r.um || "cx").trim().toLowerCase();
-  const isUnd = um === "und" || um === "un" || um === "unidade" || um === "unid" || um.startsWith("un");
+  const um = (r.unidadeMedida || r.um || "").trim().toLowerCase();
+  const isCx = um === "cx" || um === "caixa" || um === "cxs" || um === "caixas" || um === "cx.";
+  const isUnd = !isCx;
 
   if (typeof r.hectolitros === "number" && !isNaN(r.hectolitros) && r.hectolitros > 0) {
     const rawFatorHecto = getHectoFactor(code);
     // If unit is UND, verify stored hectolitros isn't accidentally the full box factor (inflated)
     if (isUnd && rawFatorHecto > 0.005 && Math.abs(r.hectolitros - (qty * rawFatorHecto)) < 0.001) {
-      return calculateHL(code, qty, um);
+      return calculateHL(code, qty, um || "und");
     }
     return r.hectolitros;
   }
-  return calculateHL(code, qty, um);
+  return calculateHL(code, qty, um || (isUnd ? "und" : "cx"));
 }
 
 /**

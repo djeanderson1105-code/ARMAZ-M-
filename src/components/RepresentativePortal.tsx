@@ -1364,7 +1364,8 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     }
 
     const qty = parseInt(formQuantidade) || 1;
-    const isUnd = (formUnidadeMedida || "").toLowerCase() === "und";
+    const isCx = (formUnidadeMedida || "").toLowerCase() === "cx" || (formUnidadeMedida || "").toLowerCase() === "caixa";
+    const isUnd = !isCx;
     const calculatedHl = productDef ? calculateItemHL({
       codigo: productDef.codigo,
       quantidade: qty,
