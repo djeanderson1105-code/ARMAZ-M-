@@ -19,7 +19,10 @@ import {
   Info, 
   Copy, 
   ChevronRight, 
-  Filter 
+  Filter,
+  Globe,
+  Link,
+  Loader2
 } from "lucide-react";
 
 interface ImportPanelProps {
@@ -53,6 +56,8 @@ export default function ImportPanel({
 }: ImportPanelProps) {
   const [dragActive, setDragActive] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [urlInput, setUrlInput] = useState("");
+  const [isDownloadingUrl, setIsDownloadingUrl] = useState(false);
   const [parsedPreview, setParsedPreview] = useState<{
     records: ExchangeRecord[];
     fileName: string;
@@ -188,12 +193,79 @@ export default function ImportPanel({
     }
   };
 
-  const handlePasteSubmit = () => {
-    if (!pasteText.trim()) {
-      setErrorMessage("Insira algum texto ponto-e-vírgula antes de prosseguir.");
+  const normalizeGitHubUrl = (rawUrl: string): string => {
+    let cleaned = rawUrl.trim();
+    if (!cleaned.startsWith("http://") && !cleaned.startsWith("https://")) {
+      cleaned = "https://" + cleaned;
+    }
+    // github.com/user/repo/blob/branch/file -> raw.githubusercontent.com/user/repo/branch/file
+    if (cleaned.includes("github.com/") && cleaned.includes("/blob/")) {
+      cleaned = cleaned.replace("github.com/", "raw.githubusercontent.com/").replace("/blob/", "/");
+    } else if (cleaned.includes("github.com/") && cleaned.includes("/raw/")) {
+      cleaned = cleaned.replace("github.com/", "raw.githubusercontent.com/").replace("/raw/", "/");
+    }
+    return cleaned;
+  };
+
+  const handleImportFromUrl = async (customUrl?: string) => {
+    const targetUrl = (customUrl || urlInput || pasteText).trim();
+    if (!targetUrl) {
+      setErrorMessage("Por favor, insira um link de arquivo do GitHub ou URL válida.");
       return;
     }
-    processRawText(pasteText, "Texto Copiado (" + new Date().toLocaleDateString("pt-BR") + ")");
+
+    try {
+      setIsDownloadingUrl(true);
+      setErrorMessage("");
+      const normalized = normalizeGitHubUrl(targetUrl);
+      console.log(`[URL-IMPORT] Baixando arquivo de: ${normalized}`);
+
+      const res = await fetch(normalized);
+      if (!res.ok) {
+        throw new Error(`Não foi possível baixar o arquivo do servidor/GitHub (HTTP ${res.status}: ${res.statusText})`);
+      }
+
+      const isExcel = normalized.toLowerCase().includes(".xlsx") || 
+                      normalized.toLowerCase().includes(".xls") ||
+                      targetUrl.toLowerCase().includes(".xlsx") ||
+                      targetUrl.toLowerCase().includes(".xls");
+
+      const urlParts = targetUrl.split("/");
+      const rawFileName = urlParts[urlParts.length - 1] || "dataset_github";
+      const fileName = rawFileName.includes(".") ? rawFileName : `${rawFileName}.csv`;
+
+      if (isExcel) {
+        const buffer = await res.arrayBuffer();
+        const workbook = XLSX.read(new Uint8Array(buffer), { type: "array" });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ";" });
+        processRawText(csvText, `GitHub (${fileName})`);
+      } else {
+        const text = await res.text();
+        processRawText(text, `GitHub (${fileName})`);
+      }
+      setUrlInput("");
+    } catch (err: any) {
+      console.error("[URL-IMPORT-ERROR]", err);
+      setErrorMessage("Erro ao importar do GitHub/URL: " + err.message);
+    } finally {
+      setIsDownloadingUrl(false);
+    }
+  };
+
+  const handlePasteSubmit = () => {
+    const text = pasteText.trim();
+    if (!text) {
+      setErrorMessage("Insira algum texto ponto-e-vírgula ou URL do GitHub antes de prosseguir.");
+      return;
+    }
+    // If user pasted a URL directly in the paste box
+    if (text.startsWith("http://") || text.startsWith("https://") || text.includes("github.com/")) {
+      handleImportFromUrl(text);
+      return;
+    }
+    processRawText(text, "Texto Copiado (" + new Date().toLocaleDateString("pt-BR") + ")");
   };
 
   const executeImport = (mode: "append" | "overwrite") => {
@@ -447,6 +519,59 @@ export default function ImportPanel({
                   accept=".csv,.txt,.xlsx,.xls"
                   className="hidden"
                 />
+              </div>
+
+              <div className="relative flex py-2 items-center">
+                <div className="flex-grow border-t border-slate-800"></div>
+                <span className="flex-shrink mx-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Ou Importe via Link / GitHub</span>
+                <div className="flex-grow border-t border-slate-800"></div>
+              </div>
+
+              {/* GitHub / Web URL Input Box */}
+              <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+                <div className="flex items-center space-x-2 text-xs text-blue-400 font-semibold font-mono">
+                  <Globe className="w-4 h-4 text-blue-400 shrink-0" />
+                  <span>Importar Planilha do GitHub ou URL Direta</span>
+                </div>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Link className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+                    <input
+                      type="url"
+                      value={urlInput}
+                      onChange={(e) => setUrlInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleImportFromUrl();
+                        }
+                      }}
+                      placeholder="https://github.com/usuario/repo/blob/main/trocas.csv ou .xlsx"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs font-mono text-slate-200 focus:ring-1 focus:ring-blue-500 focus:outline-none placeholder:text-slate-600"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleImportFromUrl()}
+                    disabled={isDownloadingUrl}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold font-mono flex items-center space-x-1.5 cursor-pointer transition-colors shadow-lg shadow-indigo-900/30 shrink-0"
+                  >
+                    {isDownloadingUrl ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Baixando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Globe className="w-3.5 h-3.5" />
+                        <span>Baixar & Importar</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500 font-mono">
+                  Suporta links de arquivos .csv ou .xlsx do GitHub, GitLab ou servidores web públicos.
+                </p>
               </div>
 
               <div className="relative flex py-2 items-center">

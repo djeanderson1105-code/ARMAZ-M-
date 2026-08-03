@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { safeSetItem } from "../utils/apiSync";
+import { safeSetItem, syncExchangeRecordsConsolidated, syncArrayToFirestore } from "../utils/apiSync";
 import { useSstrData } from "../context/SstrDataContext";
 import * as XLSX from "xlsx";
 import { parseProductExcel, recalculateAllRecordsWithProducts } from "../utils/productExcelImport";
@@ -676,11 +676,14 @@ export default function ManagersTab() {
     }
 
     try {
-      // Clear data arrays
-      localStorage.setItem("sstr_representative_pending_requests", "[]");
-      localStorage.setItem("sstr_vales_historico_reg", "[]");
-      localStorage.setItem("sstr_cached_records_v1", "[]");
-      localStorage.setItem("sstr_cached_batches_v1", "[]");
+      // Clear data arrays safely and replicate clear command to Firestore
+      safeSetItem("sstr_representative_pending_requests", "[]");
+      safeSetItem("sstr_vales_historico_reg", "[]");
+      safeSetItem("sstr_cached_records_v1", "[]");
+      safeSetItem("sstr_cached_batches_v1", "[]");
+      
+      syncExchangeRecordsConsolidated([]);
+      syncArrayToFirestore("batches", [], []);
 
       // Dispatch to synchronize
       window.dispatchEvent(new Event("storage"));

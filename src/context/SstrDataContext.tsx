@@ -8,7 +8,9 @@ import {
   setFirestoreDoc, 
   deleteFirestoreDoc, 
   COLLECTION_MAP, 
-  initializeSync 
+  initializeSync,
+  syncExchangeRecordsConsolidated,
+  syncArrayToFirestore
 } from "../utils/apiSync";
 import { onSnapshot, collection, getDocs, query, limit } from "firebase/firestore";
 import { extractImagesToIDB, restoreImagesFromCache } from "../utils/indexedDbCache";
@@ -432,8 +434,16 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
     setRecords(finalRecs);
     setBatches(finalBatches);
 
-    localStorage.setItem("sstr_cached_records_v1", JSON.stringify(finalRecs));
-    localStorage.setItem("sstr_cached_batches_v1", JSON.stringify(finalBatches));
+    safeSetItem("sstr_cached_records_v1", JSON.stringify(finalRecs));
+    safeSetItem("sstr_cached_batches_v1", JSON.stringify(finalBatches));
+
+    // Replicate imported records and batches to Firestore for instant multi-device replication
+    try {
+      await syncExchangeRecordsConsolidated(finalRecs);
+      await syncArrayToFirestore("batches", mode === "overwrite" ? [] : batches, finalBatches);
+    } catch (err) {
+      console.warn("[CONTEXT-SAVE] Firestore sync queued for offline retry:", err);
+    }
   };
 
   const refreshData = () => {
