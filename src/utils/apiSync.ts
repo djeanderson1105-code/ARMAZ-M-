@@ -11,6 +11,7 @@ import {
   persistentMultipleTabManager,
   enableIndexedDbPersistence,
   doc,
+  getDoc,
   setDoc,
   deleteDoc,
   getDocs,
@@ -29,6 +30,38 @@ import { getProductsDatabase } from "../data/products";
 import { DEFAULT_LISTA_CREW, DEFAULT_REPRESENTATIVOS_SETOR, DEFAULT_MOTORISTAS_ROTAS } from "../types";
 import { getAuth } from "firebase/auth";
 import { recordReads, recordWrites, recordDeletes } from "./dbQuotaTelemetry";
+
+let lastSyncIssueNotificationTime = 0;
+
+export interface SyncIssueDetail {
+  message: string;
+  code?: string;
+  error?: string;
+  timestamp: number;
+}
+
+export function notifySyncIssue(message: string, err?: any) {
+  const now = Date.now();
+  const errorCode = err?.code || (err?.message && (err.message.includes("resource-exhausted") || err.message.includes("quota")) ? "resource-exhausted" : "unknown");
+  
+  const issueData: SyncIssueDetail = {
+    message,
+    code: errorCode,
+    error: err?.message || String(err || ""),
+    timestamp: now
+  };
+
+  try {
+    safeSetItem("sstr_last_sync_issue", JSON.stringify(issueData));
+  } catch (e) {}
+
+  if (now - lastSyncIssueNotificationTime >= 20000) {
+    lastSyncIssueNotificationTime = now;
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("sstr_sync_issue", { detail: issueData }));
+    }
+  }
+}
 
 export function sanitizeForFirestore<T>(data: T): T {
   if (data === null || data === undefined) {
@@ -362,13 +395,15 @@ export async function syncArrayToFirestore(collectionName: string, oldList: any[
         }
       }
       await batch.commit();
+      recordWrites(chunk.length);
       console.log(`[SYNC-WRITE] Committed batch of ${chunk.length} changes to Firestore collection "${collectionName}".`);
     }
     // Remove from offline queue if successful
     const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
     if (key) removeFromOfflineQueue(key);
-  } catch (err) {
+  } catch (err: any) {
     console.warn(`[SYNC-WRITE-OFFLINE] Firestore write error for ${collectionName}. Storing in offline queue for auto-retry when online.`, err);
+    notifySyncIssue(`Erro ao gravar alterações na coleção "${collectionName}": ${err?.message || err}`, err);
     const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
     if (key) addToOfflineQueue(key, newList);
   }
@@ -417,12 +452,14 @@ export async function syncObjectToFirestore(collectionName: string, oldObj: Reco
         }
       }
       await batch.commit();
+      recordWrites(chunk.length);
       console.log(`[SYNC-WRITE] Committed object batch of ${chunk.length} key changes to Firestore collection "${collectionName}".`);
     }
     const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
     if (key) removeFromOfflineQueue(key);
-  } catch (err) {
+  } catch (err: any) {
     console.warn(`[SYNC-WRITE-OFFLINE] Firestore object write error for ${collectionName}. Storing in offline queue for auto-retry when online.`, err);
+    notifySyncIssue(`Erro ao sincronizar objeto "${collectionName}": ${err?.message || err}`, err);
     const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
     if (key) addToOfflineQueue(key, newObj);
   }
@@ -462,10 +499,24 @@ export async function syncExchangeRecordsConsolidated(newList: any[]) {
       });
     }
 
-    // Clean up obsolete chunks safely without overflowing batch limit
-    const prevTotalChunksStr = safeGetItem("sstr_prev_total_chunks") || "50";
-    const prevTotalChunks = Math.max(parseInt(prevTotalChunksStr, 10) || 50, chunks.length + 10);
-    for (let i = chunks.length; i < Math.min(prevTotalChunks, 150); i++) {
+    // Clean up obsolete chunks safely based on remote metadata (or local fallback if offline)
+    let remotePrevTotalChunks = 0;
+    try {
+      const metaSnap = await getDoc(metaRef);
+      if (metaSnap.exists()) {
+        recordReads(1);
+        const metaData = metaSnap.data();
+        remotePrevTotalChunks = metaData?.totalChunks || 0;
+      }
+    } catch (e) {
+      console.warn("[SYNC-CONSOLIDATED] Could not read remote metadata for chunk cleanup, falling back to local count:", e);
+    }
+
+    const localPrevChunksStr = safeGetItem("sstr_prev_total_chunks") || "0";
+    const localPrevChunks = parseInt(localPrevChunksStr, 10) || 0;
+    const prevTotalChunks = Math.max(remotePrevTotalChunks, localPrevChunks, chunks.length);
+
+    for (let i = chunks.length; i < Math.min(prevTotalChunks + 10, 150); i++) {
       const chunkRef = doc(firestoreDb, "exchangeRecords_chunks", `chunk_${i}`);
       operations.push({
         ref: chunkRef,
@@ -487,12 +538,14 @@ export async function syncExchangeRecordsConsolidated(newList: any[]) {
         }
       }
       await batch.commit();
+      recordWrites(batchOps.length);
     }
 
     console.log(`[SYNC-CONSOLIDATED] Successfully wrote ${newList.length} records in ${chunks.length} chunks to Firestore.`);
     removeFromOfflineQueue("sstr_cached_records_v1");
-  } catch (err) {
+  } catch (err: any) {
     console.warn("[SYNC-CONSOLIDATED-OFFLINE] Firestore chunk write error. Storing in local storage offline queue for auto-sync when online.", err);
+    notifySyncIssue(`Erro ao gravar relatório base de trocas no Firestore: ${err?.message || err}`, err);
     addToOfflineQueue("sstr_cached_records_v1", newList);
   } finally {
     // Hold write flag for 3 seconds so incoming snapshots don't overwrite fresh local changes
@@ -505,90 +558,115 @@ export async function syncExchangeRecordsConsolidated(newList: any[]) {
 function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
   return new Promise((resolve) => {
     let resolved = false;
-    onSnapshot(collection(firestoreDb, "exchangeRecords_chunks"), (snapshot) => {
-      if (isWritingExchangeRecords) {
-        if (!resolved) {
-          resolved = true;
-          resolve();
-        }
-        return;
+    let unsubscribe: (() => void) | null = null;
+    let retryDelay = 3000;
+    let retryTimer: any = null;
+
+    function attach() {
+      if (unsubscribe) {
+        try { unsubscribe(); } catch (e) {}
+        unsubscribe = null;
       }
 
-      if (snapshot.metadata.hasPendingWrites) {
-        if (!resolved) {
-          resolved = true;
-          resolve();
-        }
-        return;
-      }
+      unsubscribe = onSnapshot(collection(firestoreDb, "exchangeRecords_chunks"), (snapshot) => {
+        retryDelay = 3000; // Reset backoff on successful snapshot arrival
+        recordReads(snapshot.docs.length);
 
-      const docsMap = new Map<string, any>();
-      snapshot.docs.forEach(doc => {
-        docsMap.set(doc.id, doc.data());
-      });
-      
-      const metadata = docsMap.get("metadata");
-      if (!metadata) {
-        if (!resolved) {
-          resolved = true;
-          resolve();
+        if (isWritingExchangeRecords) {
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+          return;
         }
-        return;
-      }
 
-      if (metadata.timestamp && metadata.timestamp < lastLocalWriteTimestamp - 5000) {
-        if (!resolved) {
-          resolved = true;
-          resolve();
+        if (snapshot.metadata.hasPendingWrites) {
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+          return;
         }
-        return;
-      }
-      
-      const totalChunks = metadata.totalChunks || 0;
-      let allChunksPresent = true;
-      const combinedList: any[] = [];
-      for (let i = 0; i < totalChunks; i++) {
-        const chunkDoc = docsMap.get(`chunk_${i}`);
-        if (chunkDoc && Array.isArray(chunkDoc.data)) {
-          combinedList.push(...chunkDoc.data);
-        } else {
-          allChunksPresent = false;
-          break;
-        }
-      }
 
-      if (!allChunksPresent && totalChunks > 0) {
-        // Incomplete chunks in current snapshot, ignore until all chunks arrive
-        if (!resolved) {
-          resolved = true;
-          resolve();
-        }
-        return;
-      }
-      
-      const remoteStr = JSON.stringify(combinedList);
-      const localStr = safeGetItem(localKey);
-      
-      if (localStr !== remoteStr) {
-        isSyncingFromFirestore = true;
-        safeSetItem(localKey, remoteStr);
-        isSyncingFromFirestore = false;
+        const docsMap = new Map<string, any>();
+        snapshot.docs.forEach(doc => {
+          docsMap.set(doc.id, doc.data());
+        });
         
-        window.dispatchEvent(new Event("storage"));
-      }
-      
-      if (!resolved) {
-        resolved = true;
-        resolve();
-      }
-    }, (err) => {
-      console.warn("[SYNC-CONSOLIDATED] Error subscribing to exchangeRecords_chunks:", err.message);
-      if (!resolved) {
-        resolved = true;
-        resolve();
-      }
-      handleFirestoreError(err, OperationType.GET, "exchangeRecords_chunks");
-    });
+        const metadata = docsMap.get("metadata");
+        if (!metadata) {
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+          return;
+        }
+
+        if (metadata.timestamp && metadata.timestamp < lastLocalWriteTimestamp - 5000) {
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+          return;
+        }
+        
+        const totalChunks = metadata.totalChunks || 0;
+        let allChunksPresent = true;
+        const combinedList: any[] = [];
+        for (let i = 0; i < totalChunks; i++) {
+          const chunkDoc = docsMap.get(`chunk_${i}`);
+          if (chunkDoc && Array.isArray(chunkDoc.data)) {
+            combinedList.push(...chunkDoc.data);
+          } else {
+            allChunksPresent = false;
+            break;
+          }
+        }
+
+        if (!allChunksPresent && totalChunks > 0) {
+          // Incomplete chunks in current snapshot, ignore until all chunks arrive
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+          return;
+        }
+        
+        const remoteStr = JSON.stringify(combinedList);
+        const localStr = safeGetItem(localKey);
+        
+        if (localStr !== remoteStr) {
+          isSyncingFromFirestore = true;
+          safeSetItem(localKey, remoteStr);
+          isSyncingFromFirestore = false;
+          
+          window.dispatchEvent(new Event("storage"));
+        }
+        
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+      }, (err) => {
+        console.warn("[SYNC-CONSOLIDATED] Error subscribing to exchangeRecords_chunks:", err?.message || err);
+        notifySyncIssue(`Falha na conexão de tempo real com a base de trocas (03.18.05): ${err?.message || err}`, err);
+        
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+
+        // Schedule automatic re-attach with exponential backoff
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(() => {
+          console.log(`[SYNC-CONSOLIDATED-RETRY] Attempting listener reconnect to exchangeRecords_chunks (delay ${retryDelay}ms)...`);
+          attach();
+        }, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 60000);
+      });
+    }
+
+    attach();
   });
 }
 
@@ -753,58 +831,84 @@ async function logChange(key: string, oldList: any[], newList: any[]) {
 function subscribeCollection(collectionName: string, localKey: string, isObject: boolean = false): Promise<void> {
   return new Promise((resolve) => {
     let resolved = false;
-    onSnapshot(collection(firestoreDb, collectionName), (snapshot) => {
-      let remoteVal: any;
-      if (isObject) {
-        const obj: Record<string, any> = {};
-        snapshot.docs.forEach(doc => {
-          obj[doc.id] = doc.data();
-        });
-        remoteVal = obj;
-      } else {
-        remoteVal = snapshot.docs.map(doc => doc.data());
+    let unsubscribe: (() => void) | null = null;
+    let retryDelay = 3000;
+    let retryTimer: any = null;
+
+    function attach() {
+      if (unsubscribe) {
+        try { unsubscribe(); } catch (e) {}
+        unsubscribe = null;
       }
 
-      let remoteStr = JSON.stringify(remoteVal || (isObject ? {} : []));
-      if (localKey === "sstr_representative_pending_requests" || localKey === "sstr_vales_historico_reg") {
-        remoteStr = extractImagesToIDB(remoteStr);
-      }
+      unsubscribe = onSnapshot(collection(firestoreDb, collectionName), (snapshot) => {
+        retryDelay = 3000; // Reset backoff on successful snapshot arrival
+        recordReads(snapshot.docs.length);
 
-      const localStr = safeGetItem(localKey);
-      if (localKey === "sstr_products_database" && Array.isArray(remoteVal)) {
-        try {
-          const localArr = localStr ? JSON.parse(localStr) : [];
-          if (Array.isArray(localArr) && localArr.length > remoteVal.length) {
-            // Merge local products into remoteVal to prevent wiping user uploaded catalog
-            const prodMap = new Map<string, any>();
-            remoteVal.forEach(p => p.codigo && prodMap.set(p.codigo.trim(), p));
-            localArr.forEach(p => p.codigo && !prodMap.has(p.codigo.trim()) && prodMap.set(p.codigo.trim(), p));
-            remoteVal = Array.from(prodMap.values());
-            remoteStr = JSON.stringify(remoteVal);
-          }
-        } catch (e) {}
-      }
+        let remoteVal: any;
+        if (isObject) {
+          const obj: Record<string, any> = {};
+          snapshot.docs.forEach(doc => {
+            obj[doc.id] = doc.data();
+          });
+          remoteVal = obj;
+        } else {
+          remoteVal = snapshot.docs.map(doc => doc.data());
+        }
 
-      if (localStr !== remoteStr) {
-        isSyncingFromFirestore = true;
-        safeSetItem(localKey, remoteStr);
-        isSyncingFromFirestore = false;
+        let remoteStr = JSON.stringify(remoteVal || (isObject ? {} : []));
+        if (localKey === "sstr_representative_pending_requests" || localKey === "sstr_vales_historico_reg") {
+          remoteStr = extractImagesToIDB(remoteStr);
+        }
 
-        // Dispatch storage event so React updates
-        window.dispatchEvent(new Event("storage"));
-      }
+        const localStr = safeGetItem(localKey);
+        if (localKey === "sstr_products_database" && Array.isArray(remoteVal)) {
+          try {
+            const localArr = localStr ? JSON.parse(localStr) : [];
+            if (Array.isArray(localArr) && localArr.length > remoteVal.length) {
+              // Merge local products into remoteVal to prevent wiping user uploaded catalog
+              const prodMap = new Map<string, any>();
+              remoteVal.forEach(p => p.codigo && prodMap.set(p.codigo.trim(), p));
+              localArr.forEach(p => p.codigo && !prodMap.has(p.codigo.trim()) && prodMap.set(p.codigo.trim(), p));
+              remoteVal = Array.from(prodMap.values());
+              remoteStr = JSON.stringify(remoteVal);
+            }
+          } catch (e) {}
+        }
 
-      if (!resolved) {
-        resolved = true;
-        resolve();
-      }
-    }, (err) => {
-      console.warn(`[REALTIME-SYNC] Firestore offline or error subscribing to ${collectionName}:`, err?.message || err);
-      if (!resolved) {
-        resolved = true;
-        resolve(); // resolve anyway using local cache so app continues smoothly
-      }
-    });
+        if (localStr !== remoteStr) {
+          isSyncingFromFirestore = true;
+          safeSetItem(localKey, remoteStr);
+          isSyncingFromFirestore = false;
+
+          // Dispatch storage event so React updates
+          window.dispatchEvent(new Event("storage"));
+        }
+
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+      }, (err) => {
+        console.warn(`[REALTIME-SYNC] Firestore offline or error subscribing to ${collectionName}:`, err?.message || err);
+        notifySyncIssue(`Erro de sincronização em tempo real na tabela "${collectionName}": ${err?.message || err}`, err);
+
+        if (!resolved) {
+          resolved = true;
+          resolve(); // resolve anyway using local cache so app continues smoothly
+        }
+
+        // Schedule automatic re-attach with exponential backoff
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(() => {
+          console.log(`[REALTIME-SYNC-RETRY] Attempting listener reconnect to ${collectionName} (delay ${retryDelay}ms)...`);
+          attach();
+        }, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 60000);
+      });
+    }
+
+    attach();
   });
 }
 

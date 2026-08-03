@@ -405,17 +405,15 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   const saveProductsList = async (newList: ProductInfo[]) => {
+    const prevList = products;
     setProductsCache(newList);
     setProducts(newList);
-    // Save to Firestore in background without blocking state updates
+    safeSetItem("sstr_products_database", JSON.stringify(newList));
+    // Save to Firestore in background using batched syncArrayToFirestore
     try {
-      for (const prod of newList) {
-        if (prod.codigo) {
-          await setFirestoreDoc("products", prod.codigo, prod);
-        }
-      }
+      await syncArrayToFirestore("products", prevList, newList);
     } catch (e) {
-      console.warn("[CONTEXT] Firestore product sync warning:", e);
+      console.warn("[CONTEXT] Firestore product batch sync warning:", e);
     }
   };
 

@@ -113,10 +113,32 @@ function MainApp() {
   // Specific filter from clicking sector in dashboard view
   const [selectedSectorFilter, setSelectedSectorFilter] = useState<string | undefined>(undefined);
 
+  const [syncNotice, setSyncNotice] = useState<{
+    type: "quota" | "connection";
+    message: string;
+    timestamp: number;
+  } | null>(null);
+
   useEffect(() => {
     // Force clean up of legacy localStorage authentication keys
     localStorage.removeItem("is_sstr_manager_authenticated");
     localStorage.removeItem("sstr_current_manager_name");
+
+    const handleSyncIssue = (e: CustomEvent) => {
+      const detail = e.detail || {};
+      const isQuota = detail.code === "resource-exhausted" || 
+                      (detail.error && (detail.error.includes("resource-exhausted") || detail.error.includes("quota") || detail.error.includes("RESOURCE_EXHAUSTED")));
+      setSyncNotice({
+        type: isQuota ? "quota" : "connection",
+        message: detail.message || (isQuota ? "Cota diária do Firestore atingida." : "Erro de sincronização em tempo real."),
+        timestamp: detail.timestamp || Date.now()
+      });
+    };
+
+    window.addEventListener("sstr_sync_issue", handleSyncIssue as EventListener);
+    return () => {
+      window.removeEventListener("sstr_sync_issue", handleSyncIssue as EventListener);
+    };
   }, []);
 
   const resetToDefaultDemoData = () => {
@@ -236,6 +258,44 @@ function MainApp() {
             <button 
               onClick={() => setToastMessage(null)} 
               className="text-slate-550 hover:text-white transition-colors cursor-pointer p-0.5 rounded-lg shrink-0 self-start"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Sync Issue Banner / Toast */}
+      {syncNotice && (
+        <div className="fixed top-20 right-5 z-90 max-w-xs sm:max-w-md w-full p-1 animate-fade-in no-print">
+          <div className={`backdrop-blur-md border shadow-xl rounded-2xl p-4 flex items-start gap-3 ${
+            syncNotice.type === "quota"
+              ? "bg-red-950/95 border-red-500/50 shadow-red-900/20 text-red-100"
+              : "bg-amber-950/95 border-amber-500/50 shadow-amber-900/20 text-amber-100"
+          }`}>
+            <div className={`p-2 rounded-xl shrink-0 ${
+              syncNotice.type === "quota" ? "bg-red-900/80 text-red-300" : "bg-amber-900/80 text-amber-300"
+            }`}>
+              <Info className="w-4 h-4 animate-pulse" />
+            </div>
+            <div className="flex-1 text-left space-y-1 min-w-0">
+              <h4 className="text-xs font-bold tracking-wide">
+                {syncNotice.type === "quota" 
+                  ? "Cota do Banco de Dados Excedida (Spark/Free Tier)" 
+                  : "Aviso de Sincronização Firestore"}
+              </h4>
+              <p className="text-[11px] opacity-90 leading-relaxed font-sans">
+                {syncNotice.message}
+              </p>
+              <p className="text-[9px] opacity-60 font-mono pt-0.5">
+                {syncNotice.type === "quota" 
+                  ? "Operando em Modo Off-line com cache local (localStorage/IndexedDB)." 
+                  : "Reconectando em segundo plano com algoritmo de retentativa..."}
+              </p>
+            </div>
+            <button 
+              onClick={() => setSyncNotice(null)} 
+              className="opacity-70 hover:opacity-100 transition-opacity cursor-pointer p-0.5 rounded-lg shrink-0 self-start"
             >
               <X className="w-3.5 h-3.5" />
             </button>
