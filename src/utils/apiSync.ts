@@ -309,7 +309,12 @@ async function syncObjectToFirestore(collectionName: string, oldObj: Record<stri
 }
 
 
+let isWritingExchangeRecords = false;
+let lastLocalWriteTimestamp = 0;
+
 async function syncExchangeRecordsConsolidated(newList: any[]) {
+  isWritingExchangeRecords = true;
+  lastLocalWriteTimestamp = Date.now();
   try {
     const chunkSize = 150;
     const chunks: any[][] = [];
@@ -337,6 +342,11 @@ async function syncExchangeRecordsConsolidated(newList: any[]) {
   } catch (err) {
     console.error("[SYNC-CONSOLIDATED] Error syncing exchange records:", err);
     handleFirestoreError(err, OperationType.WRITE, "exchangeRecords_chunks");
+  } finally {
+    // Hold write flag for 3 seconds so incoming snapshots don't overwrite fresh local changes
+    setTimeout(() => {
+      isWritingExchangeRecords = false;
+    }, 3000);
   }
 }
 
@@ -344,6 +354,22 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
   return new Promise((resolve) => {
     let resolved = false;
     onSnapshot(collection(firestoreDb, "exchangeRecords_chunks"), (snapshot) => {
+      if (isWritingExchangeRecords) {
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+        return;
+      }
+
+      if (snapshot.metadata.hasPendingWrites) {
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+        return;
+      }
+
       const docsMap = new Map<string, any>();
       snapshot.docs.forEach(doc => {
         docsMap.set(doc.id, doc.data());
@@ -357,14 +383,35 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
         }
         return;
       }
+
+      if (metadata.timestamp && metadata.timestamp < lastLocalWriteTimestamp - 5000) {
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+        return;
+      }
       
       const totalChunks = metadata.totalChunks || 0;
+      let allChunksPresent = true;
       const combinedList: any[] = [];
       for (let i = 0; i < totalChunks; i++) {
         const chunkDoc = docsMap.get(`chunk_${i}`);
         if (chunkDoc && Array.isArray(chunkDoc.data)) {
           combinedList.push(...chunkDoc.data);
+        } else {
+          allChunksPresent = false;
+          break;
         }
+      }
+
+      if (!allChunksPresent && totalChunks > 0) {
+        // Incomplete chunks in current snapshot, ignore until all chunks arrive
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+        return;
       }
       
       const remoteStr = JSON.stringify(combinedList);

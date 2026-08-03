@@ -446,6 +446,7 @@ function MainApp() {
               {activeTab === "tracking" && (
                 <TrackingView 
                   records={records} 
+                  pendingRequests={pendingRequests}
                   onUpdateRecordStatus={handleUpdateRecordStatus}
                   filteredSector={selectedSectorFilter}
                   onClearSectorFilter={() => setSelectedSectorFilter(undefined)}

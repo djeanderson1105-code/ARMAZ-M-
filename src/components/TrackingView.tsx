@@ -1,17 +1,18 @@
 import React, { useState, useMemo } from "react";
-import { ExchangeRecord, REPRESENTATIVOS_SETOR } from "../types";
+import { ExchangeRecord, PendingRequest, REPRESENTATIVOS_SETOR } from "../types";
 import { Search, Eye, Filter, CheckCircle2, AlertCircle, HelpCircle, X, ExternalLink, RefreshCw, UserCheck, Calendar, AlertTriangle, Layers, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, DollarSign, ClipboardList, Percent, TrendingUp, Package, Tag } from "lucide-react";
 import { getRecordHL } from "../utils/hectoFactors";
 import { isRecordReposicao, isRecordTroca } from "../utils/processTypes";
 
 interface TrackingViewProps {
   records: ExchangeRecord[];
+  pendingRequests?: PendingRequest[];
   onUpdateRecordStatus: (id: string, newStatus: string, additionalObservations?: string) => void;
   filteredSector?: string;
   onClearSectorFilter?: () => void;
 }
 
-export default function TrackingView({ records, onUpdateRecordStatus, filteredSector, onClearSectorFilter }: TrackingViewProps) {
+export default function TrackingView({ records, pendingRequests = [], onUpdateRecordStatus, filteredSector, onClearSectorFilter }: TrackingViewProps) {
   const [localSearchTerm, setLocalSearchTerm] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [searchField, setSearchField] = useState<string>("todos");
@@ -685,10 +686,8 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
     });
 
     // 2. Map solicitation groups to objects with a unique products signature
-    const solsList = Object.entries(solsMap).map(([sol, recs]) => {
+    const solsList: any[] = Object.entries(solsMap).map(([sol, recs]) => {
       const first = recs[0];
-      // Build a stable product key. Sort products to make it order-independent.
-      // If there is exactly one unit of a product, include the map to require same map.
       const productsKey = recs
         .map(r => {
           const prodCode = (r.produto || "").trim();
@@ -713,8 +712,122 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
         nf: first.nf || "",
         records: recs,
         productsKey,
+        origem: first.sistemaOrigem || "Base Importada Promax (03.18.05)",
         totalValue: recs.reduce((sum, r) => sum + r.valorTotal, 0)
       };
+    });
+
+    // Add direct platform registrations (pendingRequests) as solicitations
+    pendingRequests.forEach(pr => {
+      if (!pr.nb) return;
+      const solNum = (pr as any).solicitacao || pr.nf || pr.id;
+      const prItems = pr.items && pr.items.length > 0 
+        ? pr.items.map(item => ({
+            id: `${pr.id}_${item.id || item.item}`,
+            unb: "DIR",
+            descricaoUnb: "Direto Plataforma",
+            codigoCliente: pr.nb,
+            nomeCliente: pr.nb,
+            solicitacao: solNum,
+            tipo: pr.motivo || "Cadastro Direto",
+            dataSolicitacao: pr.data,
+            hora: "00:00",
+            status: pr.statusPromax === "cadastrado" ? "Aprovada" : pr.statusPromax === "reprovado" ? "Reprovada" : "Pendente",
+            dataAcao: pr.data,
+            usuarioAcao: pr.cadastroUser || "Representante",
+            mapa: pr.mapa || "",
+            nf: pr.nf || "",
+            statusNf: "Cadastrado",
+            produto: (item.item || item.itemCode || "SKU").trim(),
+            descricaoProduto: item.descricao || item.itemDesc || "Produto Cadastrado Direto",
+            quantidade: item.quantidade || 1,
+            um: item.unidadeMedida || "CX",
+            valorUnitario: item.precoCalculated || 0,
+            valorTotal: (item.precoCalculated || 0) * (item.quantidade || 1),
+            justificativa: item.motivo || pr.motivo || "Cadastro Direto",
+            veiculo: "",
+            placa: "",
+            transportadora: "",
+            nomeTransportadora: "",
+            motorista: "",
+            nomeMotorista: "",
+            conferente: "",
+            conferenteCarregamento: "",
+            nrPedidoReposicao: "",
+            statusCheck: "OK",
+            sistemaOrigem: "Cadastro Direto na Plataforma",
+            observacao: pr.observacao || "",
+            setorVenda: pr.setor || "",
+            importTimestamp: pr.timestamp || Date.now(),
+            importBatchName: "Cadastro Direto"
+          }))
+        : [{
+            id: pr.id,
+            unb: "DIR",
+            descricaoUnb: "Direto Plataforma",
+            codigoCliente: pr.nb,
+            nomeCliente: pr.nb,
+            solicitacao: solNum,
+            tipo: pr.motivo || "Cadastro Direto",
+            dataSolicitacao: pr.data,
+            hora: "00:00",
+            status: pr.statusPromax === "cadastrado" ? "Aprovada" : pr.statusPromax === "reprovado" ? "Reprovada" : "Pendente",
+            dataAcao: pr.data,
+            usuarioAcao: pr.cadastroUser || "Representante",
+            mapa: pr.mapa || "",
+            nf: pr.nf || "",
+            statusNf: "Cadastrado",
+            produto: (pr.item || pr.produto || "SKU").trim(),
+            descricaoProduto: pr.descricaoProduto || pr.productDesc || "Produto Cadastrado Direto",
+            quantidade: pr.quantidade || 1,
+            um: pr.um || pr.unidadeMedida || "CX",
+            valorUnitario: 0,
+            valorTotal: 0,
+            justificativa: pr.motivo || "Cadastro Direto",
+            veiculo: "",
+            placa: "",
+            transportadora: "",
+            nomeTransportadora: "",
+            motorista: "",
+            nomeMotorista: "",
+            conferente: "",
+            conferenteCarregamento: "",
+            nrPedidoReposicao: "",
+            statusCheck: "OK",
+            sistemaOrigem: "Cadastro Direto na Plataforma",
+            observacao: pr.observacao || "",
+            setorVenda: pr.setor || "",
+            importTimestamp: pr.timestamp || Date.now(),
+            importBatchName: "Cadastro Direto"
+          }];
+
+      const productsKey = prItems
+        .map(r => {
+          const prodCode = (r.produto || "").trim();
+          const qty = r.quantidade || 0;
+          if (qty === 1) {
+            return `${prodCode}_${qty}_map:${(r.mapa || "").trim()}`;
+          } else {
+            return `${prodCode}_${qty}`;
+          }
+        })
+        .sort()
+        .join("|");
+
+      solsList.push({
+        solicitacao: `DIR-${solNum}`,
+        codigoCliente: (pr.nb || "").trim(),
+        nomeCliente: pr.nb ? `PDV #${pr.nb}` : "Cliente Desconhecido",
+        dataSolicitacao: pr.data || "",
+        status: pr.statusPromax === "cadastrado" ? "Aprovada" : pr.statusPromax === "reprovado" ? "Reprovada" : "Pendente",
+        setorVenda: pr.setor || "",
+        mapa: pr.mapa || "",
+        nf: pr.nf || "",
+        records: prItems as any,
+        productsKey,
+        origem: "Cadastro Direto na Plataforma",
+        totalValue: prItems.reduce((sum, r) => sum + r.valorTotal, 0)
+      });
     });
 
     // 3. Group solicitations by client NB and products signature
@@ -1925,6 +2038,13 @@ export default function TrackingView({ records, onUpdateRecordStatus, filteredSe
                                         </span>
                                       )
                                     )}
+                                    <span className={`px-2 py-0.5 text-[9.5px] font-bold rounded font-mono border ${
+                                      sol.origem === "Cadastro Direto na Plataforma"
+                                        ? "bg-amber-950 text-amber-300 border-amber-800/80"
+                                        : "bg-blue-950 text-blue-300 border-blue-800/80"
+                                    }`}>
+                                      {sol.origem === "Cadastro Direto na Plataforma" ? "📲 Cadastro Direto Plataforma" : "📊 Base Importada 03.18.05"}
+                                    </span>
                                   </div>
                                   <p className="text-[10px] text-slate-500 font-mono mt-1">
                                     Data: {sol.dataSolicitacao}

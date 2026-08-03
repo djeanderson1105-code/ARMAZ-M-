@@ -11,6 +11,7 @@ import { exportRegistrationPdf, generatePdfFilename, NETWORK_REGISTROS_PATH } fr
 import ValesHistoryDashboard, { ValeEntry } from "./ValesHistoryDashboard";
 import { 
   Clock, 
+  Truck,
   Search, 
   MapPin, 
   User, 
@@ -4740,6 +4741,12 @@ export default function PendingRequestsTab() {
               const dupInfo = duplicateAnalysis.duplicateMap.get(req.id);
               
               const isBaixadoCard = !!cast.faltaBaixa || !!(req as any).faltaBaixa || req.status === "baixado" || req.statusPromax === "cadastrado";
+              const hasReceiptFile = !!(cast.faltaBaixaReciboUrl || (req as any).faltaBaixaReciboUrl || (req as any).pdfFilePath || (req as any).receiptFile || (req as any).faltaBaixaReciboName);
+              const isEnviadaRotaCard = !isBaixadoCard && (
+                !!(req.placa || (req as any).placaVeiculo || cast.faltaMotorista || (req as any).motorista || req.statusEnvio === "carregados" || req.statusEnvio === "em_rota" || (req as any).enviadoRota || (req as any).emRota)
+              );
+              const isAguardandoCarregamentoCard = !isBaixadoCard && !isEnviadaRotaCard;
+
               const isReprovadoCard = req.statusPromax === "reprovado" || req.status === "reprovado";
               
               // Determine if overdue (>2 days without settlement)
@@ -4817,9 +4824,14 @@ export default function PendingRequestsTab() {
                         {(activeTab === "faltas_inversoes" || activeTab === "historico_baixas") ? (
                           <div className="flex flex-col items-end gap-1 shrink-0">
                             {isBaixadoCard ? (
-                              <span className="px-2 py-0.5 bg-emerald-950 border border-emerald-500/50 rounded-full text-[8.5px] font-bold font-mono text-emerald-400 flex items-center gap-1 leading-none uppercase shadow">
+                              <span className="px-2 py-0.5 bg-emerald-950 border border-emerald-500/60 rounded-full text-[8.5px] font-bold font-mono text-emerald-300 flex items-center gap-1 leading-none uppercase shadow" title={hasReceiptFile ? "Baixada com recibo assinado/PDF anexado" : "Baixada no sistema (Aguardando anexo do recibo assinado)"}>
                                 <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
-                                <span>🟢 Baixada</span>
+                                <span>{hasReceiptFile ? "🟢 Baixada (Recibo PDF)" : "🟢 Baixada (Sem PDF)"}</span>
+                              </span>
+                            ) : isEnviadaRotaCard ? (
+                              <span className="px-2 py-0.5 bg-blue-950 border border-blue-500/60 rounded-full text-[8.5px] font-bold font-mono text-blue-300 flex items-center gap-1 leading-none uppercase shadow" title="Carga em veículo e enviada para rota">
+                                <Truck className="w-2.5 h-2.5 text-blue-400" />
+                                <span>🚚 Enviada p/ Rota</span>
                               </span>
                             ) : isAtrasadoCard ? (
                               <span className="px-2 py-0.5 bg-rose-950/90 border border-rose-500/60 rounded-full text-[8.5px] font-bold font-mono text-rose-300 flex items-center gap-1 leading-none uppercase shadow">
@@ -4827,9 +4839,9 @@ export default function PendingRequestsTab() {
                                 <span>🔴 Atrasado</span>
                               </span>
                             ) : (
-                              <span className="px-2 py-0.5 bg-amber-950/80 border border-amber-500/60 rounded-full text-[8.5px] font-bold font-mono text-amber-300 flex items-center gap-1 leading-none uppercase">
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                                <span>🟡 Pendente</span>
+                              <span className="px-2 py-0.5 bg-amber-950/80 border border-amber-500/60 rounded-full text-[8.5px] font-bold font-mono text-amber-300 flex items-center gap-1 leading-none uppercase" title="Aguardando montagem de carga / expedição">
+                                <Clock className="w-2.5 h-2.5 text-amber-400 animate-pulse" />
+                                <span>⏳ Aguardando Carga</span>
                               </span>
                             )}
 
@@ -4850,9 +4862,14 @@ export default function PendingRequestsTab() {
                         ) : (
                           <div className="flex flex-col items-end gap-1 shrink-0">
                             {isBaixadoCard ? (
-                              <span className="px-2 py-0.5 bg-emerald-950/80 border border-emerald-500/60 rounded-full text-[9px] font-bold font-mono text-emerald-400 flex items-center gap-1 shrink-0 shadow">
+                              <span className="px-2 py-0.5 bg-emerald-950/80 border border-emerald-500/60 rounded-full text-[9px] font-bold font-mono text-emerald-300 flex items-center gap-1 shrink-0 shadow" title={hasReceiptFile ? "Baixada com recibo assinado/PDF anexado" : "Baixada no sistema (Aguardando anexo do recibo assinado)"}>
                                 <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                <span>🟢 Baixada</span>
+                                <span>{hasReceiptFile ? "🟢 Baixada (Recibo PDF)" : "🟢 Baixada (Sem PDF)"}</span>
+                              </span>
+                            ) : isEnviadaRotaCard ? (
+                              <span className="px-2 py-0.5 bg-blue-950/80 border border-blue-500/60 rounded-full text-[9px] font-bold font-mono text-blue-300 flex items-center gap-1 shrink-0 shadow" title="Carga em veículo e enviada para rota">
+                                <Truck className="w-3 h-3 text-blue-400" />
+                                <span>🚚 Enviada p/ Rota</span>
                               </span>
                             ) : isAtrasadoCard ? (
                               <span className="px-2 py-0.5 bg-rose-950/80 border border-rose-500/60 rounded-full text-[9px] font-bold font-mono text-rose-300 flex items-center gap-1 shrink-0 shadow">
@@ -4860,9 +4877,9 @@ export default function PendingRequestsTab() {
                                 <span>🔴 Atrasado</span>
                               </span>
                             ) : (
-                              <span className="px-2 py-0.5 bg-amber-950/80 border border-amber-500/60 text-amber-300 text-[9px] font-bold font-mono rounded-full flex items-center gap-1 shrink-0">
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                                <span>🟡 Pendente</span>
+                              <span className="px-2 py-0.5 bg-amber-950/80 border border-amber-500/60 text-amber-300 text-[9px] font-bold font-mono rounded-full flex items-center gap-1 shrink-0" title="Aguardando montagem de carga / expedição">
+                                <Clock className="w-3 h-3 text-amber-400 animate-pulse" />
+                                <span>⏳ Aguardando Carga</span>
                               </span>
                             )}
 

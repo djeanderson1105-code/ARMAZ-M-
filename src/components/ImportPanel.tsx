@@ -111,6 +111,23 @@ export default function ImportPanel({
     }
   };
 
+  const readFileAsTextWithEncoding = (file: File, callback: (text: string) => void) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (text && text.includes("\uFFFD")) {
+        const isoReader = new FileReader();
+        isoReader.onload = (isoEvent) => {
+          callback(isoEvent.target?.result as string || "");
+        };
+        isoReader.readAsText(file, "ISO-8859-1");
+      } else {
+        callback(text || "");
+      }
+    };
+    reader.readAsText(file, "UTF-8");
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -136,12 +153,9 @@ export default function ImportPanel({
         };
         reader.readAsArrayBuffer(file);
       } else {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          const text = event.target?.result as string;
+        readFileAsTextWithEncoding(file, (text) => {
           processRawText(text, file.name);
-        };
-        reader.readAsText(file, "UTF-8");
+        });
       }
     }
   };
@@ -167,12 +181,9 @@ export default function ImportPanel({
         };
         reader.readAsArrayBuffer(file);
       } else {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          const text = event.target?.result as string;
+        readFileAsTextWithEncoding(file, (text) => {
           processRawText(text, file.name);
-        };
-        reader.readAsText(file, "UTF-8");
+        });
       }
     }
   };
@@ -558,14 +569,28 @@ export default function ImportPanel({
                     <span className="font-bold text-sm text-white">{totalRecordsCount} transações</span>
                   </div>
                 </div>
-                <button
-                  onClick={onResetToDemo}
-                  className="px-2.5 py-1.5 bg-blue-900/40 hover:bg-blue-900/70 border border-blue-800 text-white rounded-lg text-[10px] font-semibold flex items-center space-x-1 cursor-pointer transition-colors"
-                  title="Resetar Banco"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Redefinir Demo</span>
-                </button>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => {
+                      if (window.confirm("Deseja realmente apagar e redefinir toda a base 03.18.05 / Promax? Todos os registros importados serão removidos da plataforma.")) {
+                        onImportRecords([], "overwrite", "");
+                      }
+                    }}
+                    className="px-2.5 py-1.5 bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-200 rounded-lg text-[10px] font-semibold flex items-center space-x-1 cursor-pointer transition-colors"
+                    title="Excluir Toda a Base 03.18.05"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Excluir Base 03.18.05</span>
+                  </button>
+                  <button
+                    onClick={onResetToDemo}
+                    className="px-2.5 py-1.5 bg-blue-900/40 hover:bg-blue-900/70 border border-blue-800 text-white rounded-lg text-[10px] font-semibold flex items-center space-x-1 cursor-pointer transition-colors"
+                    title="Resetar Banco"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Redefinir Demo</span>
+                  </button>
+                </div>
               </div>
             </div>
 

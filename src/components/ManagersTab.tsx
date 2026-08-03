@@ -3,6 +3,7 @@ import { safeSetItem } from "../utils/apiSync";
 import { useSstrData } from "../context/SstrDataContext";
 import * as XLSX from "xlsx";
 import { parseProductExcel, recalculateAllRecordsWithProducts } from "../utils/productExcelImport";
+import { calculateItemValue } from "../data/products";
 import { 
   UserPlus, 
   Shield, 
@@ -379,7 +380,7 @@ export default function ManagersTab() {
       const calcTotalVal = finalDrafts.reduce((acc, curr) => {
         const val = calculateItemValue({
           ...curr,
-          unidadeMedida: curr.unidadeMedida || reqUnidade
+          unidadeMedida: curr.unidadeMedida || "cx"
         });
         if (val > 0) return acc + val;
         if (curr.precoCalculated !== undefined && curr.precoCalculated > 0) return acc + curr.precoCalculated;

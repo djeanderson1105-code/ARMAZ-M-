@@ -27,16 +27,72 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
   const lines = csvText.split(/\r?\n/);
   if (lines.length < 2) return [];
 
-  // First non-empty line is header
-  let headerLineIndex = 0;
-  while (headerLineIndex < lines.length && !lines[headerLineIndex].trim()) {
-    headerLineIndex++;
+  // Auto-detect header line index by scoring candidate lines for Promax 03.18.05 keywords
+  const promaxKeywords = [
+    "solicitacao", "solic", "cliente", "produto", "quantidade", "qtd",
+    "unb", "mapa", "notafiscal", "nf", "justificativa", "valor", "vlr",
+    "setor", "status", "tipo", "data", "usuario", "user", "reposicao"
+  ];
+
+  let bestHeaderIndex = -1;
+  let maxKeywordScore = 0;
+  let chosenDelimiter = ";";
+
+  const candidateLimit = Math.min(lines.length, 50);
+  for (let i = 0; i < candidateLimit; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    // Detect delimiters on this line
+    const semicolonCount = (line.match(/;/g) || []).length;
+    const tabCount = (line.match(/\t/g) || []).length;
+    const commaCount = (line.match(/,/g) || []).length;
+    const pipeCount = (line.match(/\|/g) || []).length;
+
+    let lineDelim = ";";
+    let maxDelim = semicolonCount;
+    if (tabCount > maxDelim) { lineDelim = "\t"; maxDelim = tabCount; }
+    if (commaCount > maxDelim) { lineDelim = ","; maxDelim = commaCount; }
+    if (pipeCount > maxDelim) { lineDelim = "|"; maxDelim = pipeCount; }
+
+    if (maxDelim === 0) continue; // No delimiters on this line
+
+    const normLine = normalizeHeaderName(line);
+    let score = 0;
+    for (const kw of promaxKeywords) {
+      if (normLine.includes(kw)) score++;
+    }
+
+    if (score > maxKeywordScore) {
+      maxKeywordScore = score;
+      bestHeaderIndex = i;
+      chosenDelimiter = lineDelim;
+    }
   }
 
-  if (headerLineIndex >= lines.length) return [];
+  // Fallback if no keywords found: pick first non-empty line with delimiters
+  if (bestHeaderIndex === -1) {
+    for (let i = 0; i < candidateLimit; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      const semicolonCount = (line.match(/;/g) || []).length;
+      const tabCount = (line.match(/\t/g) || []).length;
+      const commaCount = (line.match(/,/g) || []).length;
+      if (semicolonCount > 0 || tabCount > 0 || commaCount > 0) {
+        bestHeaderIndex = i;
+        if (tabCount > semicolonCount && tabCount > commaCount) chosenDelimiter = "\t";
+        else if (commaCount > semicolonCount && commaCount > tabCount) chosenDelimiter = ",";
+        else chosenDelimiter = ";";
+        break;
+      }
+    }
+  }
 
+  if (bestHeaderIndex === -1) return [];
+
+  const headerLineIndex = bestHeaderIndex;
   const headerLine = lines[headerLineIndex];
-  const headers = headerLine.split(";").map(h => h.trim());
+  const headers = headerLine.split(chosenDelimiter).map(h => h.trim());
   const normalizedHeaders = headers.map(normalizeHeaderName);
 
   // Find column indices based on normalized matching
@@ -46,70 +102,73 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
     );
   };
 
-  // Match key columns dynamically
-  const indices = {
-    unb: findIndex(["unb"]) !== -1 ? findIndex(["unb"]) : 0,
-    descricaoUnb: findIndex(["descricaounb"]) !== -1 ? findIndex(["descricaounb"]) : (findIndex(["descri", "unb"]) !== -1 ? findIndex(["descri", "unb"]) : 1),
-    codigoCliente: findIndex(["codigocliente"]) !== -1 ? findIndex(["codigocliente"]) : (
-      findIndex(["codigo", "cliente"]) !== -1 ? findIndex(["codigo", "cliente"]) : (
-        findIndex(["cod", "clie"]) !== -1 ? findIndex(["cod", "clie"]) : (
-          normalizedHeaders.findIndex(h => h.includes("nb") && !h.includes("unb")) !== -1 ? normalizedHeaders.findIndex(h => h.includes("nb") && !h.includes("unb")) : (
-            findIndex(["numerobase"]) !== -1 ? findIndex(["numerobase"]) : (
-              findIndex(["num", "base"]) !== -1 ? findIndex(["num", "base"]) : 2 // Fallback to Column C (index 2)
-            )
-          )
-        )
-      )
-    ),
-    nomeCliente: findIndex(["nomecliente"]) !== -1 ? findIndex(["nomecliente"]) : (
-      findIndex(["nome", "clie"]) !== -1 ? findIndex(["nome", "clie"]) : (
-        findIndex(["nome", "cliente"]) !== -1 ? findIndex(["nome", "cliente"]) : (
-          findIndex(["cliente"]) !== -1 ? findIndex(["cliente"]) : 3 // Fallback to Column D (index 3)
-        )
-      )
-    ),
-    solicitacao: findIndex(["solicitacaoreposicao"]) !== -1 ? findIndex(["solicitacaoreposicao"]) : (findIndex(["solic", "repo"]) !== -1 ? findIndex(["solic", "repo"]) : (findIndex(["solicitacao"]) !== -1 ? findIndex(["solicitacao"]) : 4)),
-    tipo: findIndex(["tiposolicitacao"]) !== -1 ? findIndex(["tiposolicitacao"]) : findIndex(["tipo", "soli"]),
-    dataSolicitacao: findIndex(["datasolicitacao"]) !== -1 ? findIndex(["datasolicitacao"]) : findIndex(["data", "soli"]),
-    hora: findIndex(["hora"]),
-    status: findIndex(["statussolicitacao"]) !== -1 ? findIndex(["statussolicitacao"]) : findIndex(["status", "soli"]),
-    dataAcao: findIndex(["dataacao"]) !== -1 ? findIndex(["dataacao"]) : findIndex(["data", "acao"]),
-    usuarioAcao: findIndex(["usuarioacao"]) !== -1 ? findIndex(["usuarioacao"]) : (findIndex(["user", "acao"]) !== -1 ? findIndex(["user", "acao"]) : (findIndex(["usuario"]) !== -1 ? findIndex(["usuario"]) : (findIndex(["user"]) !== -1 ? findIndex(["user"]) : 10))),
-    mapa: findIndex(["mapareposicao"]) !== -1 ? findIndex(["mapareposicao"]) : findIndex(["mapa"]),
-    nf: findIndex(["notafiscalserie"]) !== -1 ? findIndex(["notafiscalserie"]) : findIndex(["nota", "serie"]),
-    statusNf: findIndex(["statusnf"]),
-    produto: findIndex(["produto"]),
-    descricaoProduto: findIndex(["descricaoproduto"]) !== -1 ? findIndex(["descricaoproduto"]) : findIndex(["descri", "prod"]),
-    quantidade: findIndex(["quantidade"]),
-    um: findIndex(["um"]),
-    valorUnitario: findIndex(["valorunitario"]) !== -1 ? findIndex(["valorunitario"]) : findIndex(["valor", "unit"]),
-    valorTotal: findIndex(["valor"]), // wait, valor is sometimes general; let's find exact matches
-    justificativa: findIndex(["justificativa"]),
-    veiculo: findIndex(["veiculo"]),
-    placa: findIndex(["placa"]),
-    transportadora: findIndex(["transportadora"]),
-    nomeTransportadora: findIndex(["nometransportadora"]),
-    motorista: findIndex(["motorista"]),
-    nomeMotorista: findIndex(["nomemotorista"]),
-    conferente: findIndex(["conferentesolicitacaoreposicao"]) !== -1 ? findIndex(["conferentesolicitacaoreposicao"]) : findIndex(["conf", "soli"]),
-    conferenteCarregamento: findIndex(["conferentecarregamento"]) !== -1 ? findIndex(["conferentecarregamento"]) : findIndex(["conf", "carr"]),
-    nrPedidoReposicao: findIndex(["nrpedidoreposicao"]) !== -1 ? findIndex(["nrpedidoreposicao"]) : findIndex(["pedi", "repo"]),
-    statusCheck: findIndex(["statuscheckreposicao"]) !== -1 ? findIndex(["statuscheckreposicao"]) : findIndex(["status", "check"]),
-    sistemaOrigem: findIndex(["sistemaorigem"]),
-    observacao: findIndex(["observacao"]) !== -1 ? findIndex(["observacao"]) : findIndex(["obs"]),
-    setorVenda: findIndex(["setorvenda"]) !== -1 ? findIndex(["setorvenda"]) : findIndex(["setor"]),
+  const findAnyIndex = (keywordSets: string[][]): number => {
+    for (const kwSet of keywordSets) {
+      const idx = findIndex(kwSet);
+      if (idx !== -1) return idx;
+    }
+    return -1;
   };
+
+  // Match key columns dynamically with fallback to default position indices
+  const indices = {
+    unb: findAnyIndex([["unb"]]),
+    descricaoUnb: findAnyIndex([["descricaounb"], ["descri", "unb"], ["desc", "unb"]]),
+    codigoCliente: findAnyIndex([
+      ["codigocliente"], ["codigo", "cliente"], ["cod", "clie"], ["cod", "cliente"],
+      ["numerobase"], ["num", "base"], ["nbase"]
+    ]),
+    nomeCliente: findAnyIndex([
+      ["nomecliente"], ["nome", "clie"], ["nome", "cliente"], ["razaosocial"], ["razao"], ["cliente"]
+    ]),
+    solicitacao: findAnyIndex([
+      ["solicitacaoreposicao"], ["solic", "repo"], ["solicitacao"], ["solic"], ["nrsolicitacao"], ["nrosolicitacao"]
+    ]),
+    tipo: findAnyIndex([["tiposolicitacao"], ["tipo", "soli"], ["tipo"]]),
+    dataSolicitacao: findAnyIndex([["datasolicitacao"], ["data", "soli"], ["datasolic"], ["dt", "solic"], ["data"]]),
+    hora: findAnyIndex([["hora"], ["hr"]]),
+    status: findAnyIndex([["statussolicitacao"], ["status", "soli"], ["statussolic"], ["status"]]),
+    dataAcao: findAnyIndex([["dataacao"], ["data", "acao"], ["dt", "acao"]]),
+    usuarioAcao: findAnyIndex([["usuarioacao"], ["user", "acao"], ["usuario"], ["user"]]),
+    mapa: findAnyIndex([["mapareposicao"], ["mapa", "repo"], ["mapa"]]),
+    nf: findAnyIndex([["notafiscalserie"], ["nota", "serie"], ["notafiscal"], ["nf"]]),
+    statusNf: findAnyIndex([["statusnf"], ["status", "nota"]]),
+    produto: findAnyIndex([["codigoproduto"], ["cod", "prod"], ["produto"], ["sku"]]),
+    descricaoProduto: findAnyIndex([["descricaoproduto"], ["descri", "prod"], ["desc", "prod"], ["descricao"]]),
+    quantidade: findAnyIndex([["quantidade"], ["qtd"], ["quant"]]),
+    um: findAnyIndex([["unidademedida"], ["unidade"], ["um"]]),
+    valorUnitario: findAnyIndex([["valorunitario"], ["vlr", "unit"], ["valor", "unit"], ["vlrunit"]]),
+    valorTotal: findAnyIndex([["valortotal"], ["vlr", "total"], ["valor"], ["vlr"]]),
+    justificativa: findAnyIndex([["justificativa"], ["motivo"]]),
+    veiculo: findAnyIndex([["veiculo"]]),
+    placa: findAnyIndex([["placa"]]),
+    transportadora: findAnyIndex([["transportadora"]]),
+    nomeTransportadora: findAnyIndex([["nometransportadora"], ["nome", "transp"]]),
+    motorista: findAnyIndex([["motorista"]]),
+    nomeMotorista: findAnyIndex([["nomemotorista"], ["nome", "motor"]]),
+    conferente: findAnyIndex([["conferentesolicitacaoreposicao"], ["conf", "soli"], ["conferente"]]),
+    conferenteCarregamento: findAnyIndex([["conferentecarregamento"], ["conf", "carr"]]),
+    nrPedidoReposicao: findAnyIndex([["nrpedidoreposicao"], ["pedi", "repo"], ["pedido"]]),
+    statusCheck: findAnyIndex([["statuscheckreposicao"], ["status", "check"]]),
+    sistemaOrigem: findAnyIndex([["sistemaorigem"], ["origem"]]),
+    observacao: findAnyIndex([["observacao"], ["obs"], ["observacoes"]]),
+    setorVenda: findAnyIndex([["setorvenda"], ["setor"]]),
+  };
+
+  // Positional fallbacks for standard 03.18.05 Promax CSV column layout if headers were non-standard
+  if (indices.codigoCliente === -1) indices.codigoCliente = 2;
+  if (indices.nomeCliente === -1) indices.nomeCliente = 3;
+  if (indices.solicitacao === -1) indices.solicitacao = 4;
+  if (indices.usuarioAcao === -1) indices.usuarioAcao = 10;
 
   // Specific corrections for overrides if findIndex returned same index for valor and valorUnitario
   if (indices.valorUnitario === indices.valorTotal && indices.valorTotal !== -1) {
-    // Re-evaluate: usually 'valorunitario' is column 18 and 'valor' (total) is 19
     const unitIndex = normalizedHeaders.findIndex(h => h === "valorunitario" || h === "vlrunit");
-    const totalIndex = normalizedHeaders.findIndex(h => h === "valor" || h === "vlr");
+    const totalIndex = normalizedHeaders.findIndex(h => h === "valor" || h === "vlr" || h === "valortotal");
     if (unitIndex !== -1) indices.valorUnitario = unitIndex;
     if (totalIndex !== -1) indices.valorTotal = totalIndex;
   }
 
-  // Fallbacks based on static indices from the sample
   const getValSafe = (parts: string[], index: number, fallbackVal = ""): string => {
     if (index === -1 || index >= parts.length) return fallbackVal;
     return parts[index].trim();
@@ -122,8 +181,14 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
     const line = lines[i].trim();
     if (!line) continue;
 
-    const parts = line.split(";");
-    if (parts.length < 5) continue; // Skip lines with too few columns
+    // Ignore title/footer summary lines
+    const normLineLower = line.toLowerCase();
+    if (normLineLower.startsWith("total") || normLineLower.startsWith("soma") || normLineLower.startsWith("---")) {
+      continue;
+    }
+
+    const parts = line.split(chosenDelimiter);
+    if (parts.length < 3) continue; // Skip lines with too few columns
 
     // Parse unique exchange key or fallback
     const solicitacaoVal = getValSafe(parts, indices.solicitacao, String(i));
