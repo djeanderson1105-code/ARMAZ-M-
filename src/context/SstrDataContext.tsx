@@ -56,6 +56,15 @@ export interface SstrDataContextType {
 
 const SstrDataContext = createContext<SstrDataContextType | undefined>(undefined);
 
+const DEFAULT_MANAGERS = [
+  { username: "gestor", password: "paubrasil2026", name: "Gestor Principal" },
+  { username: "admin", password: "admin", name: "Administrador" },
+  { username: "g1002", password: "g1002", name: "Gestor 1002" },
+  { username: "g1009", password: "g1009", name: "Gestor 1009" }
+];
+
+const normalizeManagerUsername = (username: any) => String(username || "").toLowerCase().trim().replace(/^@+/, "");
+
 export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
   const [records, setRecords] = useState<ExchangeRecord[]>([]);
@@ -106,10 +115,22 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
     setPendingRequests(sanitizedRequests);
     setRecords(readLocal("sstr_cached_records_v1", []));
     setBatches(readLocal("sstr_cached_batches_v1", []));
-    setManagers(readLocal("sstr_registered_managers", [
-      { username: "gestor", password: "paubrasil2026", name: "Gestor Principal" },
-      { username: "admin", password: "admin", name: "Administrador" }
-    ]));
+    
+    // Normalize and merge saved managers with DEFAULT_MANAGERS fallback
+    const savedManagers = readLocal("sstr_registered_managers", DEFAULT_MANAGERS);
+    const mgrMap = new Map<string, any>();
+    DEFAULT_MANAGERS.forEach(m => {
+      const norm = normalizeManagerUsername(m.username);
+      if (norm) mgrMap.set(norm, { ...m, username: norm });
+    });
+    if (Array.isArray(savedManagers)) {
+      savedManagers.forEach(m => {
+        const norm = normalizeManagerUsername(m.username || m.id);
+        if (norm) mgrMap.set(norm, { ...m, username: norm });
+      });
+    }
+    setManagers(Array.from(mgrMap.values()));
+
     setCrewList(readLocal("sstr_lista_crew", DEFAULT_LISTA_CREW));
     setRepsList(readLocal("sstr_reps_setor", DEFAULT_REPRESENTATIVOS_SETOR));
     setMotoristasList(readLocal("sstr_motoristas_rotas", DEFAULT_MOTORISTAS_ROTAS));
@@ -151,8 +172,9 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
     };
   }, [hydrateFromLocalStorage]);
 
-  // Real-time listener for Pending Requests (Task 2 & 3: real-time streaming where essential)
+  // Real-time listener for Pending Requests
   useEffect(() => {
+    if (!firestoreDb) return;
     const colRef = collection(firestoreDb, "pendingRequests");
     const unsubscribe = onSnapshot(colRef, (snapshot) => {
       const items: PendingRequest[] = snapshot.docs.map(doc => doc.data() as PendingRequest);
@@ -192,8 +214,9 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
     return () => unsubscribe();
   }, []);
 
-  // Real-time listener for Vales (Task 2 & 3)
+  // Real-time listener for Vales
   useEffect(() => {
+    if (!firestoreDb) return;
     const colRef = collection(firestoreDb, "vales");
     const unsubscribe = onSnapshot(colRef, (snapshot) => {
       const items: ValeEntry[] = snapshot.docs.map(doc => doc.data() as ValeEntry);
@@ -207,15 +230,45 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
     return () => unsubscribe();
   }, []);
 
-  // Real-time listener for Managers (Task 2 & 3)
+  // Real-time listener for Managers
   useEffect(() => {
+    if (!firestoreDb) return;
     const colRef = collection(firestoreDb, "managers");
     const unsubscribe = onSnapshot(colRef, (snapshot) => {
-      const items = snapshot.docs.map(doc => doc.data());
-      if (items.length > 0) {
-        setManagers(items);
-        safeSetItem("sstr_registered_managers", JSON.stringify(items));
+      const remoteItems = snapshot.docs.map(doc => doc.data());
+      const localStr = safeGetItem("sstr_registered_managers");
+      let localItems: any[] = [];
+      try {
+        localItems = localStr ? JSON.parse(localStr) : DEFAULT_MANAGERS;
+      } catch (e) {
+        localItems = DEFAULT_MANAGERS;
       }
+      if (!Array.isArray(localItems)) localItems = DEFAULT_MANAGERS;
+
+      // Merge carefully: map by normalized username
+      const managerMap = new Map<string, any>();
+
+      // Defaults first
+      DEFAULT_MANAGERS.forEach(m => {
+        const norm = normalizeManagerUsername(m.username);
+        if (norm) managerMap.set(norm, { ...m, username: norm });
+      });
+
+      // Local items next
+      localItems.forEach(m => {
+        const norm = normalizeManagerUsername(m.username || m.id);
+        if (norm) managerMap.set(norm, { ...m, username: norm });
+      });
+
+      // Firestore remote items on top
+      remoteItems.forEach(m => {
+        const norm = normalizeManagerUsername(m.username || m.id);
+        if (norm) managerMap.set(norm, { ...m, username: norm });
+      });
+
+      const merged = Array.from(managerMap.values());
+      setManagers(merged);
+      safeSetItem("sstr_registered_managers", JSON.stringify(merged));
     }, (err) => {
       console.warn("[CONTEXT-MANAGERS-LISTENER] Error subscribing to managers:", err);
     });
@@ -223,8 +276,9 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
     return () => unsubscribe();
   }, []);
 
-  // Real-time listener for Crew List (Task 2 & 3)
+  // Real-time listener for Crew List
   useEffect(() => {
+    if (!firestoreDb) return;
     const colRef = collection(firestoreDb, "crewList");
     const unsubscribe = onSnapshot(colRef, (snapshot) => {
       const items = snapshot.docs.map(doc => doc.data() as CrewMember);
@@ -241,6 +295,7 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // Real-time listener for Reps Setor
   useEffect(() => {
+    if (!firestoreDb) return;
     const colRef = collection(firestoreDb, "repsSetor");
     const unsubscribe = onSnapshot(colRef, (snapshot) => {
       const obj: Record<string, any> = {};
@@ -260,6 +315,7 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // Real-time listener for Motoristas Rotas
   useEffect(() => {
+    if (!firestoreDb) return;
     const colRef = collection(firestoreDb, "motoristasRotas");
     const unsubscribe = onSnapshot(colRef, (snapshot) => {
       const obj: Record<string, any> = {};
@@ -329,22 +385,25 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   const saveManager = async (manager: any) => {
-    const key = manager.username || manager.id;
+    const rawUser = manager.username || manager.id;
+    const key = normalizeManagerUsername(rawUser);
+    const normalizedManager = { ...manager, username: key };
     setManagers(prev => {
-      const updated = [...prev.filter(m => (m.username || m.id) !== key), manager];
+      const updated = [...prev.filter(m => normalizeManagerUsername(m.username || m.id) !== key), normalizedManager];
       safeSetItem("sstr_registered_managers", JSON.stringify(updated));
       return updated;
     });
-    await setFirestoreDoc("managers", key, manager);
+    await setFirestoreDoc("managers", key, normalizedManager);
   };
 
   const deleteManager = async (username: string) => {
+    const key = normalizeManagerUsername(username);
     setManagers(prev => {
-      const updated = prev.filter(m => (m.username || m.id) !== username);
+      const updated = prev.filter(m => normalizeManagerUsername(m.username || m.id) !== key);
       safeSetItem("sstr_registered_managers", JSON.stringify(updated));
       return updated;
     });
-    await deleteFirestoreDoc("managers", username);
+    await deleteFirestoreDoc("managers", key);
   };
 
   const saveCrewMember = async (crew: CrewMember) => {
