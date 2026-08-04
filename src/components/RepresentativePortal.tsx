@@ -268,11 +268,13 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     if (req.items && req.items.length > 0) {
       itemsText = req.items.map(subItem => {
         const desc = subItem.descricao || PRODUCT_DATABASE.find(p => p.codigo === subItem.item)?.descricao || "Produto";
-        return `• ${subItem.quantidade} cx - ${subItem.item} - ${desc} (Motivo: ${subItem.motivo || req.motivo})`;
+        const um = (subItem.unidadeMedida || req.unidadeMedida || "").toLowerCase().includes("cx") ? "cx" : "un";
+        return `• ${subItem.quantidade} ${um} - ${subItem.item} - ${desc} (Motivo: ${subItem.motivo || req.motivo})`;
       }).join("\n");
     } else {
       const desc = PRODUCT_DATABASE.find(p => p.codigo === req.item)?.descricao || "Produto";
-      itemsText = `• ${req.quantidade} cx - ${req.item} - ${desc} (Motivo: ${req.motivo || "Avaria"})`;
+      const um = (req.unidadeMedida || "").toLowerCase().includes("cx") ? "cx" : "un";
+      itemsText = `• ${req.quantidade} ${um} - ${req.item} - ${desc} (Motivo: ${req.motivo || "Avaria"})`;
     }
 
     const text = `*SSTR - RECIBO DE SOLICITAÇÃO* 📄\n` +
@@ -3241,22 +3243,26 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                                 item: req.item,
                                 descricao: req.item ? PRODUCT_DATABASE.find(p => p.codigo === req.item)?.descricao : undefined,
                                 quantidade: req.quantidade,
+                                unidadeMedida: req.unidadeMedida,
                                 motivo: req.motivo,
                                 hectolitros: req.hectolitros
                               }];
 
-                              return reqItems.map((subItem, sIdx) => (
-                                <div key={`${req.id}_${sIdx}`} className="bg-slate-950/60 p-2 rounded-lg border border-slate-850/30 text-[9.5px] space-y-0.5">
-                                  <div className="flex justify-between font-bold text-slate-200">
-                                    <span className="truncate max-w-[70%]">#{subItem.item} - {subItem.descricao || "Produto"}</span>
-                                    <span className="text-amber-500 font-bold">{subItem.quantidade} cx</span>
+                              return reqItems.map((subItem, sIdx) => {
+                                const um = (subItem.unidadeMedida || req.unidadeMedida || "").toLowerCase().includes("cx") ? "cx" : "un";
+                                return (
+                                  <div key={`${req.id}_${sIdx}`} className="bg-slate-950/60 p-2 rounded-lg border border-slate-850/30 text-[9.5px] space-y-0.5">
+                                    <div className="flex justify-between font-bold text-slate-200">
+                                      <span className="truncate max-w-[70%]">#{subItem.item} - {subItem.descricao || "Produto"}</span>
+                                      <span className="text-amber-500 font-bold">{subItem.quantidade} {um}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[8px] text-slate-500 mt-0.5 font-mono">
+                                      <span>Motivo: <strong className="text-slate-400 font-medium">{subItem.motivo}</strong></span>
+                                      {subItem.hectolitros ? <span>Volume: {subItem.hectolitros.toFixed(4)} HL</span> : null}
+                                    </div>
                                   </div>
-                                  <div className="flex justify-between text-[8px] text-slate-500 mt-0.5 font-mono">
-                                    <span>Motivo: <strong className="text-slate-400 font-medium">{subItem.motivo}</strong></span>
-                                    {subItem.hectolitros ? <span>Volume: {subItem.hectolitros.toFixed(4)} HL</span> : null}
-                                  </div>
-                                </div>
-                              ));
+                                );
+                              });
                             })}
                           </div>
 
@@ -3435,16 +3441,20 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                                   item: req.item,
                                   descricao: req.item ? PRODUCT_DATABASE.find(p => p.codigo === req.item)?.descricao : undefined,
                                   quantidade: req.quantidade,
+                                  unidadeMedida: req.unidadeMedida,
                                   motivo: req.motivo,
                                   hectolitros: req.hectolitros
                                 }];
 
-                                return reqItems.map((subItem, sIdx) => (
-                                  <div key={`${req.id}_${sIdx}`} className="flex justify-between text-slate-350 bg-slate-950/60 p-1.5 rounded border border-slate-850/30">
-                                    <span className="truncate max-w-[70%] text-slate-400">#{subItem.item} - {subItem.descricao || "Produto"}</span>
-                                    <span className="shrink-0 font-bold text-emerald-400">{subItem.quantidade} cx</span>
-                                  </div>
-                                ));
+                                return reqItems.map((subItem, sIdx) => {
+                                  const um = (subItem.unidadeMedida || req.unidadeMedida || "").toLowerCase().includes("cx") ? "cx" : "un";
+                                  return (
+                                    <div key={`${req.id}_${sIdx}`} className="flex justify-between text-slate-350 bg-slate-950/60 p-1.5 rounded border border-slate-850/30">
+                                      <span className="truncate max-w-[70%] text-slate-400">#{subItem.item} - {subItem.descricao || "Produto"}</span>
+                                      <span className="shrink-0 font-bold text-emerald-400">{subItem.quantidade} {um}</span>
+                                    </div>
+                                  );
+                                });
                               })}
                             </div>
                           </div>
