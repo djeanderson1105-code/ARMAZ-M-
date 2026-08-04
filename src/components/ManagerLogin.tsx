@@ -87,9 +87,30 @@ export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginP
         } else if (checkUser === "admin" && checkPass === "admin") {
           isValid = true;
           matchedManagerName = "Administrador";
-        } else if (checkUser === "g1002" && checkPass === "!Liz1105;") {
+        } else if (checkUser === "g1002" && (checkPass === "!Liz1105" || checkPass === "!Liz1105;")) {
           isValid = true;
-          matchedManagerName = "Administrador - G1002";
+          matchedManagerName = "Djeanderson Soares";
+        } else if (checkUser === "g1009" && checkPass === "Bud0102") {
+          isValid = true;
+          matchedManagerName = "Nixon Henrique";
+        } else if (checkUser === "7171" && checkPass === "Anbev10") {
+          isValid = true;
+          matchedManagerName = "Marcos Guilherme";
+        } else if (checkUser === "7224" && checkPass === "Anbev10") {
+          isValid = true;
+          matchedManagerName = "Elisson Minervino";
+        } else if (checkUser === "g1022" && checkPass === "Anbev10") {
+          isValid = true;
+          matchedManagerName = "JOAO PAULO";
+        } else if (checkUser === "g1121" && checkPass === "Anbev10") {
+          isValid = true;
+          matchedManagerName = "José Gonçalves";
+        } else if (checkUser === "g1163" && checkPass === "Anbev10") {
+          isValid = true;
+          matchedManagerName = "Alécya Ferreira";
+        } else if (checkUser === "monitoramento" && checkPass === "Anbev10") {
+          isValid = true;
+          matchedManagerName = "MONITORAMENTO";
         }
       }
 

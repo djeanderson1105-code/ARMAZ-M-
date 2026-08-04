@@ -59,8 +59,14 @@ const SstrDataContext = createContext<SstrDataContextType | undefined>(undefined
 const DEFAULT_MANAGERS = [
   { username: "gestor", password: "paubrasil2026", name: "Gestor Principal" },
   { username: "admin", password: "admin", name: "Administrador" },
-  { username: "g1002", password: "g1002", name: "Gestor 1002" },
-  { username: "g1009", password: "g1009", name: "Gestor 1009" }
+  { username: "g1002", password: "!Liz1105", name: "Djeanderson Soares" },
+  { username: "g1009", password: "Bud0102", name: "Nixon Henrique" },
+  { username: "7171", password: "Anbev10", name: "Marcos Guilherme" },
+  { username: "7224", password: "Anbev10", name: "Elisson Minervino" },
+  { username: "g1022", password: "Anbev10", name: "JOAO PAULO" },
+  { username: "g1121", password: "Anbev10", name: "José Gonçalves" },
+  { username: "g1163", password: "Anbev10", name: "Alécya Ferreira" },
+  { username: "monitoramento", password: "Anbev10", name: "MONITORAMENTO" }
 ];
 
 const normalizeManagerUsername = (username: any) => String(username || "").toLowerCase().trim().replace(/^@+/, "");
