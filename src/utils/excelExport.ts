@@ -20,7 +20,7 @@ export function exportHectoliterAuditExcel(records: ExchangeRecord[], filenamePr
 
     const fatorCaixa = (prod && prod.fator && prod.fator > 0) ? prod.fator : 1;
     const fatorHectoCaixa = prod ? prod.fatorHecto : getHectoFactor(codeStr);
-    const um = (r.um || "CX").trim().toUpperCase();
+    const um = (r.um || "UN").trim().toUpperCase();
     const qtd = r.quantidade || 0;
     const computedHL = getRecordHL(r);
 
@@ -64,6 +64,10 @@ export function exportHectoliterAuditExcel(records: ExchangeRecord[], filenamePr
     };
   });
 
+  data.sort((a, b) => b["Volume Calculado (HL)"] - a["Volume Calculado (HL)"]);
+  // Re-number Item Nº
+  data.forEach((row, i) => { row["Item Nº"] = i + 1; });
+
   const worksheet = XLSX.utils.json_to_sheet(data);
 
   // Set explicit column widths for readability in Excel
@@ -101,3 +105,119 @@ export function exportHectoliterAuditExcel(records: ExchangeRecord[], filenamePr
   const timestampStr = new Date().toISOString().slice(0, 10);
   XLSX.writeFile(workbook, `${filenamePrefix}_${timestampStr}.xlsx`);
 }
+
+/**
+ * Exports all emitted Vales/Vouchers to an Excel (.xlsx) file configured as a "Pacote Prejuízo",
+ * containing full details: emission date, NF, Mapa, Driver, Driver CPF, Helpers, Helper CPFs,
+ * Status, Volume (HL), Total Loss Value (R$), Crew Member count, Rateio per Person (R$),
+ * Client NB, Client Name, and SKU Item details for importing into third-party log/financial systems.
+ */
+export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "pacote_prejuizo_vales_sstr") {
+  if (!vales || vales.length === 0) {
+    alert("Nenhum vale emitido disponível para exportação.");
+    return;
+  }
+
+  const data = vales.map((v, idx) => {
+    const orig = v.originalRequest || {};
+    const mapa = orig.mapa || v.mapa || "S/M";
+    const nb = orig.nb || "000000";
+    const cliente = orig.nomeCliente || orig.razaoSocial || orig.nomeFantasia || "PONTO DE VENDA (PDV)";
+
+    // Helpers count & split calculation
+    let countPessoas = 1; // Motorista
+    let h1 = v.ajudante1 || "";
+    let h2 = v.ajudante2 || "";
+    if (!h1 && v.ajudantes && v.ajudantes.trim() && v.ajudantes.toUpperCase() !== "NÃO DECLARADOS") {
+      const parts = v.ajudantes.split(",").map((s: string) => s.trim());
+      if (parts[0]) h1 = parts[0];
+      if (parts[1]) h2 = parts[1];
+    }
+
+    if (h1 && h1.trim()) countPessoas++;
+    if (h2 && h2.trim()) countPessoas++;
+
+    const valorTotal = v.valorTotal || 0;
+    const valorRateado = countPessoas > 0 ? Number((valorTotal / countPessoas).toFixed(2)) : valorTotal;
+
+    // SKUs string formatting
+    let skusDetail = "";
+    if (orig.items && Array.isArray(orig.items) && orig.items.length > 0) {
+      skusDetail = orig.items.map((it: any) => {
+        const code = it.item || it.produto || it.itemCode || "";
+        const desc = it.descricao || it.productDesc || "";
+        const qty = it.quantidade || 1;
+        const um = (it.unidadeMedida || it.um || "cx").toUpperCase();
+        return `${code} - ${desc} (${qty} ${um})`;
+      }).join(" | ");
+    } else if (orig.item) {
+      skusDetail = `${orig.item} - ${orig.descricao || ""} (${orig.quantidade || 1} ${orig.unidadeMedida || "CX"})`;
+    } else {
+      skusDetail = `REPOSIÇÃO SSTR SKU (${v.itemsCount || 1} ITENS)`;
+    }
+
+    const statusLabel = 
+      v.status === "compensado" ? "Compensado" :
+      v.status === "assinado" ? "Assinado" :
+      v.status === "emitido" ? "Emitido" : "Pendente de Assinatura";
+
+    return {
+      "Item Nº": idx + 1,
+      "Data Emissão": v.dataEmissao || "-",
+      "Nota Fiscal (NF)": v.nf || "-",
+      "Mapa de Carga": mapa,
+      "Rota / Setor": v.rota || "-",
+      "Motorista": v.motorista || "Não Declarado",
+      "CPF Motorista": v.motoristaCpf || "Ausente",
+      "Ajudante 1": h1 || "-",
+      "CPF Ajudante 1": v.ajudante1Cpf || "Ausente",
+      "Ajudante 2": h2 || "-",
+      "CPF Ajudante 2": v.ajudante2Cpf || "Ausente",
+      "Equipe Completa": v.ajudantes || (h1 ? `${h1}${h2 ? `, ${h2}` : ""}` : "Sem Ajudantes"),
+      "Status do Vale": statusLabel,
+      "Volume Total (HL)": Number((v.hectolitros || 0).toFixed(4)),
+      "Valor Total Prejuízo (R$)": Number(valorTotal.toFixed(2)),
+      "Total Integrantes Equipe": countPessoas,
+      "Valor Rateado p/ Pessoa (R$)": valorRateado,
+      "Qtd Itens": v.itemsCount || 1,
+      "Código Cliente (NB)": nb,
+      "Razão Social / Cliente": cliente,
+      "Detalhamento dos SKUs / Faltas": skusDetail,
+      "ID Vale SSTR": v.id || "-"
+    };
+  });
+
+  const worksheet = XLSX.utils.json_to_sheet(data);
+
+  worksheet["!cols"] = [
+    { wch: 8 },  // Item Nº
+    { wch: 14 }, // Data Emissão
+    { wch: 16 }, // NF
+    { wch: 14 }, // Mapa
+    { wch: 12 }, // Rota
+    { wch: 28 }, // Motorista
+    { wch: 18 }, // CPF Motorista
+    { wch: 24 }, // Ajudante 1
+    { wch: 18 }, // CPF Ajudante 1
+    { wch: 24 }, // Ajudante 2
+    { wch: 18 }, // CPF Ajudante 2
+    { wch: 32 }, // Equipe Completa
+    { wch: 20 }, // Status do Vale
+    { wch: 18 }, // Volume HL
+    { wch: 22 }, // Valor Total Prejuízo
+    { wch: 20 }, // Total Integrantes
+    { wch: 24 }, // Valor Rateado
+    { wch: 12 }, // Qtd Itens
+    { wch: 16 }, // Código Cliente
+    { wch: 35 }, // Cliente
+    { wch: 50 }, // SKUs
+    { wch: 24 }  // ID Vale
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Pacote Prejuízo Vales");
+
+  const timestampStr = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(workbook, `${filenamePrefix}_${timestampStr}.xlsx`);
+}
+

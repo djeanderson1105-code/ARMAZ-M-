@@ -200,11 +200,12 @@ export default function SstrOperationalAssistant({ records }: SstrOperationalAss
         })
       });
 
+      const data = await response.json();
+
       if (!response.ok) {
-        throw new Error("Falha ao comunicar com o servidor de inteligência artificial.");
+        throw new Error(data.error || "Falha ao comunicar com o servidor de inteligência artificial.");
       }
 
-      const data = await response.json();
       setMessages(prev => [...prev, {
         role: "assistant",
         text: data.text || "Desculpe, não consegui processar uma resposta agora.",
@@ -212,10 +213,18 @@ export default function SstrOperationalAssistant({ records }: SstrOperationalAss
       }]);
     } catch (err: any) {
       console.error(err);
+      const msg = err?.message || "Servidor offline";
+      let errorFormatted = `⚠️ Erro ao Comunicar com SSTR-AI: ${msg}`;
+      
+      if (msg.includes("503") || msg.includes("high demand") || msg.includes("demanda") || msg.includes("UNAVAILABLE")) {
+        errorFormatted = `⚠️ Servidor Ocupado (Erro 503): O serviço do Google Gemini está com alta demanda temporária. Aguarde alguns segundos e tente novamente.`;
+      } else if (msg.includes("GEMINI_API_KEY") || msg.includes("Chave de API")) {
+        errorFormatted = `⚠️ Chave de API Ausente: Certifique-se de que a variável GEMINI_API_KEY esteja configurada nas Configurações.`;
+      }
+
       setMessages(prev => [...prev, {
         role: "assistant",
-        text: `⚠️ Erro de Conexão: Não foi possível obter uma resposta do SSTR-AI. Certifique-se de que a chave de API GEMINI_API_KEY esteja devidamente configurada.
-Detalhes do erro: ${err?.message || "Servidor offline"}`,
+        text: errorFormatted,
         timestamp: new Date()
       }]);
     } finally {

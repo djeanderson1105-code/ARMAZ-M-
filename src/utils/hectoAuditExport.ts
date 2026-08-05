@@ -43,21 +43,40 @@ export function exportHectoliterAuditReport(records: ExchangeRecord[], filenameP
   records.forEach((r, idx) => {
     const code = String(r.produto || "").trim();
     const cleanCode = code.replace(/^0+/, "");
-    const productDef = PRODUCT_DATABASE.find(p => p.codigo === code || p.codigo === cleanCode);
+    const numericCode = code.replace(/[^0-9]/g, "");
+
+    const productDef = PRODUCT_DATABASE.find(p => 
+      p.codigo === code || 
+      p.codigo === cleanCode || 
+      (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
+    );
 
     const quantidade = r.quantidade || 0;
-    const umRaw = (r.um || (r as any).unidadeMedida || "cx").trim();
+    const umRaw = (r.um || (r as any).unidadeMedida || "un").trim();
     const umClean = umRaw.toLowerCase();
-    const isUnd = umClean === "und" || umClean === "un" || umClean === "unidade" || umClean.startsWith("un");
+    const isDz = umClean === "dz" || umClean === "duzia" || umClean.startsWith("dz");
+    const isCx = umClean === "cx" || umClean === "caixa" || umClean === "cxs" || umClean === "caixas" || umClean === "cx." || umClean === "pack" || umClean === "fardo" || umClean === "fd" || umClean === "sh" || umClean === "shrink";
+    const isUnd = !isDz && !isCx;
 
-    const embalagem = (productDef && productDef.fator && productDef.fator > 0) ? productDef.fator : ((r as any).fatorEmbalagem || 12);
-    const fatorHecto = productDef ? productDef.fatorHecto : getHectoFactor(code);
+    let embalagem = productDef?.fator;
+    if (!embalagem || embalagem < 1) {
+      if ((r as any).fatorEmbalagem && (r as any).fatorEmbalagem >= 1) {
+        embalagem = (r as any).fatorEmbalagem;
+      } else {
+        embalagem = 12;
+      }
+    }
 
-    const hlUnitario = isUnd ? (fatorHecto / embalagem) : fatorHecto;
+    const fatorHecto = productDef?.fatorHecto ?? (r.fatorHecto && r.fatorHecto > 0 ? r.fatorHecto : getHectoFactor(code));
+
+    const hlUnitario = fatorHecto / embalagem;
     const hlTotalCalculated = getRecordHL(r);
 
+    const valorUnitarioCalculated = r.valorUnitario || (r.valorTotal && quantidade > 0 ? r.valorTotal / quantidade : 0);
+    const valorTotalCalculated = r.valorTotal || (valorUnitarioCalculated * quantidade);
+
     totalHLSum += hlTotalCalculated;
-    totalSpentSum += r.valorTotal || 0;
+    totalSpentSum += valorTotalCalculated;
     totalQtySum += quantidade;
 
     // Extract Month/Year
@@ -73,9 +92,13 @@ export function exportHectoliterAuditReport(records: ExchangeRecord[], filenameP
       monthlySummary[monthYearStr] = { month: monthYearStr, totalQty: 0, totalSpent: 0, totalHL: 0, count: 0 };
     }
     monthlySummary[monthYearStr].totalQty += quantidade;
-    monthlySummary[monthYearStr].totalSpent += r.valorTotal || 0;
+    monthlySummary[monthYearStr].totalSpent += valorTotalCalculated;
     monthlySummary[monthYearStr].totalHL += hlTotalCalculated;
     monthlySummary[monthYearStr].count += 1;
+
+    let umFormatted = "UND (Unidade)";
+    if (isDz) umFormatted = "DZ (Dúzia)";
+    else if (isCx) umFormatted = "CX (Caixa)";
 
     rows.push({
       "ID / Solicitacao": r.solicitacao || String(r.id || idx + 1),
@@ -90,17 +113,20 @@ export function exportHectoliterAuditReport(records: ExchangeRecord[], filenameP
       "Código SKU": code,
       "Descrição do Produto": r.descricaoProduto || "-",
       "Quantidade": quantidade,
-      "Unidade de Medida": isUnd ? "UND (Unidade)" : "CX (Caixa)",
+      "Unidade de Medida": umFormatted,
       "Fator Embalagem (Unid/CX)": embalagem,
       "Fator Hecto (HL/CX)": Number(fatorHecto.toFixed(5)),
       "HL Unitário": Number(hlUnitario.toFixed(5)),
       "HL Total Contabilizado": Number(hlTotalCalculated.toFixed(4)),
-      "Valor Unitário (R$)": Number((r.valorUnitario || 0).toFixed(2)),
-      "Valor Total (R$)": Number((r.valorTotal || 0).toFixed(2)),
+      "Valor Unitário (R$)": Number(valorUnitarioCalculated.toFixed(2)),
+      "Valor Total (R$)": Number(valorTotalCalculated.toFixed(2)),
       "Status": r.status || "-",
       "Justificativa": r.justificativa || r.observacao || "-"
     });
   });
+
+  // Sort rows ranking from top to bottom by highest hectoliter (do maior para o menor)
+  rows.sort((a, b) => b["HL Total Contabilizado"] - a["HL Total Contabilizado"]);
 
   // Create Workbook with 2 sheets:
   // Sheet 1: Audit Detail (Itens & Quantidades Detalhadas)

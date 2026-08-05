@@ -23,7 +23,7 @@ import {
   writeBatch
 } from "firebase/firestore";
 import firebaseConfig from "../../firebase-applet-config.json";
-import { extractImagesToIDB, restoreImagesFromCache } from "./indexedDbCache";
+import { extractImagesToIDB, restoreImagesFromCache, initLargeKVCacheFromIDB, saveLargeKVToIDB, deleteLargeKVFromIDB } from "./indexedDbCache";
 import { parseCSVToRecords } from "./csvParser";
 import { RAW_SAMPLE_DATA } from "../sampleData";
 import { getProductsDatabase } from "../data/products";
@@ -40,7 +40,7 @@ export interface SyncIssueDetail {
   timestamp: number;
 }
 
-export function notifySyncIssue(message: string, err?: any) {
+export function notifySyncIssue(message: string, err?: any, force: boolean = false) {
   const now = Date.now();
   const errorCode = err?.code || (err?.message && (err.message.includes("resource-exhausted") || err.message.includes("quota")) ? "resource-exhausted" : "unknown");
   
@@ -55,7 +55,7 @@ export function notifySyncIssue(message: string, err?: any) {
     safeSetItem("sstr_last_sync_issue", JSON.stringify(issueData));
   } catch (e) {}
 
-  if (now - lastSyncIssueNotificationTime >= 20000) {
+  if (force || now - lastSyncIssueNotificationTime >= 20000) {
     lastSyncIssueNotificationTime = now;
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("sstr_sync_issue", { detail: issueData }));
@@ -171,15 +171,35 @@ const originalRemoveItem = localStorage.removeItem;
 // In-RAM fallback cache for extremely restrictive environments (Safari Private browsing, restricted iframe sandbox)
 const memoryStorage = new Map<string, string>();
 
+export function setMemoryStorageItem(key: string, value: string) {
+  memoryStorage.set(key, value);
+}
+
+export function deleteMemoryStorageItem(key: string) {
+  memoryStorage.delete(key);
+}
+
+export async function initAppStorageFromIDB(): Promise<void> {
+  await initLargeKVCacheFromIDB((key, val) => {
+    memoryStorage.set(key, val);
+  });
+}
+
 export function safeGetItem(key: string): string | null {
-  try {
-    return originalGetItem.call(localStorage, key);
-  } catch (e) {
+  if (memoryStorage.has(key)) {
     return memoryStorage.get(key) || null;
   }
+  try {
+    const val = originalGetItem.call(localStorage, key);
+    if (val !== null && val !== undefined) return val;
+  } catch (e) {
+    // Ignore native localStorage error
+  }
+  return memoryStorage.get(key) || null;
 }
 
 export function safeSetItem(key: string, value: string) {
+  memoryStorage.set(key, value);
   try {
     let processedValue = value;
     if (
@@ -189,18 +209,40 @@ export function safeSetItem(key: string, value: string) {
       processedValue = extractImagesToIDB(value);
     }
     originalSetItem.call(localStorage, key, processedValue);
-  } catch (e) {
-    console.warn(`[STORAGE-WARN] Failed to write key "${key}" to native localStorage. Using in-memory fallback:`, e);
-    memoryStorage.set(key, value);
+  } catch (e: any) {
+    console.warn(`[STORAGE-WARN] Key "${key}" exceeded localStorage limits (~5MB). Persisting to IndexedDB (unlimited storage):`, e);
+    saveLargeKVToIDB(key, value).catch(idbErr => console.error("[IDB-ERR] Save failed:", idbErr));
+
+    if (!isSyncingFromFirestore && (key === "sstr_cached_records_v1" || key === "sstr_cached_batches_v1")) {
+      try {
+        const parsedValue = JSON.parse(value);
+        addToOfflineQueue(key, parsedValue);
+      } catch (parseErr) {
+        addToOfflineQueue(key, value);
+      }
+    }
+  }
+}
+
+export function hasPendingOfflineWrite(key: string): boolean {
+  try {
+    const queueStr = safeGetItem("sstr_offline_pending_sync_queue");
+    if (!queueStr) return false;
+    const queue: QueueItem[] = JSON.parse(queueStr);
+    return Array.isArray(queue) && queue.some(q => q.key === key);
+  } catch (err) {
+    return false;
   }
 }
 
 export function safeRemoveItem(key: string) {
+  memoryStorage.delete(key);
   try {
     originalRemoveItem.call(localStorage, key);
   } catch (e) {
-    memoryStorage.delete(key);
+    // Ignore
   }
+  deleteLargeKVFromIDB(key).catch(err => console.error("[IDB-ERR] Delete failed:", err));
 }
 
 // OFFLINE QUEUE MANAGER: Ensures data stored locally is pushed to Firestore when network / quota recovers
@@ -548,10 +590,10 @@ export async function syncExchangeRecordsConsolidated(newList: any[]) {
     notifySyncIssue(`Erro ao gravar relatório base de trocas no Firestore: ${err?.message || err}`, err);
     addToOfflineQueue("sstr_cached_records_v1", newList);
   } finally {
-    // Hold write flag for 3 seconds so incoming snapshots don't overwrite fresh local changes
+    // Hold write flag for 10 seconds so incoming snapshots don't overwrite fresh local changes
     setTimeout(() => {
       isWritingExchangeRecords = false;
-    }, 3000);
+    }, 10000);
   }
 }
 
@@ -602,7 +644,8 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
           return;
         }
 
-        if (metadata.timestamp && metadata.timestamp < lastLocalWriteTimestamp - 5000) {
+        // If metadata timestamp is older than or equal to local write, ignore this snapshot
+        if (metadata.timestamp && metadata.timestamp <= lastLocalWriteTimestamp) {
           if (!resolved) {
             resolved = true;
             resolve();
@@ -631,9 +674,45 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
           }
           return;
         }
+
+        const localStr = safeGetItem(localKey) || "[]";
+        let localCount = 0;
+        let localRecords: any[] = [];
+        try {
+          localRecords = JSON.parse(localStr);
+          if (Array.isArray(localRecords)) {
+            localCount = localRecords.length;
+          }
+        } catch (e) {}
+
+        // SAFETY SHIELD 1: Check for unconfirmed local write pending in queue
+        const isPendingOffline = hasPendingOfflineWrite(localKey);
+        if (isPendingOffline) {
+          console.warn(`[SYNC-SHIELD] Unconfirmed local write pending in queue for "${localKey}" (${localCount} records). Preserving local cache and attempting repair push to Firestore...`);
+          if (localCount > 0) {
+            syncExchangeRecordsConsolidated(localRecords).catch(e => console.warn("[SYNC-REPAIR-WARN] Repair push error:", e));
+          }
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+          return;
+        }
+
+        // SAFETY SHIELD 2: If remote snapshot returns 0 records, but local cache has records (> 0),
+        // DO NOT wipe local cache with empty remote snapshot!
+        // Instead, preserve local records and push them to Firestore to repair remote collection.
+        if (combinedList.length === 0 && localCount > 0) {
+          console.warn(`[SYNC-SHIELD] Remote database returned 0 records, but local cache holds ${localCount} records. Preserving local records and repairing Firestore...`);
+          syncExchangeRecordsConsolidated(localRecords).catch(e => console.warn("[SYNC-REPAIR-WARN] Repair push error:", e));
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+          return;
+        }
         
         const remoteStr = JSON.stringify(combinedList);
-        const localStr = safeGetItem(localKey);
         
         if (localStr !== remoteStr) {
           isSyncingFromFirestore = true;
@@ -862,6 +941,15 @@ function subscribeCollection(collectionName: string, localKey: string, isObject:
         }
 
         const localStr = safeGetItem(localKey);
+
+        if (hasPendingOfflineWrite(localKey)) {
+          console.warn(`[SYNC-SHIELD] Unconfirmed local write pending in queue for "${localKey}". Preserving local state.`);
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+          return;
+        }
         if (localKey === "sstr_products_database" && Array.isArray(remoteVal)) {
           try {
             const localArr = localStr ? JSON.parse(localStr) : [];
@@ -1056,15 +1144,35 @@ export function initializeSync() {
 }
 
 function seedLocalStorageDefaults() {
-  console.log("Seeding local storage with default demonstration dataset...");
-  const defaultRecords = parseCSVToRecords(RAW_SAMPLE_DATA, "Planilha Base Pau Brasil");
-  const initialBatch = {
-    id: "batch_default",
-    timestamp: Date.now(),
-    fileName: "Planilha Base Pau Brasil.csv",
-    recordCount: defaultRecords.length,
-    totalValue: defaultRecords.reduce((acc: number, r: any) => acc + r.valorTotal, 0)
-  };
+  const existingRecordsStr = safeGetItem("sstr_cached_records_v1");
+  let hasUserRecords = false;
+  if (existingRecordsStr) {
+    try {
+      const parsed = JSON.parse(existingRecordsStr);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        hasUserRecords = true;
+      }
+    } catch (e) {}
+  }
+
+  if (hasUserRecords) {
+    console.log("[SEED-SKIP] Local storage already contains user records. Preserving existing user database.");
+  } else {
+    console.log("Seeding local storage with default demonstration dataset...");
+    const defaultRecords = parseCSVToRecords(RAW_SAMPLE_DATA, "Planilha Base Pau Brasil");
+    const initialBatch = {
+      id: "batch_default",
+      timestamp: Date.now(),
+      fileName: "Planilha Base Pau Brasil.csv",
+      recordCount: defaultRecords.length,
+      totalValue: defaultRecords.reduce((acc: number, r: any) => acc + r.valorTotal, 0)
+    };
+    safeSetItem("sstr_cached_records_v1", JSON.stringify(defaultRecords));
+    if (!safeGetItem("sstr_cached_batches_v1")) {
+      safeSetItem("sstr_cached_batches_v1", JSON.stringify([initialBatch]));
+    }
+  }
+
   const defaultManagers = [
     { username: "gestor", password: "paubrasil2026", name: "Gestor Principal" },
     { username: "admin", password: "admin", name: "Administrador" },
@@ -1078,28 +1186,53 @@ function seedLocalStorageDefaults() {
     { username: "monitoramento", password: "Anbev10", name: "MONITORAMENTO" }
   ];
 
-  safeSetItem("sstr_cached_records_v1", JSON.stringify(defaultRecords));
-  safeSetItem("sstr_cached_batches_v1", JSON.stringify([initialBatch]));
-  safeSetItem("sstr_representative_pending_requests", JSON.stringify([]));
-  safeSetItem("sstr_registered_managers", JSON.stringify(defaultManagers));
-  safeSetItem("sstr_vales_historico_reg", JSON.stringify([]));
-  safeSetItem("sstr_custom_pdvs_v1", JSON.stringify([]));
-  safeSetItem("sstr_products_database", JSON.stringify(getProductsDatabase()));
-  safeSetItem("sstr_lista_crew", JSON.stringify(DEFAULT_LISTA_CREW));
-  safeSetItem("sstr_reps_setor", JSON.stringify(DEFAULT_REPRESENTATIVOS_SETOR));
-  safeSetItem("sstr_motoristas_rotas", JSON.stringify(DEFAULT_MOTORISTAS_ROTAS));
+  if (!safeGetItem("sstr_representative_pending_requests")) safeSetItem("sstr_representative_pending_requests", JSON.stringify([]));
+  if (!safeGetItem("sstr_registered_managers")) safeSetItem("sstr_registered_managers", JSON.stringify(defaultManagers));
+  if (!safeGetItem("sstr_vales_historico_reg")) safeSetItem("sstr_vales_historico_reg", JSON.stringify([]));
+  if (!safeGetItem("sstr_custom_pdvs_v1")) safeSetItem("sstr_custom_pdvs_v1", JSON.stringify([]));
+  if (!safeGetItem("sstr_products_database")) safeSetItem("sstr_products_database", JSON.stringify(getProductsDatabase()));
+  if (!safeGetItem("sstr_lista_crew")) safeSetItem("sstr_lista_crew", JSON.stringify(DEFAULT_LISTA_CREW));
+  if (!safeGetItem("sstr_reps_setor")) safeSetItem("sstr_reps_setor", JSON.stringify(DEFAULT_REPRESENTATIVOS_SETOR));
+  if (!safeGetItem("sstr_motoristas_rotas")) safeSetItem("sstr_motoristas_rotas", JSON.stringify(DEFAULT_MOTORISTAS_ROTAS));
 }
 
 async function seedFirestoreBaselines() {
   console.log("Seeding Firestore databases with initial demonstration datasets...");
-  const defaultRecords = parseCSVToRecords(RAW_SAMPLE_DATA, "Planilha Base Pau Brasil");
-  const initialBatch = {
-    id: "batch_default",
-    timestamp: Date.now(),
-    fileName: "Planilha Base Pau Brasil.csv",
-    recordCount: defaultRecords.length,
-    totalValue: defaultRecords.reduce((acc: number, r: any) => acc + r.valorTotal, 0)
-  };
+  const existingRecordsStr = safeGetItem("sstr_cached_records_v1");
+  let recordsToSeed: any[] = [];
+  if (existingRecordsStr) {
+    try {
+      const parsed = JSON.parse(existingRecordsStr);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        recordsToSeed = parsed;
+        console.log(`[SEED-PRESERVE] Using ${recordsToSeed.length} existing user records for Firestore baseline seed.`);
+      }
+    } catch (e) {}
+  }
+  if (recordsToSeed.length === 0) {
+    recordsToSeed = parseCSVToRecords(RAW_SAMPLE_DATA, "Planilha Base Pau Brasil");
+  }
+
+  const existingBatchesStr = safeGetItem("sstr_cached_batches_v1");
+  let batchesToSeed: any[] = [];
+  if (existingBatchesStr) {
+    try {
+      const parsed = JSON.parse(existingBatchesStr);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        batchesToSeed = parsed;
+      }
+    } catch (e) {}
+  }
+  if (batchesToSeed.length === 0) {
+    batchesToSeed = [{
+      id: "batch_default",
+      timestamp: Date.now(),
+      fileName: "Planilha Base Pau Brasil.csv",
+      recordCount: recordsToSeed.length,
+      totalValue: recordsToSeed.reduce((acc: number, r: any) => acc + (r.valorTotal || 0), 0)
+    }];
+  }
+
   const defaultManagers = [
     { username: "gestor", password: "paubrasil2026", name: "Gestor Principal" },
     { username: "admin", password: "admin", name: "Administrador" },
@@ -1149,8 +1282,8 @@ async function seedFirestoreBaselines() {
     }
   };
 
-  await syncExchangeRecordsConsolidated(defaultRecords);
-  await seedArrayInChunks("batches", [initialBatch]);
+  await syncExchangeRecordsConsolidated(recordsToSeed);
+  await seedArrayInChunks("batches", batchesToSeed);
   await seedArrayInChunks("managers", defaultManagers);
   await seedArrayInChunks("products", getProductsDatabase());
   await seedArrayInChunks("crewList", DEFAULT_LISTA_CREW);

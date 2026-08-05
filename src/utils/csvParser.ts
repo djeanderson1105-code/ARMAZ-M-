@@ -219,8 +219,9 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
     }
 
     const umVal = getValSafe(parts, indices.um, "Un").trim();
+    const descVal = getValSafe(parts, indices.descricaoProduto, "").trim().replace(/\s+/g, ' ');
     const fatHecto = getHectoFactor(produtoVal);
-    const computedHl = calculateHL(produtoVal, qty, umVal);
+    const computedHl = calculateHL(produtoVal, qty, umVal, descVal);
 
     const record: ExchangeRecord = {
       id: uniqueId,

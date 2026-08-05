@@ -809,18 +809,49 @@ export default function PendingRequestsTab() {
       ];
 
       setPrintDocItems(baseItems.map((it: any) => {
-        const itemCode = it.item || it.itemCode || "SKU_GENERIC";
-        const defaultUnitPrice = promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 98.50;
-        const rawUm = it.unidadeMedida || (promaxRecords.find(r => r.produto === itemCode)?.um || "cx");
+        const itemCode = String(it.item || it.itemCode || "SKU_GENERIC").trim();
+        const cleanCode = itemCode.replace(/^#/, "").trim().replace(/^0+/, "");
+        const numericCode = itemCode.replace(/[^0-9]/g, "");
+
+        const dbProduct = PRODUCT_DATABASE.find(p => 
+          p.codigo === itemCode || 
+          p.codigo === cleanCode || 
+          (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
+        );
+
+        const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (it.fatorEmbalagem || 12);
+        const promaxRecord = promaxRecords.find(r => r.produto === itemCode);
+        const promaxPrice = promaxRecord?.valorUnitario || 0;
+
         const isFaltaSku = (it.motivo || req.motivo || "").toLowerCase().includes("sku");
-        const um = (it.unidadeMedida || (isFaltaSku ? "sku" : rawUm)).toLowerCase();
+        const rawUm = (it.unidadeMedida || (isFaltaSku ? "sku" : (promaxRecord?.um || "sku"))).toLowerCase().trim();
+        const isUnd = rawUm === "und" || rawUm === "un" || rawUm === "unidade" || rawUm === "unidades";
+        const um = isUnd ? "und" : "sku";
+
+        // Determine base box price (price for 1 SKU closed box)
+        let officialBoxPrice = dbProduct?.valor || 0;
+        if (!officialBoxPrice || officialBoxPrice <= 0) {
+          if (promaxPrice > 0) {
+            officialBoxPrice = promaxPrice < 15 ? (promaxPrice * embalagem) : promaxPrice;
+          } else if (it.customUnitPrice && Number(it.customUnitPrice) > 0) {
+            const cu = Number(it.customUnitPrice);
+            officialBoxPrice = cu < 15 ? (cu * embalagem) : cu;
+          }
+        }
+        if (!officialBoxPrice || officialBoxPrice <= 0) officialBoxPrice = 98.50;
+
+        // Display unit price depends on U.M.
+        let displayPrice = Number(it.customUnitPrice) > 0 ? Number(it.customUnitPrice) : 0;
+        if (!displayPrice || (displayPrice < 15 && !isUnd && officialBoxPrice >= 15)) {
+          displayPrice = isUnd ? (officialBoxPrice / embalagem) : officialBoxPrice;
+        }
 
         return {
           ...it,
           itemCode,
           quantidade: Number(it.quantidade) || 1,
           unidadeMedida: um,
-          customUnitPrice: Number(it.customUnitPrice || defaultUnitPrice)
+          customUnitPrice: Number(displayPrice.toFixed(2))
         };
       }));
     } else {
@@ -832,19 +863,44 @@ export default function PendingRequestsTab() {
   const handleUpdatePrintDocItem = (index: number, field: string, value: any) => {
     setPrintDocItems(prev => {
       const updated = [...prev];
-      const item = { ...updated[index], [field]: value };
+      const prevItem = updated[index];
+      const item = { ...prevItem, [field]: value };
       
       const code = item.item || item.itemCode || "";
       const qty = Number(item.quantidade) || 0;
       const factor = getHectoFactor(code);
-      const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === code || p.codigo === code.replace(/^0+/, ""));
-      const embalagem = dbProduct?.embalagem || 12;
+      const cleanCode = String(code).replace(/^#/, "").trim().replace(/^0+/, "");
+      const numericCode = String(code).replace(/[^0-9]/g, "");
+      const dbProduct = PRODUCT_DATABASE.find(p => 
+        p.codigo === code || 
+        p.codigo === cleanCode || 
+        (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
+      );
+      const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (item.fatorEmbalagem || 12);
+      const boxPrice = dbProduct?.valor || 0;
 
-      if (item.unidadeMedida === "und") {
-        item.hectolitros = Number(((qty / embalagem) * factor).toFixed(4));
-      } else {
-        item.hectolitros = Number((qty * factor).toFixed(4));
+      // If field changed is "unidadeMedida", adjust customUnitPrice dynamically
+      if (field === "unidadeMedida" && prevItem.unidadeMedida !== value) {
+        const isNewUnd = value === "und" || value === "un";
+        if (boxPrice > 0) {
+          item.customUnitPrice = Number((isNewUnd ? (boxPrice / embalagem) : boxPrice).toFixed(2));
+        } else if (item.customUnitPrice) {
+          if (isNewUnd && item.customUnitPrice > 15) {
+            item.customUnitPrice = Number((item.customUnitPrice / embalagem).toFixed(2));
+          } else if (!isNewUnd && item.customUnitPrice < 15) {
+            item.customUnitPrice = Number((item.customUnitPrice * embalagem).toFixed(2));
+          }
+        }
       }
+
+      item.hectolitros = calculateItemHL({
+        codigo: code,
+        quantidade: qty,
+        unidadeMedida: item.unidadeMedida,
+        fatorEmbalagem: dbProduct?.fator || embalagem,
+        fatorHecto: factor,
+        descricao: item.itemDesc || dbProduct?.descricao
+      });
 
       updated[index] = item;
       return updated;
@@ -1195,9 +1251,14 @@ export default function PendingRequestsTab() {
       const factor = productDef.fatorHecto || 0.0800;
       const isReqCx = reqUnidade === "cx" || reqUnidade === "caixa";
       const isReqUnd = !isReqCx;
-      const calculatedHl = isReqUnd
-        ? Number(((qty / embalagem) * factor).toFixed(4))
-        : Number((qty * factor).toFixed(4));
+      const calculatedHl = calculateItemHL({
+        codigo: productDef.codigo,
+        quantidade: qty,
+        unidadeMedida: reqUnidade,
+        fatorEmbalagem: embalagem,
+        fatorHecto: factor,
+        descricao: productDef.descricao
+      });
 
       const calculatedPrice = isReqUnd
         ? Number((qty * unitPrice).toFixed(2))
@@ -1316,9 +1377,14 @@ export default function PendingRequestsTab() {
         const factor = productDef.fatorHecto || 0.0800;
         const isReqCx = reqUnidade === "cx" || reqUnidade === "caixa";
         const isReqUnd = !isReqCx;
-        const calculatedHl = isReqUnd
-          ? Number(((qty / embalagem) * factor).toFixed(4))
-          : Number((qty * factor).toFixed(4));
+        const calculatedHl = calculateItemHL({
+          codigo: productDef.codigo,
+          quantidade: qty,
+          unidadeMedida: reqUnidade,
+          fatorEmbalagem: embalagem,
+          fatorHecto: factor,
+          descricao: productDef.descricao
+        });
 
         const calculatedPrice = isReqUnd
           ? Number((qty * unitPrice).toFixed(2))
@@ -6766,15 +6832,31 @@ export default function PendingRequestsTab() {
                         const itemDesc = entregarInfo ? entregarInfo.name : (sub.descricao || sub.productDesc || "PRODUTO SSTR");
                         const itemQty = Number(sub.quantidade) || 1;
 
-                        const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
-                        const embalagem = dbProduct?.embalagem || dbProduct?.fator || 12;
+                        const cleanCode = String(itemCode).replace(/^#/, "").trim().replace(/^0+/, "");
+                        const numericCode = String(itemCode).replace(/[^0-9]/g, "");
+                        const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === cleanCode || (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode)));
+                        const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (sub.fatorEmbalagem || 12);
 
-                        const baseBoxPrice = Number(sub.customUnitPrice) || dbProduct?.valor || promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 0;
-                        const isUnd = (sub.unidadeMedida || "").toLowerCase() === "und";
+                        const umStr = (sub.unidadeMedida || sub.um || "sku").toLowerCase().trim();
+                        const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades";
 
-                        // Calculate unit price and total price accounting for UND vs CX/SKU
-                        const actualUnitPrice = isUnd ? (baseBoxPrice / embalagem) : baseBoxPrice;
-                        const itemTotalValue = itemQty * actualUnitPrice;
+                        // Determine official box price
+                        let officialBoxPrice = dbProduct?.valor || 0;
+                        if (!officialBoxPrice || officialBoxPrice <= 0) {
+                          const promaxPrice = promaxRecords.find(r => r.produto === itemCode)?.valorUnitario || 0;
+                          if (promaxPrice > 0) {
+                            officialBoxPrice = promaxPrice < 15 ? (promaxPrice * embalagem) : promaxPrice;
+                          }
+                        }
+                        if (!officialBoxPrice || officialBoxPrice <= 0) officialBoxPrice = 98.50;
+
+                        // Display unit price depends on current U.M.
+                        let displayUnitPrice = Number(sub.customUnitPrice) || 0;
+                        if (!displayUnitPrice || (displayUnitPrice < 15 && !isUnd && officialBoxPrice >= 15)) {
+                          displayUnitPrice = isUnd ? (officialBoxPrice / embalagem) : officialBoxPrice;
+                        }
+
+                        const itemTotalValue = itemQty * displayUnitPrice;
 
                         return (
                           <React.Fragment key={sub.id || index}>
@@ -6793,9 +6875,14 @@ export default function PendingRequestsTab() {
                                     onChange={(e) => handleUpdatePrintDocItem(index, "quantidade", Number(e.target.value))}
                                     className="w-16 text-center border border-gray-300 rounded font-mono font-bold bg-amber-50/50 hover:bg-amber-100 focus:bg-white text-xs py-0.5 no-print-border"
                                   />
-                                  <span className="text-slate-900 font-mono font-bold text-xs uppercase px-1">
-                                    {(sub.unidadeMedida || sub.um || "cx").toLowerCase() === "und" ? "UND" : "SKU"}
-                                  </span>
+                                  <select
+                                    value={isUnd ? "und" : "sku"}
+                                    onChange={(e) => handleUpdatePrintDocItem(index, "unidadeMedida", e.target.value)}
+                                    className="border border-gray-300 rounded font-mono font-bold bg-amber-50/50 hover:bg-amber-100 focus:bg-white text-xs py-0.5 px-0.5 no-print-border uppercase cursor-pointer"
+                                  >
+                                    <option value="sku">SKU</option>
+                                    <option value="und">UND</option>
+                                  </select>
                                 </div>
                               </td>
                               <td className="p-2.5 border-r border-gray-300 text-center font-mono font-bold text-indigo-950">
@@ -6806,9 +6893,9 @@ export default function PendingRequestsTab() {
                                   <input
                                     type="number"
                                     step="0.01"
-                                    value={baseBoxPrice}
+                                    value={Number(displayUnitPrice.toFixed(2))}
                                     onChange={(e) => handleUpdatePrintDocItem(index, "customUnitPrice", Number(e.target.value))}
-                                    className="w-20 text-right border border-gray-300 rounded font-mono text-xs py-0.5 px-1 bg-amber-50/50 hover:bg-amber-100 focus:bg-white no-print-border"
+                                    className="w-20 text-right border border-gray-300 rounded font-mono text-xs py-0.5 px-1 bg-amber-50/50 hover:bg-amber-100 focus:bg-white no-print-border font-bold"
                                   />
                                 </td>
                               )}

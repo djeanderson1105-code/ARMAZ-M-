@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import { initImageCacheFromIDB } from './utils/indexedDbCache.ts';
+import { initAppStorageFromIDB } from './utils/apiSync.ts';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -13,8 +14,9 @@ interface ErrorBoundaryState {
   error?: Error;
 }
 
-class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  public state: ErrorBoundaryState = {
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  declare props: ErrorBoundaryProps;
+  state: ErrorBoundaryState = {
     hasError: false,
   };
 
@@ -82,7 +84,7 @@ const fallbackTimer = setTimeout(() => {
   mountApp();
 }, 1000);
 
-initImageCacheFromIDB()
+Promise.all([initImageCacheFromIDB(), initAppStorageFromIDB()])
   .then(() => {
     clearTimeout(fallbackTimer);
     mountApp();

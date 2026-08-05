@@ -1,6 +1,7 @@
 const DB_NAME = "SSTR_Photos_Cache";
 const STORE_NAME = "images";
-const DB_VERSION = 1;
+const LARGE_STORE_NAME = "large_kv";
+const DB_VERSION = 2;
 
 // Global synchronous in-RAM cache to make IDB data accessible synchronously to localStorage monkey-patch
 if (!(window as any).sstr_image_cache) {
@@ -17,8 +18,87 @@ function getDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME);
       }
+      if (!db.objectStoreNames.contains(LARGE_STORE_NAME)) {
+        db.createObjectStore(LARGE_STORE_NAME);
+      }
     };
   });
+}
+
+/**
+ * Loads all cached items from IndexedDB large_kv store into memory.
+ */
+export async function initLargeKVCacheFromIDB(onItemLoaded?: (key: string, value: string) => void): Promise<void> {
+  try {
+    const db = await getDB();
+    if (!db.objectStoreNames.contains(LARGE_STORE_NAME)) return;
+    const tx = db.transaction(LARGE_STORE_NAME, "readonly");
+    const store = tx.objectStore(LARGE_STORE_NAME);
+    
+    return new Promise((resolve) => {
+      const request = store.openCursor();
+      request.onsuccess = (event: any) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          if (cursor.key && cursor.value && onItemLoaded) {
+            onItemLoaded(cursor.key.toString(), cursor.value);
+          }
+          cursor.continue();
+        } else {
+          console.log(`[IDB Large KV] IndexedDB large data cache loaded into memory.`);
+          resolve();
+        }
+      };
+      request.onerror = () => {
+        console.warn("[IDB Large KV] Failed to load large_kv cursor.");
+        resolve();
+      };
+    });
+  } catch (e) {
+    console.error("[IDB Large KV] Initialization failed:", e);
+  }
+}
+
+/**
+ * Saves a large key-value pair to IndexedDB.
+ */
+export async function saveLargeKVToIDB(key: string, value: string): Promise<void> {
+  if (!key) return;
+  try {
+    const db = await getDB();
+    if (!db.objectStoreNames.contains(LARGE_STORE_NAME)) return;
+    const tx = db.transaction(LARGE_STORE_NAME, "readwrite");
+    const store = tx.objectStore(LARGE_STORE_NAME);
+    store.put(value, key);
+    return new Promise((resolve) => {
+      tx.oncomplete = () => {
+        console.log(`[IDB Large KV] Successfully persisted "${key}" (${Math.round(value.length / 1024)} KB) to IndexedDB.`);
+        resolve();
+      };
+      tx.onerror = () => {
+        console.error("[IDB Large KV] Store put failed:", tx.error);
+        resolve();
+      };
+    });
+  } catch (e) {
+    console.error("[IDB Large KV] Failed to persist key to IDB:", e);
+  }
+}
+
+/**
+ * Deletes a large key-value pair from IndexedDB.
+ */
+export async function deleteLargeKVFromIDB(key: string): Promise<void> {
+  if (!key) return;
+  try {
+    const db = await getDB();
+    if (!db.objectStoreNames.contains(LARGE_STORE_NAME)) return;
+    const tx = db.transaction(LARGE_STORE_NAME, "readwrite");
+    const store = tx.objectStore(LARGE_STORE_NAME);
+    store.delete(key);
+  } catch (e) {
+    console.error("[IDB Large KV] Failed to delete key from IDB:", e);
+  }
 }
 
 /**

@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { ProductInfo, extractFatorFromDescricao, clearProductsCache } from "../data/products";
+import { ProductInfo, extractFatorFromDescricao, clearProductsCache, calculateItemHL } from "../data/products";
 import { PendingRequest, ExchangeRecord } from "../types";
 import { ValeEntry } from "../components/ValesHistoryDashboard";
 
@@ -167,7 +167,14 @@ export function recalculateAllRecordsWithProducts(
         const boxPrice = p.valor && p.valor > 0 ? p.valor : 0;
         const unitVal = isUnd ? (boxPrice / embalagem) : boxPrice;
         const itemVal = unitVal * (item.quantidade || 1);
-        const itemHecto = (p.fatorHecto || 0) * (item.quantidade || 1);
+        const itemHecto = calculateItemHL({
+          codigo: p.codigo,
+          quantidade: item.quantidade || 1,
+          unidadeMedida: item.unidadeMedida,
+          fatorEmbalagem: embalagem,
+          fatorHecto: p.fatorHecto,
+          descricao: p.descricao
+        });
 
         newTotalVal += itemVal;
         newHecto += itemHecto;
@@ -193,7 +200,14 @@ export function recalculateAllRecordsWithProducts(
         hasChanges = true;
         const boxPrice = p.valor || 0;
         const itemVal = boxPrice * (req.quantidade || 1);
-        const itemHecto = (p.fatorHecto || 0) * (req.quantidade || 1);
+        const itemHecto = calculateItemHL({
+          codigo: p.codigo,
+          quantidade: req.quantidade || 1,
+          unidadeMedida: (req as any).unidadeMedida || (req as any).um,
+          fatorEmbalagem: p.fator,
+          fatorHecto: p.fatorHecto,
+          descricao: p.descricao
+        });
         return {
           ...req,
           valorTotal: Number(itemVal.toFixed(2)),

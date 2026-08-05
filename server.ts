@@ -601,14 +601,20 @@ async function startServer() {
         }
       });
 
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: [
-          {
-            role: "user",
-            parts: [
+      const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-3.6-flash"];
+      let responseText = "";
+      let lastError: any = null;
+
+      for (const modelCandidate of modelsToTry) {
+        try {
+          const result = await ai.models.generateContent({
+            model: modelCandidate,
+            contents: [
               {
-                text: `Você é o SSTR-ASSISTANT, um assistente inteligente especializado nas operações de trocas e reposições do Portal Pau Brasil Guarabira.
+                role: "user",
+                parts: [
+                  {
+                    text: `Você é o SSTR-ASSISTANT, um assistente inteligente especializado nas operações de trocas e reposições do Portal Pau Brasil Guarabira.
 Você prestará suporte a gestores, representantes comerciais e motoristas sobre a base de dados de reposições e as regras operacionais da empresa.
 
 Aqui está o contexto real consolidado do banco de dados de lançamentos atual:
@@ -632,21 +638,44 @@ Importante: Os volumes de reposição podem ser medidos em quantidades físicas 
 Sempre que pertinente, apresente e valorize as duas medições para enriquecer suas respostas!
 
 Diga ao usuário que você está respondendo com base nas informações carregadas no momento de forma humana, precisa e profissional em Português do Brasil.`
-              }
-            ]
-          },
-          {
-            role: "user",
-            parts: [
+                  }
+                ]
+              },
               {
-                text: message
+                role: "user",
+                parts: [
+                  {
+                    text: message
+                  }
+                ]
               }
             ]
-          }
-        ]
-      });
+          });
 
-      res.json({ text: response.text });
+          if (result && result.text) {
+            responseText = result.text;
+            break;
+          }
+        } catch (err: any) {
+          console.warn(`[GEMINI-ASSISTANT] Model ${modelCandidate} failed:`, err?.message || err);
+          lastError = err;
+        }
+      }
+
+      if (responseText) {
+        return res.json({ text: responseText });
+      }
+
+      const errMsg = lastError?.message || "Serviço temporariamente indisponível";
+      if (errMsg.includes("503") || errMsg.includes("high demand") || errMsg.includes("UNAVAILABLE")) {
+        return res.status(503).json({
+          error: "O serviço de Inteligência Artificial do Google Gemini está enfrentando uma alta demanda temporária no servidor (Erro 503). Por favor, aguarde alguns segundos e tente novamente."
+        });
+      }
+
+      return res.status(500).json({
+        error: `Erro ao processar com assistente inteligente: ${errMsg}`
+      });
     } catch (err: any) {
       console.error("[GEMINI-ASSISTANT] Server-side error:", err);
       res.status(500).json({ 

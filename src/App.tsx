@@ -179,7 +179,7 @@ function MainApp() {
 
     if (mergeMode === "overwrite") {
       finalRecords = taggedRecords;
-      saveStateToStorage(finalRecords, [newBatch]);
+      saveStateToStorage(finalRecords, newRecords.length > 0 ? [newBatch] : []);
     } else {
       // Append mode - merge by uniquely matching Solicitação + Produto id keys
       const existingMap = new Map<string, ExchangeRecord>();
@@ -521,6 +521,7 @@ function MainApp() {
                   importHistory={batches}
                   onDeleteBatch={handleDeleteBatch}
                   totalRecordsCount={records.length}
+                  onNavigateToTracking={() => setActiveTab("tracking")}
                 />
               )}
 

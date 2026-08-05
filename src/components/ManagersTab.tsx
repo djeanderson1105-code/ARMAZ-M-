@@ -41,7 +41,7 @@ import {
   PendingRequest,
   RequestItem
 } from "../types";
-import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, getProductsDatabase, clearProductsCache, setProductsCache, extractFatorFromDescricao } from "../data/products";
+import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, calculateItemHL, getProductsDatabase, clearProductsCache, setProductsCache, extractFatorFromDescricao } from "../data/products";
 import { getPdvDatabase, registerNewPdv, registerMultiplePdvs, clearPdvCache } from "../data/pdvData";
 
 interface ManagerUser {
@@ -223,8 +223,15 @@ export default function ManagersTab() {
         return;
       }
 
-      const factor = productDef.fatorHecto || 0.0800;
-      const calculatedHl = Number((qty * factor).toFixed(4));
+      const factor = productDef?.fatorHecto || 0.0800;
+      const calculatedHl = productDef ? calculateItemHL({
+        codigo: productDef.codigo,
+        quantidade: qty,
+        unidadeMedida: "un",
+        fatorEmbalagem: productDef.fator,
+        fatorHecto: productDef.fatorHecto,
+        descricao: productDef.descricao
+      }) : 0;
 
       let finalMotive = reqMotiveType;
       if (reqMotiveType === "Falta de SKU Completo") {
@@ -332,7 +339,14 @@ export default function ManagersTab() {
           return;
         }
         const factor = productDef.fatorHecto || 0.0800;
-        const calculatedHl = Number((qty * factor).toFixed(4));
+        const calculatedHl = calculateItemHL({
+          codigo: productDef.codigo,
+          quantidade: qty,
+          unidadeMedida: "un",
+          fatorEmbalagem: productDef.fator,
+          fatorHecto: productDef.fatorHecto,
+          descricao: productDef.descricao
+        });
         let finalMotive = reqMotiveType;
         if (reqMotiveType === "Falta de SKU Completo") {
           finalMotive = reqMotiveText.trim() ? `Falta de SKU Completo - ${reqMotiveText.trim()}` : "Falta de SKU Completo";

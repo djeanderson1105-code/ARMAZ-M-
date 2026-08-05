@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
-import { Search, Printer, DollarSign, TrendingUp, Layers, UserCheck, AlertCircle, Trash2, PlusCircle, X } from "lucide-react";
+import { Search, Printer, DollarSign, TrendingUp, Layers, UserCheck, AlertCircle, Trash2, PlusCircle, X, FileSpreadsheet } from "lucide-react";
+import { exportValesPacotePrejuizoExcel } from "../utils/excelExport";
 
 export interface ValeEntry {
   id: string;
@@ -339,6 +340,17 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                 <option key={r} value={r}>Rota {r}</option>
               ))}
             </select>
+
+            {/* Exportar Excel (Pacote Prejuízo) Button */}
+            <button
+              type="button"
+              onClick={() => exportValesPacotePrejuizoExcel(filteredVales)}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold px-3.5 py-1.5 rounded-xl text-xs font-mono transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:scale-[1.02] active:scale-95 shrink-0 border border-emerald-500/40"
+              title="Baixar planilha Excel com detalhamento completo dos vales e rateio para importação em pacotes de prejuízo/ERP"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
+              <span>Exportar Excel (Pacote Prejuízo)</span>
+            </button>
 
             {/* Gerar Vale Avulso Button */}
             {onCreateAvulsoVale && (

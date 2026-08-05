@@ -1,4 +1,4 @@
-import { PRODUCT_DATABASE } from "../data/products";
+import { PRODUCT_DATABASE, calculateItemHL } from "../data/products";
 
 // Mapping of product codes to their FATOR HECTO as given in the provided spreadsheet data.
 export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
@@ -6,17 +6,22 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "371": 0.0852,
   "503": 0.12,
   "504": 0.12,
-  "838": 0.01,
+  "620": 0.0852,
+  "838": 0.5,
   "982": 0.072,
   "988": 0.072,
+  "1114": 0.132,
+  "1116": 0.132,
   "1164": 0.042,
   "1166": 0.12,
   "1388": 0.12,
   "1695": 0.12,
+  "1699": 0.02152,
   "1708": 0.15,
   "1743": 0.12,
   "1745": 0.04035,
   "1898": 0.04035,
+  "2006": 0.072,
   "2008": 0.042,
   "2319": 0.12,
   "2320": 0.12,
@@ -26,25 +31,36 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "2538": 0.072,
   "2546": 0.072,
   "2548": 0.072,
+  "2585": 0.12,
+  "3733": 0.072,
+  "4141": 0.028,
+  "4143": 0.028,
+  "4198": 0.028,
   "4262": 0.028,
   "4293": 0.024,
   "4367": 0.09,
   "4409": 0.12,
   "6181": 0.06,
+  "6183": 0.06,
   "6185": 0.09,
   "7325": 0.12,
   "7945": 0.15,
   "7947": 0.15,
   "7977": 0.03,
+  "7979": 0.03,
   "7980": 0.03,
   "7981": 0.03,
   "7982": 0.03,
   "7983": 0.03,
+  "7985": 0.03,
+  "8411": 0.09,
   "8791": 0.06,
   "8793": 0.09,
+  "8919": 0.072,
   "9067": 0.042,
   "9068": 0.042,
   "9069": 0.042,
+  "9071": 0.042,
   "9072": 0.042,
   "9081": 0.042,
   "9083": 0.05676,
@@ -63,39 +79,67 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "9795": 0.12,
   "10175": 0.05676,
   "10530": 0.12,
+  "10537": 0.1188,
+  "11593": 0.12,
   "12948": 0.042,
   "12951": 0.0852,
   "13061": 0.06,
   "13065": 0.09,
+  "13194": 0.069,
   "13196": 0.069,
   "13201": 0.069,
   "13203": 0.069,
   "13205": 0.069,
+  "13307": 0.1188,
+  "13486": 0.06,
   "13566": 0.02152,
+  "13839": 0.02152,
+  "14099": 0.072,
   "14135": 0.05676,
+  "14283": 0.045,
+  "14293": 0.045,
+  "14550": 0.072,
+  "16503": 0.069,
   "17266": 0.05676,
+  "17268": 0.0426,
+  "17276": 0.0426,
+  "17278": 0.0426,
+  "17757": 0.0792,
   "17808": 0.0792,
+  "18142": 0.0426,
   "18152": 0.024,
   "18266": 0.024,
   "18267": 0.024,
   "18268": 0.024,
+  "18676": 0.05676,
+  "18677": 0.072,
+  "18752": 0.0444,
+  "18772": 0.0444,
   "18780": 0.0504,
   "18807": 0.0792,
+  "18833": 0.066,
   "18836": 0.0792,
   "19164": 0.02,
+  "19166": 0.072,
   "19225": 0.06,
   "19227": 0.0142,
   "19229": 0.015,
   "19231": 0.01,
   "19321": 0.024,
+  "19644": 0.042,
   "19668": 0.042,
   "19729": 0.028,
+  "19849": 0.042,
   "20164": 0.05676,
   "20217": 0.069,
+  "20329": 0.072,
   "20498": 0.042,
   "20530": 0.072,
+  "20533": 0.12,
   "20535": 0.072,
+  "20549": 0.069,
   "20651": 0.028,
+  "20853": 0.028,
   "21020": 0.042,
   "21119": 0.02152,
   "21441": 0.12,
@@ -107,8 +151,13 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "21658": 0.042,
   "21666": 0.01,
   "21668": 0.072,
+  "21778": 0.0075,
   "21781": 0.066,
   "21787": 0.009,
+  "21788": 0.01,
+  "21789": 0.01,
+  "21791": 0.01,
+  "21792": 0.01,
   "21955": 0.01,
   "21968": 0.00168,
   "21970": 0.00168,
@@ -117,23 +166,42 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "22003": 0.00588,
   "22005": 0.00588,
   "22007": 0.00588,
+  "22009": 0,
+  "22027": 0.028,
+  "22106": 0,
   "22177": 0.028,
   "22180": 0.0792,
+  "22200": 0.06,
+  "22202": 0.06,
+  "22326": 0.05676,
   "22330": 0.0162,
   "22382": 0.01,
+  "22508": 0.0075,
+  "22514": 0.0075,
   "22543": 0.01,
   "22562": 0.01,
+  "22563": 0.0075,
+  "22859": 0.06,
+  "22860": 0.1,
+  "22871": 0.03,
+  "22876": 0.02,
   "23028": 0.01,
   "23184": 0.042,
   "23186": 0.072,
+  "23246": 0.11,
+  "23256": 0.05,
   "23269": 0.06456,
   "23271": 0.06456,
+  "23443": 0.01,
+  "23449": 0.03228,
   "23546": 0.06,
   "23552": 0.06,
-  "23671": 0.00624,
-  "23672": 0.0045,
+  "23594": 0.054,
+  "23671": 0.03,
+  "23672": 0.018,
   "24161": 0.009,
   "24168": 0.0792,
+  "24184": 0.03,
   "24256": 0.09,
   "24304": 0.054,
   "24306": 0.01,
@@ -141,6 +209,7 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "24409": 0.0075,
   "24410": 0.0075,
   "24411": 0.0075,
+  "24479": 0.0792,
   "24486": 0.005,
   "24488": 0.0025,
   "24604": 0.036,
@@ -149,18 +218,21 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "25160": 0.01,
   "25178": 0.066,
   "25194": 0.042,
-  "25303": 0.016,
+  "25220": 0.01,
+  "25303": 0.006,
   "25329": 0.0075,
   "25335": 0.0075,
   "25347": 0.0075,
   "25429": 0.01,
   "25430": 0.01,
   "25434": 0.01,
-  "25546": 0.016,
+  "25546": 0.003,
   "25700": 0.12,
   "25837": 0.05676,
   "26037": 0.01,
   "26462": 0.05676,
+  "26607": 0.01,
+  "27001": 0.0075,
   "27177": 0.00588,
   "27179": 0.00588,
   "27522": 0.1158,
@@ -169,7 +241,12 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "27562": 0.0075,
   "27566": 0.0075,
   "27613": 0.0075,
+  "27624": 0.0075,
+  "27686": 0.066,
   "27866": 0.0792,
+  "28137": 0.02152,
+  "28203": 0,
+  "28204": 0,
   "29197": 0.00324,
   "29199": 0.00324,
   "29201": 0.00324,
@@ -179,16 +256,30 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "29253": 0.12,
   "29416": 0.018,
   "29418": 0.03,
+  "29485": 0.06456,
   "29504": 0.0075,
   "29505": 0.0075,
   "29508": 0.0075,
+  "29518": 0.0075,
   "29580": 0.0792,
   "29733": 0.00588,
   "29845": 0.12,
   "29891": 0.01,
   "29926": 0.01,
   "30045": 0.05676,
+  "30132": 0.08,
+  "30134": 0.08,
+  "30136": 0.08,
+  "30148": 0.04,
+  "30151": 0.04,
+  "30152": 0.04,
+  "30220": 0.02,
+  "30440": 0.08,
+  "30852": 0,
+  "30854": 0,
+  "30878": 0.02,
   "31064": 0.04035,
+  "31272": 0.05676,
   "31582": 0.12,
   "31589": 0.12,
   "31667": 0.12,
@@ -196,25 +287,37 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "31674": 0.12,
   "31678": 0.12,
   "31708": 0.06,
-  "31713 ->": 0.06,
+  "31713": 0.06,
   "31789": 0.12,
   "31795": 0.033,
+  "31805": 0.12,
+  "32036": 0.08,
   "32067": 0.03,
   "32126": 0.0144,
+  "32128": 0,
+  "32131": 0.01,
+  "32155": 0,
+  "32175": 0.01,
   "32349": 0.02152,
   "32361": 0.06456,
+  "32425": 0.05676,
+  "32427": 0.05676,
   "32500": 0.028,
   "32526": 0.06,
   "32528": 0.06,
   "32538": 0.01,
   "32644": 0.003,
+  "32646": 0,
   "32648": 0.003,
+  "32754": 0.07,
   "32969": 0.01,
   "33042": 0.12,
   "33046": 0.16,
   "33048": 0.16,
   "33061": 0.096,
+  "33066": 0.096,
   "33109": 0.042,
+  "33212": 0.06,
   "33734": 0.02152,
   "33738": 0.03228,
   "33818": 0.042,
@@ -234,8 +337,13 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "34454": 0.042,
   "34475": 0.0612,
   "34479": 0.09,
+  "34527": 0.12,
   "34529": 0.12,
   "34608": 0.042,
+  "34681": 0.03,
+  "34683": 0.03,
+  "34685": 0.03,
+  "34687": 0.03,
   "34770": 0.01,
   "34890": 0.016,
   "34918": 0.06,
@@ -243,6 +351,8 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "34923": 0.06,
   "35003": 0.00168,
   "35012": 0.0045,
+  "35061": 0.005,
+  "35108": 0.018,
   "35134": 0.008,
   "35136": 0.008,
   "35331": 0.12,
@@ -260,7 +370,7 @@ export const PRODUCT_HECTO_FACTORS: { [code: string]: number } = {
   "37582": 0.0092,
   "37583": 0.0092,
   "37933": 0.0092,
-  "33066": 0.096,
+  "31713 ->": 0.06,
 };
 
 /**
@@ -294,60 +404,36 @@ export function getHectoFactor(productCode: string): number {
 
 /**
  * Calculates Hectoliters (HL) for a physical quantity of a product based on unit of measure (UM)
- * - CX / SKU Fechado: quantity * fatorHecto
- * - UN / Unidade: quantity * (fatorHecto / fator)
- * - DZ / Dúzia: (quantity * 12) * (fatorHecto / fator)
  */
-export function calculateHL(productCode: string, quantity: number, um?: string): number {
-  const codeStr = String(productCode || "").trim();
-  const cleanCode = codeStr.replace(/^#/, "").trim().replace(/^0+/, "");
-  const numericCode = codeStr.replace(/[^0-9]/g, "");
-  
-  const product = PRODUCT_DATABASE.find(p => 
-    p.codigo === codeStr || 
-    p.codigo === cleanCode || 
-    (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
-  );
-  
-  const fatorHecto = product ? product.fatorHecto : getHectoFactor(numericCode || codeStr);
-  const fatorUnits = (product && product.fator && product.fator > 0) ? product.fator : 12;
-
-  const umClean = (um || "").trim().toUpperCase();
-
-  let hl = 0;
-  if (umClean === "CX" || umClean === "CAIXA" || umClean === "CXS" || umClean === "CAIXAS" || umClean === "CX.") {
-    // CX / SKU fechado
-    hl = quantity * fatorHecto;
-  } else if (umClean === "DZ" || umClean === "DUZIA" || umClean.startsWith("DZ")) {
-    // Quantity in dozen (DZ = 12 UN)
-    hl = (quantity * 12) * (fatorHecto / fatorUnits);
-  } else {
-    // Default or UN / SKU avulso
-    hl = quantity * (fatorHecto / fatorUnits);
-  }
-
-  return Number(hl.toFixed(5));
+export function calculateHL(productCode: string, quantity: number, um?: string, productDescription?: string): number {
+  return calculateItemHL({
+    codigo: productCode,
+    quantidade: quantity,
+    unidadeMedida: um,
+    descricao: productDescription
+  });
 }
 
 /**
  * Resolves Hectoliters (HL) for a record, dynamically ensuring unit of measure (UND vs CX) is properly applied.
  */
-export function getRecordHL(r: { produto?: string; quantidade?: number; um?: string; unidadeMedida?: string; hectolitros?: number }): number {
+export function getRecordHL(r: { 
+  produto?: string; 
+  quantidade?: number; 
+  um?: string; 
+  unidadeMedida?: string; 
+  hectolitros?: number;
+  descricaoProduto?: string;
+  descricao?: string;
+}): number {
   const code = r.produto || "";
-  const qty = r.quantidade || 0;
-  const um = (r.unidadeMedida || r.um || "").trim().toLowerCase();
-  const isCx = um === "cx" || um === "caixa" || um === "cxs" || um === "caixas" || um === "cx.";
-  const isUnd = !isCx;
+  const qty = Number(r.quantidade) || 0;
+  if (qty <= 0) return 0;
 
-  if (typeof r.hectolitros === "number" && !isNaN(r.hectolitros) && r.hectolitros > 0) {
-    const rawFatorHecto = getHectoFactor(code);
-    // If unit is UND, verify stored hectolitros isn't accidentally the full box factor (inflated)
-    if (isUnd && rawFatorHecto > 0.005 && Math.abs(r.hectolitros - (qty * rawFatorHecto)) < 0.001) {
-      return calculateHL(code, qty, um || "und");
-    }
-    return r.hectolitros;
-  }
-  return calculateHL(code, qty, um || (isUnd ? "und" : "cx"));
+  const um = (r.unidadeMedida || r.um || "").trim();
+  const desc = r.descricaoProduto || r.descricao;
+
+  return calculateHL(code, qty, um, desc);
 }
 
 /**

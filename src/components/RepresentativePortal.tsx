@@ -1498,7 +1498,14 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
         const qty = parseInt(formQuantidade);
         const productDef = PRODUCT_DATABASE.find(p => p.codigo === formItem.trim());
         if (productDef && !isNaN(qty) && qty > 0) {
-          const calculatedHl = Number((qty * productDef.fatorHecto).toFixed(4));
+          const calculatedHl = calculateItemHL({
+            codigo: productDef.codigo,
+            quantidade: qty,
+            unidadeMedida: "un",
+            fatorEmbalagem: productDef.fator,
+            fatorHecto: productDef.fatorHecto,
+            descricao: productDef.descricao
+          });
           let finalMotive = formMotiveType;
           if (formMotiveType === "Inversão") {
             finalMotive = formMotiveText.trim() ? `Inversão - ${formMotiveText.trim()}` : "Inversão";
