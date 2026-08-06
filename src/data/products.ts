@@ -488,6 +488,7 @@ export function calculateItemHL(item: {
   fatorHecto?: number;
   hectolitros?: number;
   descricao?: string;
+  motivo?: string;
 }): number {
   const rawCode = String(item.item || item.itemCode || item.codigo || "").trim();
   const list = getProductsDatabase();
@@ -519,17 +520,19 @@ export function calculateItemHL(item: {
   const qty = Number(item.quantidade) || 0;
   if (qty <= 0) return 0;
 
+  const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades";
+  const isExplicitBoxCount = !isUnd && (umStr === "cx" || umStr === "caixa" || umStr === "cxs" || umStr === "caixas" || umStr === "cx." || umStr === "pack" || umStr === "fardo" || umStr === "fd" || umStr === "sh" || umStr === "shrink" || umStr === "sku" || umStr === "");
+
+  if (isExplicitBoxCount) {
+    return Number((qty * boxFactorHecto).toFixed(5));
+  }
+
   // Hectolitro Unitário (por UNIDADE física)
   const unitHl = boxFactorHecto / embalagem;
-
-  // Se a quantidade foi informada em CAIXAS (CX) ou FARDO / PACK / SHRINK
-  const isExplicitBoxCount = umStr === "cx" || umStr === "caixa" || umStr === "cxs" || umStr === "caixas" || umStr === "cx." || umStr === "pack" || umStr === "fardo" || umStr === "fd" || umStr === "sh" || umStr === "shrink";
 
   let qtyInUnits = qty;
   if (umStr === "dz" || umStr === "duzia" || umStr.startsWith("dz")) {
     qtyInUnits = qty * 12;
-  } else if (isExplicitBoxCount) {
-    qtyInUnits = qty * embalagem;
   } else {
     qtyInUnits = qty;
   }
@@ -550,6 +553,7 @@ export function calculateItemValue(item: {
   precoCalculated?: number;
   precoSugerido?: number;
   descricao?: string;
+  motivo?: string;
 }): number {
   const rawCode = String(item.item || item.itemCode || item.codigo || "").trim();
   const list = getProductsDatabase();
@@ -606,3 +610,85 @@ export function calculateItemValue(item: {
 export function calculateHectolitros(codigo: string, quantidade: number, um: string = "un"): number {
   return calculateItemHL({ codigo, quantidade, unidadeMedida: um });
 }
+
+export function calculateRequestValueAndHL(
+  req: any,
+  promaxRecords: any[] = []
+): { valorTotal: number; hectolitros: number } {
+  if (!req) return { valorTotal: 0, hectolitros: 0 };
+
+  const items = (req.items && req.items.length > 0) ? req.items : [
+    {
+      item: req.item || req.produto || req.itemCode || "9999",
+      itemCode: req.item || req.produto || req.itemCode || "9999",
+      quantidade: req.quantidade || 1,
+      unidadeMedida: req.unidadeMedida || req.um || "cx",
+      fatorEmbalagem: req.fatorEmbalagem,
+      customUnitPrice: req.customUnitPrice || req.precoSugerido,
+      precoCalculated: req.precoCalculated,
+      descricao: req.descricao || req.itemDesc
+    }
+  ];
+
+  let totalVal = 0;
+  let totalHl = 0;
+
+  for (const item of items) {
+    const rawCode = String(item.item || item.itemCode || item.codigo || item.produto || "").trim();
+    const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
+    const umStr = String(item.unidadeMedida || item.um || "").toLowerCase().trim();
+
+    // 1. Calculate HL
+    const hl = calculateItemHL({
+      item: rawCode,
+      quantidade: item.quantidade || 1,
+      unidadeMedida: umStr,
+      fatorEmbalagem: item.fatorEmbalagem,
+      fatorHecto: item.fatorHecto,
+      descricao: item.descricao
+    });
+    totalHl += hl;
+
+    // 2. Calculate Value
+    let val = calculateItemValue({
+      item: rawCode,
+      quantidade: item.quantidade || 1,
+      unidadeMedida: umStr,
+      fatorEmbalagem: item.fatorEmbalagem,
+      customUnitPrice: item.customUnitPrice || item.precoSugerido,
+      precoCalculated: item.precoCalculated,
+      descricao: item.descricao
+    });
+
+    // Fallback if calculateItemValue returned 0
+    if (!val || val <= 0) {
+      const promaxMatch = promaxRecords.find((r: any) => r.produto === rawCode || r.produto === cleanCode);
+      const dbProduct = getProductsDatabase().find(p => p.codigo === rawCode || p.codigo === cleanCode || p.codigo.replace(/^0+/, "") === cleanCode);
+      const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (item.fatorEmbalagem || (promaxMatch as any)?.fator || 12);
+      const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades";
+      const qty = Number(item.quantidade) || 1;
+
+      let boxPrice = dbProduct?.valor || 0;
+      if (!boxPrice || boxPrice <= 0) {
+        if (promaxMatch?.valorUnitario && promaxMatch.valorUnitario > 0) {
+          boxPrice = promaxMatch.valorUnitario < 15 ? (promaxMatch.valorUnitario * embalagem) : promaxMatch.valorUnitario;
+        } else if (item.customUnitPrice && item.customUnitPrice > 0) {
+          boxPrice = item.customUnitPrice < 15 ? (item.customUnitPrice * embalagem) : item.customUnitPrice;
+        }
+      }
+
+      if (boxPrice > 0) {
+        const actualUnitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
+        val = actualUnitPrice * qty;
+      }
+    }
+
+    totalVal += val;
+  }
+
+  return {
+    valorTotal: Number((totalVal || 0).toFixed(2)),
+    hectolitros: Number((totalHl || 0).toFixed(4))
+  };
+}
+

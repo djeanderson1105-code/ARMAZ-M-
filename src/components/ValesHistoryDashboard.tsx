@@ -1,6 +1,8 @@
 import React, { useState, useMemo } from "react";
-import { Search, Printer, DollarSign, TrendingUp, Layers, UserCheck, AlertCircle, Trash2, PlusCircle, X, FileSpreadsheet } from "lucide-react";
+import { Search, Printer, DollarSign, TrendingUp, Layers, UserCheck, AlertCircle, Trash2, PlusCircle, X, FileSpreadsheet, RefreshCw, CheckCircle2, Eye } from "lucide-react";
 import { exportValesPacotePrejuizoExcel } from "../utils/excelExport";
+import { useSstrData } from "../context/SstrDataContext";
+import { calculateRequestValueAndHL } from "../data/products";
 
 export interface ValeEntry {
   id: string;
@@ -27,6 +29,7 @@ interface ValesHistoryDashboardProps {
   onReimprimir: (vale: ValeEntry) => void;
   onDeleteSingleVale?: (id: string) => void;
   onUpdateValeStatus?: (id: string, newStatus: "emitido" | "pendente" | "assinado" | "compensado") => void;
+  onInspectRequest?: (vale: ValeEntry) => void;
   onCreateAvulsoVale?: (data: {
     mapa: string;
     itemCode: string;
@@ -40,7 +43,7 @@ interface ValesHistoryDashboardProps {
   }) => void;
 }
 
-export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSingleVale, onUpdateValeStatus, onCreateAvulsoVale }: ValesHistoryDashboardProps) {
+export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSingleVale, onUpdateValeStatus, onInspectRequest, onCreateAvulsoVale }: ValesHistoryDashboardProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedRoute, setSelectedRoute] = useState("todas");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>("todos");
@@ -58,6 +61,64 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
   const [avulsoAjudantes, setAvulsoAjudantes] = useState("");
   const [avulsoObs, setAvulsoObs] = useState("");
   const [avulsoError, setAvulsoError] = useState<string | null>(null);
+
+  // Recalculate Vales State
+  const { saveValeEntry, records: promaxRecords } = useSstrData();
+  const [isRecalculating, setIsRecalculating] = useState(false);
+  const [recalculateModalOpen, setRecalculateModalOpen] = useState(false);
+  const [recalculateSummary, setRecalculateSummary] = useState<{
+    totalAnalyzed: number;
+    totalUpdated: number;
+    changes: { id: string; nf: string; oldVal: number; newVal: number; oldHl: number; newHl: number }[];
+  } | null>(null);
+
+  const handleRecalculateAllVales = async () => {
+    setIsRecalculating(true);
+    let totalAnalyzed = 0;
+    let totalUpdated = 0;
+    const changes: { id: string; nf: string; oldVal: number; newVal: number; oldHl: number; newHl: number }[] = [];
+
+    for (const v of vales) {
+      totalAnalyzed++;
+      const origReq = v.originalRequest;
+      if (!origReq) continue;
+
+      const { valorTotal, hectolitros } = calculateRequestValueAndHL(origReq, promaxRecords);
+      const oldVal = v.valorTotal || 0;
+      const oldHl = v.hectolitros || 0;
+
+      const valDiff = Math.abs(oldVal - valorTotal);
+      const hlDiff = Math.abs(oldHl - hectolitros);
+
+      if (valDiff > 0.01 || hlDiff > 0.0001) {
+        totalUpdated++;
+        changes.push({
+          id: v.id,
+          nf: v.nf,
+          oldVal,
+          newVal: valorTotal,
+          oldHl,
+          newHl: hectolitros
+        });
+
+        const updatedVale: ValeEntry = {
+          ...v,
+          valorTotal,
+          hectolitros
+        };
+
+        await saveValeEntry(updatedVale);
+      }
+    }
+
+    setRecalculateSummary({
+      totalAnalyzed,
+      totalUpdated,
+      changes
+    });
+    setIsRecalculating(false);
+    setRecalculateModalOpen(true);
+  };
 
   // Format currency helper
   const formatCurrency = (val: number) => {
@@ -295,15 +356,15 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
       {/* 3. LOG LISTING TABLE */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-2xl space-y-4">
         {/* Table Filters header */}
-        <div className="flex flex-col md:flex-row gap-3 items-center justify-between border-b border-slate-800 pb-4">
-          <div className="text-left space-y-1 w-full md:w-auto">
+        <div className="flex flex-col xl:flex-row gap-3 items-start xl:items-center justify-between border-b border-slate-800 pb-4">
+          <div className="text-left space-y-1 w-full xl:w-auto">
             <h3 className="font-extrabold text-white text-xs uppercase tracking-widest font-mono">
               Registros Detalhados dos Vales Emitidos
             </h3>
             <p className="text-[10px] text-slate-400">Total filtrado correspondente: <strong>{filteredVales.length} itens</strong></p>
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto shrink-0">
+          <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
             {/* Search filter input */}
             <div className="relative">
               <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
@@ -340,6 +401,18 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                 <option key={r} value={r}>Rota {r}</option>
               ))}
             </select>
+
+            {/* Recalcular Valores Button */}
+            <button
+              type="button"
+              onClick={handleRecalculateAllVales}
+              disabled={isRecalculating || vales.length === 0}
+              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-extrabold px-3.5 py-1.5 rounded-xl text-xs font-mono transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:scale-[1.02] active:scale-95 shrink-0 border border-indigo-500/40"
+              title="Recalcular valor total e hectolitros de todos os vales convertendo itens em unidade para caixa proporcionalmente"
+            >
+              <RefreshCw className={`w-4 h-4 text-indigo-200 ${isRecalculating ? "animate-spin" : ""}`} />
+              <span>{isRecalculating ? "Recalculando..." : "Recalcular Valores"}</span>
+            </button>
 
             {/* Exportar Excel (Pacote Prejuízo) Button */}
             <button
@@ -471,6 +544,18 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                     {/* Actions */}
                     <td className="p-3 text-center shrink-0">
                       <div className="flex items-center justify-center gap-1.5">
+                        {onInspectRequest && (
+                          <button
+                            type="button"
+                            onClick={() => onInspectRequest(vale)}
+                            className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-blue-500/80 rounded-lg text-[10px] font-bold text-blue-400 hover:text-white flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                            title="Analisar card de lançamento onde foi tratado o erro de descarregamento que gerou este vale"
+                          >
+                            <Eye className="w-3 h-3 text-blue-400" />
+                            <span>Analisar Card</span>
+                          </button>
+                        )}
+
                         <button
                           onClick={() => {
                             if (onUpdateValeStatus && currentStatus !== "assinado" && currentStatus !== "compensado") {
@@ -478,7 +563,7 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                             }
                             onReimprimir(vale);
                           }}
-                          className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500/80 rounded-lg text-[10px] font-bold text-indigo-400 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
+                          className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500/80 rounded-lg text-[10px] font-bold text-indigo-400 hover:text-white flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
                           title="Visualizar faturas e reimprimir via timbrada Ambev"
                         >
                           <Printer className="w-3 h-3" />
@@ -648,8 +733,7 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                     onChange={(e) => setAvulsoUnidade(e.target.value as "cx" | "und")}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
                   >
-                    <option value="cx">📦 CX (Caixa)</option>
-                    <option value="und">🥫 UND (Lata/Avulso)</option>
+                    <option value="cx">📦 SKU Fechado (CX)</option>
                   </select>
                 </div>
               </div>
@@ -731,6 +815,88 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Recalculate Summary Modal */}
+      {recalculateModalOpen && recalculateSummary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-2xl w-full shadow-2xl space-y-5 text-left relative overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-950 border border-indigo-800/50 flex items-center justify-center text-indigo-400">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-white text-sm font-mono uppercase tracking-wide">
+                    Recalculação de Vales Concluída
+                  </h3>
+                  <p className="text-[10px] text-slate-400">
+                    Processamento de conversão proporcional de unidades (UND) para SKU fechado
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRecalculateModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1">
+                <span className="text-[10px] font-mono uppercase text-slate-500 font-bold block">Vales Analisados</span>
+                <strong className="text-2xl font-black text-white font-mono">{recalculateSummary.totalAnalyzed}</strong>
+              </div>
+              <div className="bg-indigo-950/40 border border-indigo-800/40 rounded-2xl p-4 space-y-1">
+                <span className="text-[10px] font-mono uppercase text-indigo-400 font-bold block">Vales Corrigidos e Atualizados</span>
+                <strong className="text-2xl font-black text-indigo-300 font-mono">{recalculateSummary.totalUpdated}</strong>
+              </div>
+            </div>
+
+            {recalculateSummary.changes.length > 0 ? (
+              <div className="space-y-2">
+                <span className="text-xs font-bold text-slate-300 font-mono block">
+                  Detalhamento das Correções Realizadas:
+                </span>
+                <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                  {recalculateSummary.changes.map(c => (
+                    <div key={c.id} className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-mono flex items-center justify-between gap-4">
+                      <div>
+                        <span className="text-white font-bold block">NF: {c.nf}</span>
+                        <span className="text-[10px] text-slate-500">ID: {c.id}</span>
+                      </div>
+                      <div className="text-right space-y-0.5">
+                        <div className="flex items-center gap-1.5 justify-end text-xs">
+                          <span className="line-through text-slate-500">{formatCurrency(c.oldVal)}</span>
+                          <span className="text-emerald-400 font-black">➔ {formatCurrency(c.newVal)}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          HL: <span className="line-through text-slate-500">{c.oldHl.toFixed(4)}</span> ➔ <span className="text-amber-400 font-bold">{c.newHl.toFixed(4)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 bg-emerald-950/20 border border-emerald-800/30 rounded-2xl text-emerald-300 text-xs font-mono text-center">
+                ✓ Todos os vales já estavam com os valores e hectolitros perfeitamente calculados! Nenhum ajuste foi necessário.
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setRecalculateModalOpen(false)}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-mono text-xs font-bold rounded-xl cursor-pointer transition-all"
+              >
+                Entendido & Fechar
+              </button>
+            </div>
           </div>
         </div>
       )}
