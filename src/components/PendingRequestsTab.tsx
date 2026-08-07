@@ -4,7 +4,7 @@ import AvariasPackagingChart from "./AvariasPackagingChart";
 import { getApiUrl } from "../utils/apiUrl";
 import { safeSetItem } from "../utils/apiSync";
 import { useSstrData } from "../context/SstrDataContext";
-import { PRODUCT_DATABASE, calculateItemValue, calculateItemHL, calculateRequestValueAndHL } from "../data/products";
+import { PRODUCT_DATABASE, calculateItemValue, calculateItemHL, calculateRequestValueAndHL, getUnitLabel } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
 import { getHectoFactor, calculateHL } from "../utils/hectoFactors";
 import { exportRegistrationPdf, generatePdfFilename, NETWORK_REGISTROS_PATH } from "../utils/pdfGenerator";
@@ -148,9 +148,10 @@ const getInspectItems = (req: PendingRequest, promaxRecords: ExchangeRecord[] = 
       const promaxMatch = promaxRecords.find(r => r.produto === code || r.produto === cleanCode);
       const name = (it as any).descricao || (it as any).descricaoSku || (it as any).descricaoProduto || (it as any).name || (it as any).productDesc || dbP?.descricao || promaxMatch?.descricaoProduto || (code !== "N/A" ? `PRODUTO SKU #${code}` : "Produto não discriminado");
       const qty = Number(it.quantidade) || 1;
-      const um = (it.unidadeMedida || req.unidadeMedida || "un").toUpperCase();
-      const hl = Number(it.hectolitros) || calculateItemHL({ item: code, quantidade: qty, unidadeMedida: um, fatorEmbalagem: it.fatorEmbalagem, fatorHecto: it.fatorHecto });
-      const val = calculateItemValue({ item: code, quantidade: qty, unidadeMedida: um, customUnitPrice: it.customUnitPrice, fatorEmbalagem: it.fatorEmbalagem });
+      const um = getUnitLabel(it, req);
+      const rawUm = String(it.unidadeMedida || req.unidadeMedida || it.um || req.um || "").trim();
+      const hl = Number(it.hectolitros) || calculateItemHL({ item: code, quantidade: qty, unidadeMedida: rawUm || um, fatorEmbalagem: it.fatorEmbalagem, fatorHecto: it.fatorHecto, motivo: it.motivo || req.motivo });
+      const val = calculateItemValue({ item: code, quantidade: qty, unidadeMedida: rawUm || um, customUnitPrice: it.customUnitPrice, fatorEmbalagem: it.fatorEmbalagem, precoCalculated: it.precoCalculated, precoSugerido: it.precoSugerido, motivo: it.motivo || req.motivo });
       return { code, name, qty, um, hl, val };
     });
   }
@@ -163,9 +164,10 @@ const getInspectItems = (req: PendingRequest, promaxRecords: ExchangeRecord[] = 
       const promaxMatch = promaxRecords.find(r => r.produto === code || r.produto === cleanCode);
       const name = sku.name || sku.descricao || dbP?.descricao || promaxMatch?.descricaoProduto || (code !== "N/A" ? `PRODUTO SKU #${code}` : "Produto não discriminado");
       const qty = Number(sku.quantity || sku.quantidade) || 1;
-      const um = String(sku.unit || sku.unidadeMedida || "UN").toUpperCase();
+      const um = getUnitLabel(sku, req);
+      const rawUm = String(sku.unit || sku.unidadeMedida || req.unidadeMedida || "").trim();
       const hl = Number(sku.hectolitros) || 0;
-      const val = Number(sku.valorTotal) || calculateItemValue({ item: code, quantidade: qty, unidadeMedida: um });
+      const val = Number(sku.valorTotal) || calculateItemValue({ item: code, quantidade: qty, unidadeMedida: rawUm || um });
       return { code, name, qty, um, hl, val };
     });
   }
@@ -186,8 +188,9 @@ const getInspectItems = (req: PendingRequest, promaxRecords: ExchangeRecord[] = 
 
   const name = castReq.descricaoSku || req.descricaoProduto || req.productDesc || castReq.descricao || parsedName || dbP?.descricao || promaxMatch?.descricaoProduto || (code !== "N/A" ? `PRODUTO SKU #${code}` : "Produto não discriminado");
   const qty = Number(req.quantidade) || 1;
-  const um = (req.unidadeMedida || req.unidadeMedia || req.um || "UN").toUpperCase();
-  const hl = Number(req.hectolitros) || calculateItemHL({ item: code, quantidade: qty, unidadeMedida: um, fatorHecto: req.fatorHecto });
+  const um = getUnitLabel({ unidadeMedida: req.unidadeMedida || req.unidadeMedia || req.um, motivo: req.motivo }, req);
+  const rawUm = String(req.unidadeMedida || req.unidadeMedia || req.um || "").trim();
+  const hl = Number(req.hectolitros) || calculateItemHL({ item: code, quantidade: qty, unidadeMedida: rawUm || um, fatorHecto: req.fatorHecto, motivo: req.motivo });
   const val = getRequestValue(req, promaxRecords);
 
   return [{ code, name, qty, um, hl, val }];
@@ -780,44 +783,23 @@ export default function PendingRequestsTab() {
     await savePendingRequest(updatedReq);
   };
 
-  // Delete an approved item / request from Espelho do Dia and Approved list (returns to Pending)
+  // Delete an approved item / request from Espelho do Dia and Approved list
   const handleDeleteApprovedItem = (requestId: string, productCode?: string) => {
     const targetReq = requests.find(r => r.id === requestId);
     if (!targetReq) return;
-
-    const resetFields = {
-      statusPromax: "pendente" as const,
-      faltaBaixa: false,
-      faltaBaixaDate: undefined,
-      faltaBaixaUser: undefined,
-      faltaBaixaObs: undefined,
-      contingenciaBaixada: false,
-      contingenciaBaixadaDate: undefined,
-      contingenciaBaixadaUser: undefined,
-      cadastroUser: targetReq.cadastroUser || (typeof sessionStorage !== "undefined" ? sessionStorage.getItem("sstr_current_manager_name") : null) || undefined,
-      cadastroDate: targetReq.cadastroDate,
-      rejeitadoObs: undefined,
-      reprovadoUser: undefined,
-      reprovadoDate: undefined,
-      notified: false
-    };
 
     if (targetReq.items && targetReq.items.length > 1 && productCode) {
       const filteredItems = targetReq.items.filter((it: any) => (it.item || it.itemCode) !== productCode);
       if (filteredItems.length > 0) {
         savePendingRequest({
           ...targetReq,
-          ...resetFields,
           items: filteredItems
         });
         return;
       }
     }
 
-    savePendingRequest({
-      ...targetReq,
-      ...resetFields
-    });
+    deletePendingRequest(requestId);
   };
 
   // Editable state for Items inside the Reimprimir / Print Modal
@@ -1612,8 +1594,8 @@ export default function PendingRequestsTab() {
         if (val > 0) return acc + val;
         if (curr.precoCalculated !== undefined && curr.precoCalculated > 0) return acc + curr.precoCalculated;
         if (curr.precoSugerido !== undefined && curr.precoSugerido > 0) {
-          const isCx = (curr.unidadeMedida || "").toLowerCase().trim() === 'cx' || (curr.unidadeMedida || "").toLowerCase().trim() === 'caixa';
-          const isUnd = !isCx;
+          const rawUm = (curr.unidadeMedida || "").toLowerCase().trim();
+          const isUnd = rawUm === "un" || rawUm === "und" || rawUm === "unidade" || rawUm === "unidades";
           const unitVal = isUnd ? (curr.precoSugerido / (curr.fatorEmbalagem || 12)) : curr.precoSugerido;
           return acc + (unitVal * curr.quantidade);
         }
@@ -2586,26 +2568,7 @@ export default function PendingRequestsTab() {
         });
       }
     } else if (type === "delete") {
-      const targetReq = requests.find(r => r.id === requestId);
-      if (targetReq) {
-        savePendingRequest({
-          ...targetReq,
-          statusPromax: "pendente",
-          faltaBaixa: false,
-          faltaBaixaDate: undefined,
-          faltaBaixaUser: undefined,
-          faltaBaixaObs: undefined,
-          contingenciaBaixada: false,
-          contingenciaBaixadaDate: undefined,
-          contingenciaBaixadaUser: undefined,
-          cadastroUser: targetReq.cadastroUser || loggedUser || undefined,
-          cadastroDate: targetReq.cadastroDate,
-          rejeitadoObs: undefined,
-          reprovadoUser: undefined,
-          reprovadoDate: undefined,
-          notified: false
-        });
-      }
+      deletePendingRequest(requestId);
     }
 
     setModalAction(null);
@@ -5006,17 +4969,17 @@ export default function PendingRequestsTab() {
                     )}
 
                     {/* Header bar of card */}
-                    <div className="flex justify-between items-start gap-1">
-                      <div className="flex items-center space-x-2">
+                    <div className="flex justify-between items-center gap-2">
+                      <div className="flex items-center space-x-2 min-w-0">
                         <div className="w-7 h-7 bg-blue-950 text-blue-400 border border-blue-900/50 rounded-lg flex items-center justify-center font-bold text-[10px] font-mono shrink-0">
                           {req.setor}
                         </div>
-                        <div className="text-left">
-                          <h4 className="font-bold text-xs text-slate-200">
+                        <div className="text-left min-w-0">
+                          <h4 className="font-bold text-xs text-slate-200 truncate">
                             {rotInfo ? `Rota ${req.setor}` : `Setor ${req.setor}`}
                           </h4>
                           <span 
-                            className="text-[10px] font-mono text-indigo-300 font-semibold flex items-center gap-1 leading-tight truncate max-w-[200px] mt-0.5" 
+                            className="text-[10px] font-mono text-indigo-300 font-semibold flex items-center gap-1 leading-tight truncate mt-0.5" 
                             title={`Cadastrado por: ${getDisplayCadastroUser(req, repsList, motoristasList)}`}
                           >
                             <User className="w-3 h-3 text-indigo-400 shrink-0" />
@@ -5034,88 +4997,70 @@ export default function PendingRequestsTab() {
                         >
                           <Eye className="w-4 h-4 text-blue-400" />
                         </button>
-
-                        {(activeTab === "faltas_inversoes" || activeTab === "historico_baixas") ? (
-                          <div className="flex flex-col items-end gap-1 shrink-0">
-                            {isBaixadoCard ? (
-                              <span className="px-2 py-0.5 bg-emerald-950 border border-emerald-500/60 rounded-full text-[8.5px] font-bold font-mono text-emerald-300 flex items-center gap-1 leading-none uppercase shadow" title={hasReceiptFile ? "Baixada com recibo assinado/PDF anexado" : "Baixada no sistema (Aguardando anexo do recibo assinado)"}>
-                                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
-                                <span>{hasReceiptFile ? "🟢 Baixada (Recibo PDF)" : "🟢 Baixada (Sem PDF)"}</span>
-                              </span>
-                            ) : isEnviadaRotaCard ? (
-                              <span className="px-2 py-0.5 bg-blue-950 border border-blue-500/60 rounded-full text-[8.5px] font-bold font-mono text-blue-300 flex items-center gap-1 leading-none uppercase shadow" title="Carga em veículo e enviada para rota">
-                                <Truck className="w-2.5 h-2.5 text-blue-400" />
-                                <span>🚚 Enviada p/ Rota</span>
-                              </span>
-                            ) : isAtrasadoCard ? (
-                              <span className="px-2 py-0.5 bg-rose-950/90 border border-rose-500/60 rounded-full text-[8.5px] font-bold font-mono text-rose-300 flex items-center gap-1 leading-none uppercase shadow">
-                                <AlertCircle className="w-2.5 h-2.5 text-rose-400 animate-pulse" />
-                                <span>🔴 Atrasado</span>
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 bg-amber-950/80 border border-amber-500/60 rounded-full text-[8.5px] font-bold font-mono text-amber-300 flex items-center gap-1 leading-none uppercase" title="Aguardando montagem de carga / expedição">
-                                <Clock className="w-2.5 h-2.5 text-amber-400 animate-pulse" />
-                                <span>⏳ Aguardando Carga</span>
-                              </span>
-                            )}
-
-                            {cast.faltaTipoErro === "carregamento" ? (
-                              <span className="text-[7.5px] uppercase font-bold font-mono text-blue-400 bg-blue-950/45 px-1.5 py-0.5 rounded border border-blue-900/30">
-                                📦 Carregamento
-                              </span>
-                            ) : cast.faltaTipoErro === "entrega" ? (
-                              <span className="text-[7.5px] uppercase font-bold font-mono text-amber-500 bg-amber-955/35 px-1.5 py-0.5 rounded border border-amber-900/30">
-                                🚚 Descarregamento
-                              </span>
-                            ) : (
-                              <span className="text-[7.5px] uppercase font-bold font-mono text-red-400 bg-red-955/20 px-1.5 py-0.5 rounded border border-red-900/20">
-                                ⚠️ Indefinido
-                              </span>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="flex flex-col items-end gap-1 shrink-0">
-                            {isBaixadoCard ? (
-                              <span className="px-2 py-0.5 bg-emerald-950/80 border border-emerald-500/60 rounded-full text-[9px] font-bold font-mono text-emerald-300 flex items-center gap-1 shrink-0 shadow" title={hasReceiptFile ? "Baixada com recibo assinado/PDF anexado" : "Baixada no sistema (Aguardando anexo do recibo assinado)"}>
-                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                <span>{hasReceiptFile ? "🟢 Baixada (Recibo PDF)" : "🟢 Baixada (Sem PDF)"}</span>
-                              </span>
-                            ) : isEnviadaRotaCard ? (
-                              <span className="px-2 py-0.5 bg-blue-950/80 border border-blue-500/60 rounded-full text-[9px] font-bold font-mono text-blue-300 flex items-center gap-1 shrink-0 shadow" title="Carga em veículo e enviada para rota">
-                                <Truck className="w-3 h-3 text-blue-400" />
-                                <span>🚚 Enviada p/ Rota</span>
-                              </span>
-                            ) : isAtrasadoCard ? (
-                              <span className="px-2 py-0.5 bg-rose-950/80 border border-rose-500/60 rounded-full text-[9px] font-bold font-mono text-rose-300 flex items-center gap-1 shrink-0 shadow">
-                                <AlertCircle className="w-3 h-3 text-rose-400 animate-pulse" />
-                                <span>🔴 Atrasado</span>
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 bg-amber-950/80 border border-amber-500/60 text-amber-300 text-[9px] font-bold font-mono rounded-full flex items-center gap-1 shrink-0" title="Aguardando montagem de carga / expedição">
-                                <Clock className="w-3 h-3 text-amber-400 animate-pulse" />
-                                <span>⏳ Aguardando Carga</span>
-                              </span>
-                            )}
-
-                            {/* Process Type Badge */}
-                            {isReposicaoReq(req) ? (
-                              <span className="text-[7.5px] uppercase font-bold font-mono text-indigo-300 bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-800/40" title="Reposição por Falta de Produto">
-                                📦 Reposição
-                              </span>
-                            ) : (
-                              <span className="text-[7.5px] uppercase font-bold font-mono text-emerald-300 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/40" title="Troca (Avaria/Inversão/Outros Motivos)">
-                                🔁 Troca
-                              </span>
-                            )}
-
-                            {!isFaltaSkuCompletoReq(req) && (
-                              <span className="text-[7.5px] uppercase font-bold font-mono text-amber-400 bg-amber-955/40 px-1.5 py-0.5 rounded border border-amber-800/40" title="Elegível para Recibo PDV de Contingência">
-                                ⚠️ Contingência
-                              </span>
-                            )}
-                          </div>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => handlePermanentDelete(req.id)}
+                          className="p-1.5 bg-slate-900 hover:bg-rose-950 border border-slate-750 hover:border-rose-500 rounded-lg text-rose-400 hover:text-rose-300 transition-all shadow cursor-pointer flex items-center justify-center shrink-0"
+                          title="Excluir este card do histórico"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                        </button>
                       </div>
+                    </div>
+
+                    {/* DEDICATED HORIZONTAL STATUS CONTAINER - strictly constrained inside card bounds */}
+                    <div className="w-full bg-slate-950/80 p-2 rounded-xl border border-slate-800/80 flex flex-wrap items-center gap-1.5 overflow-hidden">
+                      {/* Status Badge */}
+                      {isBaixadoCard ? (
+                        <span className="px-2 py-0.5 bg-emerald-950/90 border border-emerald-500/60 rounded-lg text-[8.5px] font-bold font-mono text-emerald-300 flex items-center gap-1 uppercase shrink-0 shadow-sm" title={hasReceiptFile ? "Baixada com recibo assinado/PDF anexado" : "Baixada no sistema (Aguardando anexo do recibo assinado)"}>
+                          <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                          <span className="truncate">{hasReceiptFile ? "🟢 Baixada (Recibo PDF)" : "🟢 Baixada (Sem PDF)"}</span>
+                        </span>
+                      ) : isEnviadaRotaCard ? (
+                        <span className="px-2 py-0.5 bg-blue-950/90 border border-blue-500/60 rounded-lg text-[8.5px] font-bold font-mono text-blue-300 flex items-center gap-1 uppercase shrink-0 shadow-sm" title="Carga em veículo e enviada para rota">
+                          <Truck className="w-2.5 h-2.5 text-blue-400 shrink-0" />
+                          <span className="truncate">🚚 Enviada p/ Rota</span>
+                        </span>
+                      ) : isAtrasadoCard ? (
+                        <span className="px-2 py-0.5 bg-rose-950/90 border border-rose-500/60 rounded-lg text-[8.5px] font-bold font-mono text-rose-300 flex items-center gap-1 uppercase shrink-0 shadow-sm">
+                          <AlertCircle className="w-2.5 h-2.5 text-rose-400 animate-pulse shrink-0" />
+                          <span className="truncate">🔴 Atrasado</span>
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 bg-amber-950/90 border border-amber-500/60 rounded-lg text-[8.5px] font-bold font-mono text-amber-300 flex items-center gap-1 uppercase shrink-0 shadow-sm" title="Aguardando montagem de carga / expedição">
+                          <Clock className="w-2.5 h-2.5 text-amber-400 animate-pulse shrink-0" />
+                          <span className="truncate">⏳ Aguardando Carga</span>
+                        </span>
+                      )}
+
+                      {/* Tipo Erro Badge */}
+                      {cast.faltaTipoErro === "carregamento" ? (
+                        <span className="text-[8px] uppercase font-bold font-mono text-blue-300 bg-blue-950/60 px-2 py-0.5 rounded-lg border border-blue-900/40 shrink-0">
+                          📦 Carregamento
+                        </span>
+                      ) : cast.faltaTipoErro === "entrega" ? (
+                        <span className="text-[8px] uppercase font-bold font-mono text-amber-300 bg-amber-955/50 px-2 py-0.5 rounded-lg border border-amber-900/40 shrink-0">
+                          🚚 Descarregamento
+                        </span>
+                      ) : null}
+
+                      {/* Tipo Processo Badge */}
+                      {isReposicaoReq(req) ? (
+                        <span className="text-[8px] uppercase font-bold font-mono text-indigo-300 bg-indigo-950/60 px-2 py-0.5 rounded-lg border border-indigo-800/40 shrink-0" title="Reposição por Falta de Produto">
+                          📦 Reposição
+                        </span>
+                      ) : (
+                        <span className="text-[8px] uppercase font-bold font-mono text-emerald-300 bg-emerald-950/60 px-2 py-0.5 rounded-lg border border-emerald-800/40 shrink-0" title="Troca (Avaria/Inversão/Outros Motivos)">
+                          🔁 Troca
+                        </span>
+                      )}
+
+                      {/* Contingência Badge */}
+                      {!isFaltaSkuCompletoReq(req) && (
+                        <span className="text-[8px] uppercase font-bold font-mono text-amber-300 bg-amber-955/50 px-2 py-0.5 rounded-lg border border-amber-800/40 shrink-0" title="Elegível para Recibo PDV de Contingência">
+                          ⚠️ Contingência
+                        </span>
+                      )}
                     </div>
 
                     {/* Client Info Block on card */}
@@ -5213,7 +5158,7 @@ export default function PendingRequestsTab() {
                                       #{sub.item} - <span className="font-sans font-medium text-slate-400">{sub.descricao || "Item SSTR"}</span>
                                     </span>
                                     <strong className="text-emerald-400 whitespace-nowrap">
-                                      {sub.quantidade} {((sub.unidadeMedida || "").toLowerCase() === "cx" || (sub.unidadeMedida || "").toLowerCase() === "caixa") ? "CX" : "UN"}
+                                      {sub.quantidade} {getUnitLabel(sub, req)}
                                     </strong>
                                   </div>
                                   <div className="flex justify-between text-[8.5px] text-slate-500">
@@ -5269,7 +5214,7 @@ export default function PendingRequestsTab() {
                             <div className="flex justify-between text-slate-400">
                               <span>Quantidade:</span>
                               <span className="text-white font-bold text-right">
-                                {req.quantidade} {req.motivo && req.motivo.toLowerCase().includes("falta de sku completo") ? "cx" : "un"}
+                                {req.quantidade} {getUnitLabel({ unidadeMedida: req.unidadeMedida, motivo: req.motivo }, req)}
                               </span>
                             </div>
                           )}
@@ -5781,7 +5726,7 @@ export default function PendingRequestsTab() {
                             </div>
                           );
                         })() : (
-                          <span>📦 SKU: {sub.item} - {sub.descricao || "Falta"} (Qtd: {sub.quantidade} {((sub.unidadeMedida || "").toLowerCase() === "cx" || (sub.unidadeMedida || "").toLowerCase() === "caixa") ? "CX" : "UN"})</span>
+                          <span>📦 SKU: {sub.item} - {sub.descricao || "Falta"} (Qtd: {sub.quantidade} {getUnitLabel(sub, req)})</span>
                         )}
                       </li>
                     ))}
@@ -5964,29 +5909,81 @@ export default function PendingRequestsTab() {
         </div>
       )}
 
-      {/* FULLSCREEN PHOTO ZOOM MODAL */}
+      {/* FULLSCREEN PHOTO / PDF ZOOM MODAL */}
       {zoomPhoto && (
         <div 
-          className="fixed inset-0 z-[99999] bg-black/95 flex items-center justify-center p-4 animate-fade-in no-print"
+          className="fixed inset-0 z-[99999] bg-black/95 flex items-center justify-center p-3 sm:p-5 animate-fade-in no-print"
           onClick={() => setZoomPhoto(null)}
         >
           <div 
-            className="relative max-w-3xl max-h-[85vh] bg-slate-900 p-3 rounded-2xl border border-slate-800 shadow-2xl flex flex-col items-center"
+            className="relative w-full max-w-4xl max-h-[90vh] bg-slate-900 p-4 rounded-2xl border border-slate-800 shadow-2xl flex flex-col items-center"
             onClick={e => e.stopPropagation()}
           >
             <button
               onClick={() => setZoomPhoto(null)}
-              className="absolute -top-3 -right-3 p-1.5 bg-slate-950 text-slate-350 hover:text-white rounded-full border border-slate-800 shadow-md cursor-pointer"
+              className="absolute -top-3 -right-3 p-2 bg-slate-950 text-slate-350 hover:text-white rounded-full border border-slate-800 shadow-md cursor-pointer z-10"
+              title="Fechar Visualizador"
             >
-              <X className="w-4 h-4" />
+              <X className="w-5 h-5" />
             </button>
-            <img 
-              src={zoomPhoto} 
-              alt="Zoom avaria" 
-              className="max-w-full max-h-[75vh] object-contain rounded-xl"
-              referrerPolicy="no-referrer"
-            />
-            <p className="mt-3 text-[10px] font-mono text-slate-450">Clique fora ou no botão superior para fechar.</p>
+
+            {/* Check if media is PDF or placeholder */}
+            {typeof zoomPhoto === "string" && (
+              zoomPhoto.startsWith("data:application/pdf") || 
+              zoomPhoto.toLowerCase().includes(".pdf") || 
+              zoomPhoto === "pdf_placeholder" || 
+              zoomPhoto.startsWith("blob:")
+            ) ? (
+              <div className="w-full flex flex-col items-center gap-3">
+                <div className="w-full flex justify-between items-center bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs font-mono">
+                  <div className="flex items-center gap-2 text-emerald-400 font-bold truncate">
+                    <FileText className="w-4 h-4 shrink-0 text-emerald-400" />
+                    <span className="truncate">Visualizador de Documento PDF</span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {zoomPhoto !== "pdf_placeholder" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const win = window.open();
+                          if (win) {
+                            win.document.write(`<iframe src="${zoomPhoto}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`);
+                          }
+                        }}
+                        className="px-2.5 py-1 bg-emerald-950 hover:bg-emerald-900 border border-emerald-700 text-emerald-300 rounded text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Abrir em Nova Aba</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {zoomPhoto === "pdf_placeholder" ? (
+                  <div className="w-full h-[65vh] bg-slate-955 rounded-xl border border-slate-800 flex flex-col items-center justify-center p-6 text-center space-y-3">
+                    <FileText className="w-16 h-16 text-emerald-400 animate-pulse" />
+                    <h4 className="text-sm font-bold text-slate-200">Documento PDF Registrado Oficialmente</h4>
+                    <p className="text-xs text-slate-400 max-w-md font-mono">
+                      O arquivo PDF do recibo/comprovante foi assinado e salvo com sucesso no banco de dados.
+                    </p>
+                  </div>
+                ) : (
+                  <iframe 
+                    src={zoomPhoto} 
+                    className="w-full h-[70vh] rounded-xl border border-slate-800 bg-slate-955 shadow-inner"
+                    title="Documento PDF"
+                  />
+                )}
+              </div>
+            ) : (
+              <img 
+                src={zoomPhoto} 
+                alt="Visualização" 
+                className="max-w-full max-h-[78vh] object-contain rounded-xl"
+                referrerPolicy="no-referrer"
+              />
+            )}
+            <p className="mt-2.5 text-[10px] font-mono text-slate-450">Clique fora do modal ou no ícone superior para fechar.</p>
           </div>
         </div>
       )}
@@ -6154,51 +6151,65 @@ export default function PendingRequestsTab() {
                 <span className="text-[10px] font-mono font-bold text-slate-400 uppercase block">Anexos e Imagens Importadas:</span>
                 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {/* Original Evidence Photo */}
-                  {inspectRequest.fotoUrl && !inspectRequest.fotoUrl.endsWith(".pdf") && (
+                  {/* Original Evidence (Image or PDF) */}
+                  {inspectRequest.fotoUrl && (
                     <div className="p-2.5 bg-slate-900 rounded-xl border border-slate-800 flex items-center gap-3">
-                      <img 
-                        src={inspectRequest.fotoUrl} 
-                        alt="Evidência" 
-                        className="w-16 h-16 object-cover rounded-lg border border-slate-700 cursor-pointer hover:opacity-85 shrink-0"
-                        onClick={() => setZoomPhoto(inspectRequest.fotoUrl)}
-                        referrerPolicy="no-referrer"
-                      />
+                      {inspectRequest.fotoUrl.toLowerCase().includes(".pdf") || inspectRequest.fotoUrl.startsWith("data:application/pdf") ? (
+                        <div className="w-12 h-12 bg-amber-955 border border-amber-800 rounded-lg flex items-center justify-center shrink-0">
+                          <FileText className="w-6 h-6 text-amber-400" />
+                        </div>
+                      ) : (
+                        <img 
+                          src={inspectRequest.fotoUrl} 
+                          alt="Evidência" 
+                          className="w-14 h-14 object-cover rounded-lg border border-slate-700 cursor-pointer hover:opacity-85 shrink-0"
+                          onClick={() => setZoomPhoto(inspectRequest.fotoUrl)}
+                          referrerPolicy="no-referrer"
+                        />
+                      )}
                       <div className="min-w-0 flex-1 font-mono">
-                        <span className="text-[10px] font-bold text-amber-400 block truncate">📷 Evidência do Cadastro</span>
-                        <span className="text-[9px] text-slate-400 block truncate">Foto enviada ao lançar</span>
+                        <span className="text-[10px] font-bold text-amber-400 block truncate">
+                          {inspectRequest.fotoUrl.toLowerCase().includes(".pdf") ? "📄 Documento PDF (Evidência)" : "📷 Evidência do Cadastro"}
+                        </span>
+                        <span className="text-[9px] text-slate-400 block truncate">Anexo enviado ao lançar</span>
                         <button
                           type="button"
                           onClick={() => setZoomPhoto(inspectRequest.fotoUrl)}
                           className="mt-1.5 px-2 py-1 bg-amber-950 hover:bg-amber-900 border border-amber-800 text-amber-300 text-[9px] font-bold rounded cursor-pointer transition-colors flex items-center gap-1"
                         >
                           <Eye className="w-3 h-3 text-amber-400" />
-                          <span>Ampliar Foto</span>
+                          <span>{inspectRequest.fotoUrl.toLowerCase().includes(".pdf") ? "Visualizar PDF" : "Ampliar Foto"}</span>
                         </button>
                       </div>
                     </div>
                   )}
 
-                  {/* Signed Receipt Photo */}
-                  {(inspectRequest as any).faltaBaixaReciboUrl && typeof (inspectRequest as any).faltaBaixaReciboUrl === "string" && !(inspectRequest as any).faltaBaixaReciboUrl.endsWith(".pdf") && (inspectRequest as any).faltaBaixaReciboUrl !== "pdf_placeholder" && (
+                  {/* Signed Receipt (Image or PDF) */}
+                  {(inspectRequest as any).faltaBaixaReciboUrl && typeof (inspectRequest as any).faltaBaixaReciboUrl === "string" && (
                     <div className="p-2.5 bg-slate-900 rounded-xl border border-emerald-800/80 flex items-center gap-3">
-                      <img 
-                        src={(inspectRequest as any).faltaBaixaReciboUrl} 
-                        alt="Recibo Assinado" 
-                        className="w-16 h-16 object-cover rounded-lg border border-emerald-700 cursor-pointer hover:opacity-85 shrink-0"
-                        onClick={() => setZoomPhoto((inspectRequest as any).faltaBaixaReciboUrl)}
-                        referrerPolicy="no-referrer"
-                      />
+                      {(inspectRequest as any).faltaBaixaReciboUrl.toLowerCase().includes(".pdf") || (inspectRequest as any).faltaBaixaReciboUrl.startsWith("data:application/pdf") || (inspectRequest as any).faltaBaixaReciboUrl === "pdf_placeholder" ? (
+                        <div className="w-12 h-12 bg-emerald-955 border border-emerald-800 rounded-lg flex items-center justify-center shrink-0">
+                          <FileText className="w-6 h-6 text-emerald-400 animate-pulse" />
+                        </div>
+                      ) : (
+                        <img 
+                          src={(inspectRequest as any).faltaBaixaReciboUrl} 
+                          alt="Recibo Assinado" 
+                          className="w-14 h-14 object-cover rounded-lg border border-emerald-700 cursor-pointer hover:opacity-85 shrink-0"
+                          onClick={() => setZoomPhoto((inspectRequest as any).faltaBaixaReciboUrl)}
+                          referrerPolicy="no-referrer"
+                        />
+                      )}
                       <div className="min-w-0 flex-1 font-mono">
-                        <span className="text-[10px] font-bold text-emerald-400 block truncate">📝 Recibo Assinado</span>
-                        <span className="text-[9px] text-slate-400 block truncate">{(inspectRequest as any).faltaBaixaReciboName || "recibo_assinado.jpg"}</span>
+                        <span className="text-[10px] font-bold text-emerald-400 block truncate">📝 Recibo / Comprovante PDF</span>
+                        <span className="text-[9px] text-slate-400 block truncate">{(inspectRequest as any).faltaBaixaReciboName || "recibo_baixa_assinado.pdf"}</span>
                         <button
                           type="button"
                           onClick={() => setZoomPhoto((inspectRequest as any).faltaBaixaReciboUrl)}
                           className="mt-1.5 px-2 py-1 bg-emerald-950 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[9px] font-bold rounded cursor-pointer transition-colors flex items-center gap-1"
                         >
                           <Eye className="w-3 h-3 text-emerald-400" />
-                          <span>Ampliar Recibo</span>
+                          <span>Visualizar Recibo PDF</span>
                         </button>
                       </div>
                     </div>

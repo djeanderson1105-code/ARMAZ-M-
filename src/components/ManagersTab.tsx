@@ -399,8 +399,8 @@ export default function ManagersTab() {
         if (val > 0) return acc + val;
         if (curr.precoCalculated !== undefined && curr.precoCalculated > 0) return acc + curr.precoCalculated;
         if (curr.precoSugerido !== undefined && curr.precoSugerido > 0) {
-          const isCx = (curr.unidadeMedida || "").toLowerCase().trim() === 'cx' || (curr.unidadeMedida || "").toLowerCase().trim() === 'caixa';
-          const isUnd = !isCx;
+          const rawUm = (curr.unidadeMedida || "").toLowerCase().trim();
+          const isUnd = rawUm === "un" || rawUm === "und" || rawUm === "unidade" || rawUm === "unidades";
           const unitVal = isUnd ? (curr.precoSugerido / (curr.fatorEmbalagem || 12)) : curr.precoSugerido;
           return acc + (unitVal * curr.quantidade);
         }

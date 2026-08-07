@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { ExchangeRecord, REPRESENTATIVOS_SETOR, PendingRequest, MOTORISTAS_ROTAS, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, RouteDriverInfo, getDisplayCadastroUser, LISTA_CREW } from "../types";
 import { getApiUrl } from "../utils/apiUrl";
 import { useSstrData } from "../context/SstrDataContext";
-import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, calculateItemValue, calculateItemHL } from "../data/products";
+import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, calculateItemValue, calculateItemHL, getUnitLabel } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
 import { 
   Search, 
@@ -3256,7 +3256,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                               }];
 
                               return reqItems.map((subItem, sIdx) => {
-                                const um = (subItem.unidadeMedida || req.unidadeMedida || "").toLowerCase().includes("cx") ? "cx" : "un";
+                                const um = getUnitLabel(subItem, req);
                                 return (
                                   <div key={`${req.id}_${sIdx}`} className="bg-slate-950/60 p-2 rounded-lg border border-slate-850/30 text-[9.5px] space-y-0.5">
                                     <div className="flex justify-between font-bold text-slate-200">
@@ -3454,7 +3454,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                                 }];
 
                                 return reqItems.map((subItem, sIdx) => {
-                                  const um = (subItem.unidadeMedida || req.unidadeMedida || "").toLowerCase().includes("cx") ? "cx" : "un";
+                                  const um = getUnitLabel(subItem, req);
                                   return (
                                     <div key={`${req.id}_${sIdx}`} className="flex justify-between text-slate-350 bg-slate-950/60 p-1.5 rounded border border-slate-850/30">
                                       <span className="truncate max-w-[70%] text-slate-400">#{subItem.item} - {subItem.descricao || "Produto"}</span>

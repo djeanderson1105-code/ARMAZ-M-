@@ -478,6 +478,62 @@ export function getProductByCodeOrName(term: string): ProductInfo | undefined {
 }
 
 // Calculate accurate HL for single item accounting for UND vs CX unit of measure
+export function getUnitLabel(
+  item?: { unidadeMedida?: string; um?: string; unit?: string; motivo?: string },
+  req?: { unidadeMedida?: string; um?: string; unit?: string; motivo?: string }
+): "SKU" | "CX" | "UN" {
+  const rawUm = String(
+    item?.unidadeMedida ||
+    item?.um ||
+    item?.unit ||
+    req?.unidadeMedida ||
+    req?.um ||
+    req?.unit ||
+    ""
+  ).toLowerCase().trim();
+
+  const motivoStr = String(item?.motivo || req?.motivo || "").toLowerCase().trim();
+
+  if (rawUm === "sku") {
+    return "SKU";
+  }
+
+  if (
+    rawUm === "cx" ||
+    rawUm === "caixa" ||
+    rawUm === "cxs" ||
+    rawUm === "caixas" ||
+    rawUm === "cx." ||
+    rawUm === "pack" ||
+    rawUm === "fardo" ||
+    rawUm === "fd" ||
+    rawUm === "sh" ||
+    rawUm === "shrink" ||
+    rawUm === "cx6"
+  ) {
+    return "CX";
+  }
+
+  if (
+    rawUm === "und" ||
+    rawUm === "un" ||
+    rawUm === "unidade" ||
+    rawUm === "unidades" ||
+    rawUm === "unds"
+  ) {
+    if ((motivoStr.includes("completo") || motivoStr.includes("fechado")) && rawUm !== "un" && rawUm !== "und") {
+      return "SKU";
+    }
+    return "UN";
+  }
+
+  if (motivoStr.includes("completo") || motivoStr.includes("fechado") || motivoStr.includes("sku")) {
+    return "SKU";
+  }
+
+  return "CX";
+}
+
 export function calculateItemHL(item: {
   item?: string;
   itemCode?: string;
