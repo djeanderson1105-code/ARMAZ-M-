@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { safeSetItem, syncExchangeRecordsConsolidated, syncArrayToFirestore } from "../utils/apiSync";
 import { useSstrData } from "../context/SstrDataContext";
+import { isFaltaOrInversaoReq } from "../types";
 import * as XLSX from "xlsx";
 import { parseProductExcel, recalculateAllRecordsWithProducts } from "../utils/productExcelImport";
 import { calculateItemValue } from "../data/products";
@@ -429,7 +430,8 @@ export default function ManagersTab() {
         nf: reqNf.trim(),
         fotoUrl: reqFotoUrl || "",
         observacao: reqObservacao.trim(),
-        statusPromax: "pendente",
+        // Non-motorista trocas go directly to history (cadastrado) and bypass pending
+        statusPromax: (!!(reqMotorista && reqMotorista !== "Não Informado" && reqMotorista !== "Equipe Operacional / Outros") || isFaltaOrInversaoReq({ motivo: firstItem.motivo, items: finalDrafts as any } as PendingRequest)) ? "pendente" : "cadastrado",
         notified: false,
         cadastroUser: cadastroUserStr,
         cadastroDate: dataFormatada,
@@ -1145,7 +1147,7 @@ export default function ManagersTab() {
         for (const item of req.items) {
           const isFaltaSkuCompleto = (item.motivo || req.motivo || "").toLowerCase().includes("completo") || (item.motivo || req.motivo || "").toLowerCase().includes("fechado");
           const rawUm = (item.unidadeMedida || req.unidadeMedida || "").toLowerCase();
-          const isSkuUnit = rawUm === "sku" || isFaltaSkuCompleto;
+          const isSkuUnit = rawUm === "sku" || rawUm === "cx" || rawUm === "caixa" || isFaltaSkuCompleto;
 
           flattened.push({
             requestId: req.id,
@@ -1167,7 +1169,7 @@ export default function ManagersTab() {
       } else if (req.item) {
         const isFaltaSkuCompleto = (req.motivo || "").toLowerCase().includes("completo") || (req.motivo || "").toLowerCase().includes("fechado");
         const rawUm = (req.unidadeMedida || "").toLowerCase();
-        const isSkuUnit = rawUm === "sku" || isFaltaSkuCompleto;
+        const isSkuUnit = rawUm === "sku" || rawUm === "cx" || rawUm === "caixa" || isFaltaSkuCompleto;
 
         flattened.push({
           requestId: req.id,

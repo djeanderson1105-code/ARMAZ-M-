@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, getDisplayCadastroUser } from "../types";
+import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, getDisplayCadastroUser, getCreatorRole, isFaltaOrInversaoReq, isAllowedInPending } from "../types";
 import AvariasPackagingChart from "./AvariasPackagingChart";
 import { getApiUrl } from "../utils/apiUrl";
 import { safeSetItem } from "../utils/apiSync";
@@ -23,6 +23,7 @@ import {
   CheckSquare, 
   Eye, 
   Camera, 
+  ExternalLink,
   Trash2,
   ListFilter,
   Layers,
@@ -149,7 +150,7 @@ const getInspectItems = (req: PendingRequest, promaxRecords: ExchangeRecord[] = 
       const name = (it as any).descricao || (it as any).descricaoSku || (it as any).descricaoProduto || (it as any).name || (it as any).productDesc || dbP?.descricao || promaxMatch?.descricaoProduto || (code !== "N/A" ? `PRODUTO SKU #${code}` : "Produto não discriminado");
       const qty = Number(it.quantidade) || 1;
       const um = getUnitLabel(it, req);
-      const rawUm = String(it.unidadeMedida || req.unidadeMedida || it.um || req.um || "").trim();
+      const rawUm = String(it.unidadeMedida || req.unidadeMedida || (it as any).um || req.um || "").trim();
       const hl = Number(it.hectolitros) || calculateItemHL({ item: code, quantidade: qty, unidadeMedida: rawUm || um, fatorEmbalagem: it.fatorEmbalagem, fatorHecto: it.fatorHecto, motivo: it.motivo || req.motivo });
       const val = calculateItemValue({ item: code, quantidade: qty, unidadeMedida: rawUm || um, customUnitPrice: it.customUnitPrice, fatorEmbalagem: it.fatorEmbalagem, precoCalculated: it.precoCalculated, precoSugerido: it.precoSugerido, motivo: it.motivo || req.motivo });
       return { code, name, qty, um, hl, val };
@@ -233,27 +234,7 @@ const getReqDate = (req: PendingRequest): Date | null => {
 
 // Helper to determine if a request contains a shortage ("Falta") or an inversion ("Inversão")
 const isFaltaOrInversao = (req: PendingRequest): boolean => {
-  const checkMotive = (motive: string): boolean => {
-    const m = (motive || "").toLowerCase().trim();
-    // Inversões and Swaps are always included
-    if (m.includes("invers") || m.includes("inversão") || m.includes("swap") || m.includes("troca de sku")) return true;
-    // Falta de SKU Completo is always included
-    if (m.includes("completo") || m.includes("sku completo") || m.includes("falta de sku completo")) return true;
-    // Shortage checks: must contain "falta" or "sku completo" but must NOT contain "falta no sku" or "falta no"
-    if (m.includes("falta")) {
-      return !m.includes("falta no sku");
-    }
-    return false;
-  };
-
-  const isMain = checkMotive(req.motivo || "");
-  
-  const hasSub = req.items && req.items.some(item => {
-    const isItemSwap = !!item.produtoAhEnviar || !!item.produtoARecolher;
-    return checkMotive(item.motivo || "") || isItemSwap;
-  });
-  
-  return isMain || !!hasSub;
+  return isFaltaOrInversaoReq(req);
 };
 
 // Helper to check if request is an inversion / swap request
@@ -471,6 +452,7 @@ export default function PendingRequestsTab() {
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [sectorFilter, setSectorFilter] = useState<string>("todos");
+  const [createdRoleFilter, setCreatedRoleFilter] = useState<"todos" | "motorista" | "rn" | "admin">("todos");
   const [processTypeFilter, setProcessTypeFilter] = useState<string>("todos");
   const [dateSortOrder, setDateSortOrder] = useState<"desc" | "asc">("desc");
   const [zoomPhoto, setZoomPhoto] = useState<string | null>(null);
@@ -478,6 +460,22 @@ export default function PendingRequestsTab() {
 
   // Espelho de Reposições state variables
   const [searchEspelho, setSearchEspelho] = useState("");
+
+  // Auto-migrate pre-existing non-motorista pending trocas to "cadastrado" so they exit Pending and remain in History
+  useEffect(() => {
+    if (!requests || requests.length === 0) return;
+    const stalePendingTrocas = requests.filter(req => {
+      return req.statusPromax === "pendente" && !isAllowedInPending(req, repsList, motoristasList);
+    });
+    if (stalePendingTrocas.length > 0) {
+      stalePendingTrocas.forEach(req => {
+        savePendingRequest({
+          ...req,
+          statusPromax: "cadastrado"
+        });
+      });
+    }
+  }, [requests, repsList, motoristasList, savePendingRequest]);
   const [filterEspelhoDate, setFilterEspelhoDate] = useState(() => {
     return new Date().toLocaleDateString("pt-BR");
   });
@@ -1179,7 +1177,7 @@ export default function PendingRequestsTab() {
   // Single item entry states
   const [reqItem, setReqItem] = useState("");
   const [reqQuantidade, setReqQuantidade] = useState("");
-  const [reqUnidade, setReqUnidade] = useState<"sku" | "und">("und");
+  const [reqUnidade, setReqUnidade] = useState<"sku" | "und">("sku");
   const [showItemSuggestions, setShowItemSuggestions] = useState(false);
 
   // Inversion fields
@@ -1374,7 +1372,7 @@ export default function PendingRequestsTab() {
       const unitPrice = embalagem > 0 ? closedBoxPrice / embalagem : closedBoxPrice;
 
       const factor = productDef.fatorHecto || 0.0800;
-      const isReqCx = reqUnidade === "cx" || reqUnidade === "caixa";
+      const isReqCx = reqUnidade === "cx" || reqUnidade === "caixa" || reqUnidade === "sku";
       const isReqUnd = !isReqCx;
       const calculatedHl = calculateItemHL({
         codigo: productDef.codigo,
@@ -1500,7 +1498,7 @@ export default function PendingRequestsTab() {
         const unitPrice = embalagem > 0 ? closedBoxPrice / embalagem : closedBoxPrice;
 
         const factor = productDef.fatorHecto || 0.0800;
-        const isReqCx = reqUnidade === "cx" || reqUnidade === "caixa";
+        const isReqCx = reqUnidade === "cx" || reqUnidade === "caixa" || reqUnidade === "sku";
         const isReqUnd = !isReqCx;
         const calculatedHl = calculateItemHL({
           codigo: productDef.codigo,
@@ -1614,16 +1612,14 @@ export default function PendingRequestsTab() {
         observacao: reqObservacao.trim(),
         statusPromax: "pendente",
         notified: false,
+        cadastroRole: "admin",
+        origem: "admin",
         cadastroUser: (() => {
           const loggedManager = sessionStorage.getItem("sstr_current_manager_name");
           if (loggedManager && loggedManager.trim()) {
-            return loggedManager;
+            return loggedManager.trim();
           }
-          const rotInfo = motoristasList[effectiveSetor.trim()];
-          const repInfo = repsList[effectiveSetor.trim()];
-          if (rotInfo?.nome) return `Motorista ${rotInfo.nome} (Rota ${effectiveSetor})`;
-          if (repInfo?.nome) return `RN ${repInfo.nome} (Setor ${effectiveSetor})`;
-          return "Gestor (Dashboard)";
+          return "Gestor (Controle Operacional)";
         })(),
         cadastroDate: dataFormatada,
         dataEntrega: reqDataEntrega.trim() || undefined,
@@ -2300,6 +2296,12 @@ export default function PendingRequestsTab() {
       // 2. Sector filter
       const matchSector = sectorFilter === "todos" || req.setor === sectorFilter;
 
+      // 2.5 Creator / Origem role filter (Motoristas, RNs, Login Admin)
+      if (createdRoleFilter !== "todos") {
+        const creatorRole = getCreatorRole(req, repsList, motoristasList);
+        if (creatorRole !== createdRoleFilter) return false;
+      }
+
       // 3. Date range filter
       if (startDate) {
         const reqDate = getReqDate(req);
@@ -2399,7 +2401,11 @@ export default function PendingRequestsTab() {
         return matchSearch && matchSector;
       } else {
         let matchStatus = req.statusPromax === activeTab;
-        if (processTypeFilter === "troca_exceto_sku_fechado") {
+        if (activeTab === "pendente") {
+          if (!isAllowedInPending(req, repsList, motoristasList)) {
+            matchStatus = false;
+          }
+        } else if (processTypeFilter === "troca_exceto_sku_fechado") {
           matchStatus = req.statusPromax === "pendente" || req.statusPromax === "cadastrado";
         } else if (activeTab === "reprovado") {
           matchStatus = req.statusPromax === "reprovado" || req.statusPromax === "corrigir";
@@ -2434,7 +2440,7 @@ export default function PendingRequestsTab() {
       const cityB = (b as any).municipioRecibo || pdvB.municipio || "";
       return cityA.localeCompare(cityB, "pt-BR", { sensitivity: "base" });
     });
-  }, [requests, searchTerm, activeTab, sectorFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType, processTypeFilter, dateSortOrder, historicoBaixasStatusFilter, onlyContingenciaFilter, promaxRecords, duplicateAnalysis]);
+  }, [requests, searchTerm, activeTab, sectorFilter, createdRoleFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType, processTypeFilter, dateSortOrder, historicoBaixasStatusFilter, onlyContingenciaFilter, promaxRecords, duplicateAnalysis]);
 
   // Process type summary breakdown for dashboard cards (Reposição vs. Troca vs. Contingências)
   const processSummary = useMemo(() => {
@@ -2454,8 +2460,8 @@ export default function PendingRequestsTab() {
 
       // Active operational goals (Reposição & Troca)
       const isBaixadaOrConcluded = !!(r as any).faltaBaixa || r.statusPromax === "cadastrado" || isReprovado;
-      if (!isBaixadaOrConcluded) {
-        if (isRep) {
+      if (!isBaixadaOrConcluded && isAllowedInPending(r, repsList, motoristasList)) {
+        if (isRep || isFaltaOrInversaoReq(r)) {
           reposicaoCount++;
           reposicaoVal += val;
         } else {
@@ -2841,8 +2847,8 @@ export default function PendingRequestsTab() {
 
   // Count active requests by status category
   const pendingCount = useMemo(() => {
-    return requests.filter(r => r.statusPromax === "pendente").length;
-  }, [requests]);
+    return requests.filter(r => r.statusPromax === "pendente" && isAllowedInPending(r, repsList, motoristasList)).length;
+  }, [requests, repsList, motoristasList]);
 
   const approvedCount = useMemo(() => {
     return requests.filter(r => r.statusPromax === "cadastrado").length;
@@ -3535,7 +3541,7 @@ export default function PendingRequestsTab() {
               ? "bg-indigo-600 text-white shadow-lg shadow-indigo-900/20 border border-indigo-550"
               : "bg-slate-900 text-slate-450 hover:text-slate-200 hover:bg-slate-850 border border-slate-850"
           }`}
-          title="Consulte o espelho consolidado de reposições e trocas homologadas e liquidas do dia"
+          title="Consulte o espelho consolidado de reposições e trocas homologadas e liquidadas do dia"
         >
           <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
           <span className="truncate">Espelho do Dia 📋</span>
@@ -3598,7 +3604,7 @@ export default function PendingRequestsTab() {
               <select
                 value={sectorFilter}
                 onChange={(e) => setSectorFilter(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 h-10 text-xs text-slate-350 font-semibold cursor-pointer focus:outline-none"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 h-10 text-xs text-slate-350 font-semibold cursor-pointer focus:outline-none"
               >
                 <option value="todos">Todos os Setores</option>
                 {uniqueSectors.map(sec => {
@@ -3620,56 +3626,127 @@ export default function PendingRequestsTab() {
 
             {/* Subtle Date Sort order selector */}
             <div className="md:col-span-1 space-y-1">
-              <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Ordem Data:</span>
+              <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Ordem:</span>
               <button
                 type="button"
                 onClick={() => setDateSortOrder(prev => prev === "desc" ? "asc" : "desc")}
-                className="w-full h-10 px-2 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-[10px] font-mono font-bold text-slate-300 flex items-center justify-center gap-1 cursor-pointer transition-all"
-                title="Alternar ordenação sutil por data (Mais Recentes vs Mais Antigos)"
+                className="w-full h-10 px-1 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-xl text-[10px] font-mono font-bold text-slate-300 flex items-center justify-center gap-1 cursor-pointer transition-all"
+                title="Alternar ordenação por data (Mais Recentes vs Mais Antigos)"
               >
                 <span>{dateSortOrder === "desc" ? "⬇️ Recente" : "⬆️ Antigo"}</span>
               </button>
             </div>
 
-            {/* Contingency Filter Toggle (Requirement 4) */}
+            {/* Contingency Filter Toggle */}
             <div className="md:col-span-1 space-y-1">
-              <span className="text-[10px] font-bold text-amber-400 font-mono uppercase tracking-wider block">Contingência:</span>
+              <span className="text-[10px] font-bold text-amber-400 font-mono uppercase tracking-wider block">Alerta:</span>
               <button
                 type="button"
                 onClick={() => setOnlyContingenciaFilter(!onlyContingenciaFilter)}
-                className={`w-full h-10 px-2 rounded-xl text-[10px] font-mono font-bold uppercase border transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                className={`w-full h-10 px-1 rounded-xl text-[10px] font-mono font-bold uppercase border transition-all cursor-pointer flex items-center justify-center gap-1 ${
                   onlyContingenciaFilter
                     ? "bg-amber-500/20 border-amber-500 text-amber-300 shadow-md ring-1 ring-amber-500/50"
                     : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700"
                 }`}
                 title="Filtrar apenas registros marcados como Contingência Promax"
               >
-                <span>🚨 Alertas</span>
+                <span>🚨 Conting.</span>
                 {onlyContingenciaFilter && <span className="text-[8px] bg-amber-500 text-slate-950 px-1 rounded font-black">ON</span>}
               </button>
             </div>
 
-            {/* Clear Button */}
-            <div className="md:col-span-1">
-              {(searchTerm || startDate || endDate || sectorFilter !== "todos" || processTypeFilter !== "todos") ? (
+            {/* BOTTOM ROW: Creator / Origem Filter (Motoristas, RN, Admin) & Clear Button */}
+            <div className="md:col-span-12 pt-2.5 mt-0.5 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
+              
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-bold text-indigo-400 font-mono uppercase tracking-wider mr-1">
+                  Cadastrado Por:
+                </span>
+
                 <button
-                  onClick={() => {
-                    setSearchTerm("");
-                    setStartDate("");
-                    setEndDate("");
-                    setSectorFilter("todos");
-                    setProcessTypeFilter("todos");
-                  }}
-                  className="w-full h-10 bg-rose-955/60 hover:bg-rose-900 border border-rose-800/40 text-rose-300 text-[10px] font-mono font-bold rounded-xl cursor-pointer flex items-center justify-center transition-all hover:scale-[1.02]"
+                  type="button"
+                  onClick={() => setCreatedRoleFilter("todos")}
+                  className={`h-9 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
+                    createdRoleFilter === "todos"
+                      ? "bg-indigo-600 border-indigo-400 text-white shadow-md shadow-indigo-950/60 ring-1 ring-indigo-300/40"
+                      : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900"
+                  }`}
+                  title="Exibir todos os cadastros"
                 >
-                  Limpar
+                  <span>👥</span>
+                  <span>Todos</span>
                 </button>
-              ) : (
-                <div className="w-full h-10 border border-dashed border-slate-800 rounded-xl flex items-center justify-center text-[9px] text-slate-605 font-mono font-bold uppercase tracking-wider select-none">
-                  Ativos
-                </div>
-              )}
+
+                <button
+                  type="button"
+                  onClick={() => setCreatedRoleFilter("motorista")}
+                  className={`h-9 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
+                    createdRoleFilter === "motorista"
+                      ? "bg-blue-600 border-blue-400 text-white shadow-md shadow-blue-950/60 ring-1 ring-blue-300/40"
+                      : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900"
+                  }`}
+                  title="Cadastros efetuados pelos Motoristas / Entregadores"
+                >
+                  <span>🚚</span>
+                  <span>Motoristas / Rotas</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCreatedRoleFilter("rn")}
+                  className={`h-9 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
+                    createdRoleFilter === "rn"
+                      ? "bg-emerald-600 border-emerald-400 text-white shadow-md shadow-emerald-950/60 ring-1 ring-emerald-300/40"
+                      : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900"
+                  }`}
+                  title="Cadastros efetuados pelos RNs / Vendedores"
+                >
+                  <span>💼</span>
+                  <span>RNs / Vendedores</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCreatedRoleFilter("admin")}
+                  className={`h-9 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
+                    createdRoleFilter === "admin"
+                      ? "bg-purple-600 border-purple-400 text-white shadow-md shadow-purple-950/60 ring-1 ring-purple-300/40"
+                      : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900"
+                  }`}
+                  title="Cadastros efetuados no Login Administrativo / Gestão"
+                >
+                  <span>🖥️</span>
+                  <span>Login Admin / Gestão</span>
+                </button>
+              </div>
+
+              {/* Clear filters button */}
+              <div className="flex items-center">
+                {(searchTerm || startDate || endDate || sectorFilter !== "todos" || processTypeFilter !== "todos" || createdRoleFilter !== "todos" || onlyContingenciaFilter) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchTerm("");
+                      setStartDate("");
+                      setEndDate("");
+                      setSectorFilter("todos");
+                      setProcessTypeFilter("todos");
+                      setCreatedRoleFilter("todos");
+                      setOnlyContingenciaFilter(false);
+                    }}
+                    className="h-9 px-4 bg-rose-955/60 hover:bg-rose-900 border border-rose-800/40 text-rose-300 text-xs font-mono font-bold rounded-xl cursor-pointer flex items-center justify-center transition-all hover:scale-[1.02]"
+                  >
+                    Limpar Filtros
+                  </button>
+                ) : (
+                  <div className="h-9 px-3 border border-dashed border-slate-800/80 rounded-xl flex items-center justify-center text-[10px] text-slate-500 font-mono font-bold uppercase tracking-wider select-none">
+                    Filtros Padrão
+                  </div>
+                )}
+              </div>
+
             </div>
+
           </div>
         )}
 
@@ -4123,8 +4200,14 @@ export default function PendingRequestsTab() {
                     <select
                       value={reqMotiveType}
                       onChange={(e) => {
-                        setReqMotiveType(e.target.value);
+                        const val = e.target.value;
+                        setReqMotiveType(val);
                         setReqMotiveText("");
+                        if (val === "Falta no SKU") {
+                          setReqUnidade("und");
+                        } else {
+                          setReqUnidade("sku");
+                        }
                       }}
                       className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 h-10 text-xs font-semibold text-slate-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
                     >
@@ -4370,11 +4453,12 @@ export default function PendingRequestsTab() {
                     <div className="md:col-span-2 space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Unidade:</label>
                       <select
-                        value="sku"
-                        disabled
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 h-10 text-xs font-semibold text-slate-300 focus:outline-none cursor-not-allowed opacity-80"
+                        value={reqUnidade}
+                        onChange={(e) => setReqUnidade(e.target.value as "sku" | "und")}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 h-10 text-xs font-semibold text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
                       >
                         <option value="sku">SKU (Caixa Fechada)</option>
+                        <option value="und">UND (Unidade Avulsa)</option>
                       </select>
                     </div>
 
@@ -5726,7 +5810,7 @@ export default function PendingRequestsTab() {
                             </div>
                           );
                         })() : (
-                          <span>📦 SKU: {sub.item} - {sub.descricao || "Falta"} (Qtd: {sub.quantidade} {getUnitLabel(sub, req)})</span>
+                          <span>📦 SKU: {sub.item} - {sub.descricao || "Falta"} (Qtd: {sub.quantidade} {getUnitLabel(sub, baixandoFalta)})</span>
                         )}
                       </li>
                     ))}

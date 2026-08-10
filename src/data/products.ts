@@ -494,6 +494,10 @@ export function getUnitLabel(
 
   const motivoStr = String(item?.motivo || req?.motivo || "").toLowerCase().trim();
 
+  if (motivoStr.includes("completo") || motivoStr.includes("fechado") || motivoStr.includes("falta de sku completo")) {
+    return "SKU";
+  }
+
   if (rawUm === "sku") {
     return "SKU";
   }
@@ -521,17 +525,14 @@ export function getUnitLabel(
     rawUm === "unidades" ||
     rawUm === "unds"
   ) {
-    if ((motivoStr.includes("completo") || motivoStr.includes("fechado")) && rawUm !== "un" && rawUm !== "und") {
-      return "SKU";
-    }
     return "UN";
   }
 
-  if (motivoStr.includes("completo") || motivoStr.includes("fechado") || motivoStr.includes("sku")) {
+  if (motivoStr.includes("sku")) {
     return "SKU";
   }
 
-  return "CX";
+  return "SKU";
 }
 
 export function calculateItemHL(item: {
@@ -573,11 +574,13 @@ export function calculateItemHL(item: {
   }
 
   const umStr = (item.unidadeMedida || (item as any).um || "").toLowerCase().trim();
+  const motivoStr = String(item.motivo || "").toLowerCase();
+  const isSkuMotive = motivoStr.includes("completo") || motivoStr.includes("fechado");
   const qty = Number(item.quantidade) || 0;
   if (qty <= 0) return 0;
 
-  const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades";
-  const isExplicitBoxCount = !isUnd && (umStr === "cx" || umStr === "caixa" || umStr === "cxs" || umStr === "caixas" || umStr === "cx." || umStr === "pack" || umStr === "fardo" || umStr === "fd" || umStr === "sh" || umStr === "shrink" || umStr === "sku" || umStr === "");
+  const isUnd = !isSkuMotive && (umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades");
+  const isExplicitBoxCount = isSkuMotive || !isUnd || (umStr === "cx" || umStr === "caixa" || umStr === "cxs" || umStr === "caixas" || umStr === "cx." || umStr === "pack" || umStr === "fardo" || umStr === "fd" || umStr === "sh" || umStr === "shrink" || umStr === "sku" || umStr === "");
 
   if (isExplicitBoxCount) {
     return Number((qty * boxFactorHecto).toFixed(5));
@@ -629,7 +632,9 @@ export function calculateItemValue(item: {
   const boxPrice = dbProduct?.valor || 0;
   const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (item.fatorEmbalagem || 12);
   const umStr = (item.unidadeMedida || (item as any).um || "").toLowerCase().trim();
-  const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades";
+  const motivoStr = String(item.motivo || "").toLowerCase();
+  const isSkuMotive = motivoStr.includes("completo") || motivoStr.includes("fechado");
+  const isUnd = !isSkuMotive && (umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades");
   const qty = item.quantidade || 1;
 
   if (boxPrice > 0) {

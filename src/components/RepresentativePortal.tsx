@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { ExchangeRecord, REPRESENTATIVOS_SETOR, PendingRequest, MOTORISTAS_ROTAS, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, RouteDriverInfo, getDisplayCadastroUser, LISTA_CREW } from "../types";
+import { ExchangeRecord, REPRESENTATIVOS_SETOR, PendingRequest, MOTORISTAS_ROTAS, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, RouteDriverInfo, getDisplayCadastroUser, LISTA_CREW, isFaltaOrInversaoReq } from "../types";
 import { getApiUrl } from "../utils/apiUrl";
 import { useSstrData } from "../context/SstrDataContext";
 import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, calculateItemValue, calculateItemHL, getUnitLabel } from "../data/products";
@@ -540,7 +540,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
   const [formNf, setFormNf] = useState("");
   const [formItem, setFormItem] = useState("");
   const [formQuantidade, setFormQuantidade] = useState("");
-  const [formUnidadeMedida, setFormUnidadeMedida] = useState<"cx" | "und">("und");
+  const [formUnidadeMedida, setFormUnidadeMedida] = useState<"cx" | "und">("cx");
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   // States for inversion ("Inversão")
@@ -1669,7 +1669,8 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
       nf: finalNf,
       fotoUrl: uploadedFotoUrl,
       observacao: formObservacao.trim(),
-      statusPromax: "pendente",
+      // Non-motorista trocas go directly to history (cadastrado) and bypass pending
+      statusPromax: (roleContext === "motorista" || isFaltaOrInversaoReq({ motivo: firstItem.motivo, items: currentDrafts as any } as PendingRequest)) ? "pendente" : "cadastrado",
       notified: false,
       pdfFilename: expectedFilename,
       pdfFilePath: expectedFullPath,
@@ -2567,24 +2568,40 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                       )}
                     </div>
 
-                    {/* Quantidade */}
-                    <div className="space-y-1">
-                      <label className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider font-mono block">
-                        Quantidade {formMotiveType !== "Inversão" && <span className="text-red-500">*</span>}
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        placeholder="Ex: 5"
-                        value={formQuantidade}
-                        onChange={(e) => setFormQuantidade(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:border-blue-500 focus:outline-hidden"
-                      />
-                      {matchedProduct && formQuantidade && parseInt(formQuantidade) > 0 && (
-                        <div className="mt-1 text-[8.5px] text-amber-400 font-mono leading-tight bg-amber-950/20 px-1.5 py-1 rounded border border-amber-900/30">
-                          Total Hl: {calculateHectolitros(matchedProduct.codigo, parseInt(formQuantidade))}
-                        </div>
-                      )}
+                    {/* Quantidade & Unidade */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider font-mono block">
+                          Quantidade {formMotiveType !== "Inversão" && <span className="text-red-500">*</span>}
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          placeholder="Ex: 5"
+                          value={formQuantidade}
+                          onChange={(e) => setFormQuantidade(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:border-blue-500 focus:outline-hidden"
+                        />
+                        {matchedProduct && formQuantidade && parseInt(formQuantidade) > 0 && (
+                          <div className="mt-1 text-[8.5px] text-amber-400 font-mono leading-tight bg-amber-950/20 px-1.5 py-1 rounded border border-amber-900/30">
+                            Total Hl: {calculateHectolitros(matchedProduct.codigo, parseInt(formQuantidade))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider font-mono block">
+                          Unidade <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          value={formUnidadeMedida}
+                          onChange={(e) => setFormUnidadeMedida(e.target.value as "cx" | "und")}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:border-blue-500 focus:outline-hidden cursor-pointer font-bold"
+                        >
+                          <option value="cx">SKU (Caixa Fechada)</option>
+                          <option value="und">UND (Unidade Avulsa)</option>
+                        </select>
+                      </div>
                     </div>
 
                     {/* Motivo Principal Selection */}
@@ -2605,6 +2622,11 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                             type="button"
                             onClick={() => {
                               setFormMotiveType(mot);
+                              if (mot === "Falta no SKU") {
+                                setFormUnidadeMedida("und");
+                              } else {
+                                setFormUnidadeMedida("cx");
+                              }
                               if (mot === "Outros") {
                                 setFormMotiveText("");
                               } else {

@@ -274,6 +274,9 @@ export interface PendingRequest {
   statusPromax: "pendente" | "cadastrado" | "reprovado" | "corrigir";
   cadastroUser?: string;
   cadastroDate?: string;
+  cadastroRole?: "motorista" | "rn" | "admin";
+  origem?: "motorista" | "rn" | "admin" | string;
+  perfilUsuario?: string;
   motivo?: string; // e.g., "Avaria", "Falta no SKU", etc.
   notified?: boolean; // has the RN seen the approval notification
   rejeitadoObs?: string; // Motivo de reprovação (Required if rejected)
@@ -546,6 +549,122 @@ export function getDisplayCadastroUser(
   }
   
   return `Setor/Rota ${setorKey || "Operacional"}`;
+}
+
+export function getCreatorRole(
+  req: PendingRequest,
+  repsList: Record<string, { nome: string; gv?: string }> = {},
+  motoristasList: Record<string, { nome: string; cpf?: string }> = {}
+): "motorista" | "rn" | "admin" {
+  if (!req) return "admin";
+  const cast = req as any;
+
+  // 1. Explicit role/origem flag if present
+  if (cast.cadastroRole === "admin" || cast.origem === "admin" || cast.perfilUsuario === "admin") return "admin";
+  if (cast.cadastroRole === "motorista" || cast.origem === "motorista" || cast.perfilUsuario === "motorista") return "motorista";
+  if (cast.cadastroRole === "rn" || cast.origem === "rn" || cast.perfilUsuario === "rn") return "rn";
+
+  // 2. Direct string check on raw cadastroUser
+  const rawUser = (req.cadastroUser || "").trim();
+  const userStr = rawUser.toLowerCase();
+
+  // Explicit keywords for Admin / Gestão / Plataforma (including Alécya and system accounts)
+  if (
+    userStr.includes("alecya") ||
+    userStr.includes("alécya") ||
+    userStr.includes("gestor") ||
+    userStr.includes("admin") ||
+    userStr.includes("controle") ||
+    userStr.includes("operacional") ||
+    userStr.includes("supervis") ||
+    userStr.includes("gerente") ||
+    userStr.includes("diretoria") ||
+    userStr.includes("dashboard") ||
+    userStr.includes("plataforma") ||
+    rawUser === "Responsável pelo Controle"
+  ) {
+    return "admin";
+  }
+
+  // Explicit keywords for Motorista / Rotas
+  if (
+    userStr.startsWith("motorista") ||
+    userStr.includes("rota ") ||
+    userStr.includes("entregador") ||
+    userStr.includes("driver")
+  ) {
+    return "motorista";
+  }
+
+  // Explicit keywords for RN / Representante
+  if (
+    userStr.startsWith("rn ") ||
+    userStr.startsWith("rn-") ||
+    userStr.includes("representante") ||
+    userStr.includes("vendedor") ||
+    userStr.includes("promotor")
+  ) {
+    return "rn";
+  }
+
+  // Match rawUser against registered Reps / Drivers names
+  if (rawUser) {
+    const allReps = Object.values(repsList);
+    const isRepNameMatch = allReps.some(r => r.nome && (
+      userStr.includes(r.nome.toLowerCase()) || r.nome.toLowerCase().includes(userStr)
+    ));
+    if (isRepNameMatch) return "rn";
+
+    const allDrivers = Object.values(motoristasList);
+    const isDriverNameMatch = allDrivers.some(d => d.nome && (
+      userStr.includes(d.nome.toLowerCase()) || d.nome.toLowerCase().includes(userStr)
+    ));
+    if (isDriverNameMatch) return "motorista";
+  }
+
+  // Check resolved display user string
+  const displayUser = getDisplayCadastroUser(req, repsList, motoristasList).toLowerCase();
+  if (displayUser.includes("motorista") || displayUser.includes("rota ")) {
+    return "motorista";
+  }
+  if (displayUser.includes("rn ") || displayUser.includes("representante")) {
+    return "rn";
+  }
+
+  // Default to Admin for all platform / management creations
+  return "admin";
+}
+
+export function isFaltaOrInversaoReq(req: PendingRequest): boolean {
+  if (!req) return false;
+  const checkMotive = (motive: string): boolean => {
+    const m = (motive || "").toLowerCase().trim();
+    if (!m) return false;
+    if (m.includes("falta") || m.includes("invers") || m.includes("swap") || m.includes("troca de sku") || m.includes("completo") || m.includes("fechado") || m.includes("reposi")) return true;
+    return false;
+  };
+
+  if (checkMotive(req.motivo || "")) return true;
+
+  if (req.items && req.items.some(item => {
+    const isItemSwap = !!item.produtoAhEnviar || !!item.produtoARecolher;
+    return checkMotive(item.motivo || "") || isItemSwap;
+  })) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isAllowedInPending(
+  req: PendingRequest,
+  repsList: Record<string, { nome: string; gv?: string }> = {},
+  motoristasList: Record<string, { nome: string; cpf?: string }> = {}
+): boolean {
+  if (!req) return false;
+  if (isFaltaOrInversaoReq(req)) return true;
+  const role = getCreatorRole(req, repsList, motoristasList);
+  return role === "motorista";
 }
 
 

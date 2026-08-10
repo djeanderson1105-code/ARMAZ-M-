@@ -734,6 +734,7 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
                   >
                     <option value="cx">📦 SKU Fechado (CX)</option>
+                    <option value="und">🧪 UND (Unidade Avulsa)</option>
                   </select>
                 </div>
               </div>

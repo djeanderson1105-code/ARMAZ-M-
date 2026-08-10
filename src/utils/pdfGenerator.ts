@@ -278,9 +278,13 @@ export async function exportRegistrationPdf(
     const qty = String(it.quantidade || 1);
     
     const isFaltaSkuCompleto = (it.motivo || req.motivo || "").toLowerCase().includes("completo") || (it.motivo || req.motivo || "").toLowerCase().includes("fechado");
-    const defaultUm = isFaltaSkuCompleto ? "SKU" : "UND";
-    const rawUm = String(it.unidadeMedida || "").toUpperCase();
-    const um = rawUm && rawUm !== "CX" ? rawUm : defaultUm;
+    const rawUm = String(it.unidadeMedida || "").toUpperCase().trim();
+    let um = "SKU";
+    if (rawUm === "UND" || rawUm === "UN" || rawUm === "UNIDADE") {
+      um = isFaltaSkuCompleto ? "SKU" : "UND";
+    } else {
+      um = "SKU";
+    }
     const motive = it.produtoAhEnviar ? `Enviar: ${it.produtoAhEnviar}` : (it.motivo || req.motivo || "-");
 
     doc.text(code, 16, y + 5);
