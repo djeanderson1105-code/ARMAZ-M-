@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, getDisplayCadastroUser, getCreatorRole, isFaltaOrInversaoReq, isAllowedInPending } from "../types";
+import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, getDisplayCadastroUser, getCreatorRole, isFaltaOrInversaoReq, isAllowedInPending, isInversaoOrSwapReq, calculateValeRateio, isDriverX } from "../types";
 import AvariasPackagingChart from "./AvariasPackagingChart";
 import { getApiUrl } from "../utils/apiUrl";
 import { safeSetItem } from "../utils/apiSync";
 import { useSstrData } from "../context/SstrDataContext";
-import { PRODUCT_DATABASE, calculateItemValue, calculateItemHL, calculateRequestValueAndHL, getUnitLabel } from "../data/products";
+import { PRODUCT_DATABASE, getProductsDatabase, calculateItemValue, calculateItemHL, calculateRequestValueAndHL, getUnitLabel } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
 import { getHectoFactor, calculateHL } from "../utils/hectoFactors";
 import { exportRegistrationPdf, generatePdfFilename, NETWORK_REGISTROS_PATH } from "../utils/pdfGenerator";
@@ -239,6 +239,7 @@ const isFaltaOrInversao = (req: PendingRequest): boolean => {
 
 // Helper to check if request is an inversion / swap request
 const isSwapRequest = (req: PendingRequest): boolean => {
+  if (isInversaoOrSwapReq(req)) return true;
   const m = (req.motivo || "").toLowerCase().trim();
   if (m.includes("invers") || m.includes("swap") || m.includes("troca de sku")) return true;
   if (req.items && req.items.some(item => {
@@ -476,6 +477,18 @@ export default function PendingRequestsTab() {
       });
     }
   }, [requests, repsList, motoristasList, savePendingRequest]);
+
+  // Auto-purge any historical vales that were generated for Inversion (inversão não gera vale)
+  useEffect(() => {
+    if (!valesHistorico || valesHistorico.length === 0) return;
+    const reqMap = new Map(requests.map(r => [r.id, r]));
+    valesHistorico.forEach(v => {
+      const targetReq = reqMap.get(v.requestId || v.originalRequest?.id) || v.originalRequest;
+      if (targetReq && (isSwapRequest(targetReq) || isInversaoOrSwapReq(targetReq) || isInversaoOrSwapReq(v))) {
+        deleteValeEntry(v.id);
+      }
+    });
+  }, [valesHistorico, requests, deleteValeEntry]);
   const [filterEspelhoDate, setFilterEspelhoDate] = useState(() => {
     return new Date().toLocaleDateString("pt-BR");
   });
@@ -1082,14 +1095,21 @@ export default function PendingRequestsTab() {
   }) => {
     const code = data.itemCode.trim();
     const cleanCode = code.replace(/^0+/, "");
-    const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === code || p.codigo === cleanCode || p.descricao.toLowerCase().includes(code.toLowerCase()));
+    const prodsDb = getProductsDatabase();
+    const dbProduct = prodsDb.find(p => p.codigo === code || p.codigo === cleanCode || p.descricao.toLowerCase().includes(code.toLowerCase()));
 
     const factor = dbProduct?.fatorHecto || getHectoFactor(code);
     const embalagem = dbProduct?.fator || 12;
     const isUnd = data.unidadeMedida === "und";
     const hl = isUnd ? Number((data.quantidade * (factor / embalagem)).toFixed(4)) : Number((data.quantidade * factor).toFixed(4));
 
-    const boxPrice = (dbProduct?.valor && dbProduct.valor > 0) ? dbProduct.valor : 98.50;
+    let boxPrice = dbProduct?.valor || 0;
+    if (!boxPrice || boxPrice <= 0) {
+      const promaxMatch = promaxRecords.find(r => r.produto === code || r.produto === cleanCode);
+      if (promaxMatch?.valorUnitario && promaxMatch.valorUnitario > 0) {
+        boxPrice = promaxMatch.valorUnitario < 15 ? (promaxMatch.valorUnitario * embalagem) : promaxMatch.valorUnitario;
+      }
+    }
     const unitPrice = isUnd ? Number((boxPrice / embalagem).toFixed(2)) : boxPrice;
     const totalPrice = Number((unitPrice * data.quantidade).toFixed(2));
 
@@ -1702,6 +1722,13 @@ export default function PendingRequestsTab() {
 
   // Helper to create and save a Vale automatically when classified as delivery/unloading error ("entrega")
   const createAndSaveVale = useCallback((req: PendingRequest) => {
+    // Inversions NEVER generate vales
+    if (isSwapRequest(req) || isInversaoOrSwapReq(req)) {
+      const deterministicId = `vale_${req.id}`;
+      deleteValeEntry(deterministicId);
+      return;
+    }
+
     const cast = req as any;
     const printableItems = req.items && req.items.length > 0 ? req.items : [
       {
@@ -1737,14 +1764,16 @@ export default function PendingRequestsTab() {
     };
 
     saveValeEntry(newValeEntry);
-  }, [promaxRecords, saveValeEntry]);
+  }, [promaxRecords, saveValeEntry, deleteValeEntry]);
 
-  // Filter vales displayed in tab to ONLY those whose request was reviewed and classified as "entrega" (Erro de Descarregamento)
+  // Filter vales displayed in tab to ONLY those whose request was reviewed and classified as "entrega" (Erro de Descarregamento) and NOT inversion
   const displayVales = useMemo(() => {
     const reqMap = new Map(requests.map(r => [r.id, r]));
     return valesHistorico.filter(v => {
-      const targetReq = reqMap.get(v.requestId || v.originalRequest?.id);
+      if (isInversaoOrSwapReq(v)) return false;
+      const targetReq = reqMap.get(v.requestId || v.originalRequest?.id) || v.originalRequest;
       if (targetReq) {
+        if (isSwapRequest(targetReq) || isInversaoOrSwapReq(targetReq)) return false;
         return (targetReq as any).reviewedByControle === true && (targetReq as any).faltaTipoErro === "entrega";
       }
       return (v.originalRequest as any)?.reviewedByControle === true && (v.originalRequest as any)?.faltaTipoErro === "entrega";
@@ -5595,19 +5624,31 @@ export default function PendingRequestsTab() {
                           })()}
 
                           {/* Crew Charge slip */}
-                          <button
-                            onClick={() => setSelectedPrintDoc({ type: "vale", request: req })}
-                            disabled={cast.faltaTipoErro !== "entrega"}
-                            className={`flex-1 py-1.5 rounded-lg text-[9px] font-bold flex items-center justify-center gap-1.5 transition-all ${
-                              cast.faltaTipoErro === "entrega"
-                                ? "bg-slate-950 hover:bg-slate-850 border border-slate-800 text-amber-500 cursor-pointer"
-                                : "bg-slate-950/20 border border-transparent text-slate-650 cursor-not-allowed"
-                            }`}
-                            title={cast.faltaTipoErro === "entrega" ? "Gerar auto de infração / cobrança (vale) para assinatura do motorista e equipe" : "Vale disponível apenas para Erro de Descarregamento / Entrega"}
-                          >
-                            <Signature className="w-3 h-3" />
-                            <span>Vale Motorista</span>
-                          </button>
+                          {(() => {
+                            const isSwap = isSwapRequest(req) || isInversaoOrSwapReq(req);
+                            const canGenerateVale = !isSwap && cast.faltaTipoErro === "entrega";
+                            return (
+                              <button
+                                onClick={() => setSelectedPrintDoc({ type: "vale", request: req })}
+                                disabled={!canGenerateVale}
+                                className={`flex-1 py-1.5 rounded-lg text-[9px] font-bold flex items-center justify-center gap-1.5 transition-all ${
+                                  canGenerateVale
+                                    ? "bg-slate-950 hover:bg-slate-850 border border-slate-800 text-amber-500 cursor-pointer"
+                                    : "bg-slate-950/20 border border-transparent text-slate-650 cursor-not-allowed opacity-50"
+                                }`}
+                                title={
+                                  isSwap
+                                    ? "Inversão não gera vale (apenas compensação física de mercadoria)"
+                                    : (cast.faltaTipoErro === "entrega"
+                                      ? "Gerar auto de infração / cobrança (vale) para assinatura do motorista e equipe"
+                                      : "Vale disponível apenas para Erro de Descarregamento / Entrega")
+                                }
+                              >
+                                <Signature className="w-3 h-3" />
+                                <span>Vale Motorista</span>
+                              </button>
+                            );
+                          })()}
 
                           {/* Return to pending option (Icon-only, Yellow) */}
                           <button
@@ -6700,23 +6741,15 @@ export default function PendingRequestsTab() {
             if (parts[1]) h2Name = parts[1];
           }
 
-          let count = 1; // Always has the driver
-          const crew: Array<{ role: string; name: string; cpf?: string }> = [
-            { role: "Motorista", name: driverName, cpf: driverCpf }
-          ];
-
-          if (h1Name && h1Name.trim().length > 0) {
-            count++;
-            crew.push({ role: "Ajudante 1", name: h1Name, cpf: h1Cpf });
-          }
-          if (h2Name && h2Name.trim().length > 0) {
-            count++;
-            crew.push({ role: "Ajudante 2", name: h2Name, cpf: h2Cpf });
-          }
-
-          const individualValue = totalPricingValue / count;
-
-          return { count, crew, individualValue };
+          return calculateValeRateio(
+            totalPricingValue,
+            driverName,
+            driverCpf,
+            h1Name,
+            h1Cpf,
+            h2Name,
+            h2Cpf
+          );
         };
 
         return (
@@ -7257,35 +7290,29 @@ export default function PendingRequestsTab() {
                     if (parts[1]) h2Name = parts[1];
                   }
 
-                  let count = 1;
-                  const crew: Array<{ role: string; name: string; cpf?: string }> = [
-                    { role: "Motorista", name: driverName, cpf: driverCpf }
-                  ];
-
-                  if (h1Name && h1Name.trim().length > 0) {
-                    count++;
-                    crew.push({ role: "Ajudante 1", name: h1Name, cpf: h1Cpf });
-                  }
-                  if (h2Name && h2Name.trim().length > 0) {
-                    count++;
-                    crew.push({ role: "Ajudante 2", name: h2Name, cpf: h2Cpf });
-                  }
-
-                  const individualValue = currentDocTotalVal / count;
+                  const rateio = calculateValeRateio(
+                    currentDocTotalVal,
+                    driverName,
+                    driverCpf,
+                    h1Name,
+                    h1Cpf,
+                    h2Name,
+                    h2Cpf
+                  );
 
                   return (
-                    <div className="mt-2.5 p-2 bg-rose-50 border border-rose-200 rounded text-xs text-left font-sans">
-                      <span className="text-rose-900 uppercase font-extrabold text-[8.5px] block border-b border-rose-200/50 pb-0.5 mb-1 tracking-wider">
-                        📊 RATEIO DE PAGAMENTO DO VALE (DIVISÃO EM {count} INTEGRANTE(S)):
+                    <div className={`mt-2.5 p-2 rounded text-xs text-left font-sans ${rateio.isDriverX ? "bg-purple-50 border border-purple-200" : "bg-rose-50 border border-rose-200"}`}>
+                      <span className={`uppercase font-extrabold text-[8.5px] block border-b pb-0.5 mb-1 tracking-wider ${rateio.isDriverX ? "text-purple-900 border-purple-200" : "text-rose-900 border-rose-200/50"}`}>
+                        📊 RATEIO DE PAGAMENTO DO VALE {rateio.isDriverX ? `(MOTORISTA X ISENTO - DIVIDIDO EM ${rateio.count} AJUDANTE(S)):` : `(DIVISÃO EM ${rateio.count} INTEGRANTE(S)):`}
                       </span>
                       <div className="space-y-0.5">
-                        {crew.map((member, idx) => (
+                        {rateio.crew.map((member, idx) => (
                           <div key={idx} className="flex justify-between items-center text-[10px] text-slate-800">
                             <span>
                               <strong>{idx + 1}. {member.role}:</strong> {member.name}
                             </span>
-                            <span className="font-mono font-black text-rose-700">
-                              {formatCurrency(individualValue)} {count === 1 ? "(100% Integral)" : `(1/${count} do Valor)`}
+                            <span className={`font-mono font-black ${member.isExempt ? "text-purple-600 italic" : "text-rose-700"}`}>
+                              {member.isExempt ? "R$ 0,00 (ISENTO)" : `${formatCurrency(member.value)} (${member.label})`}
                             </span>
                           </div>
                         ))}

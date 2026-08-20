@@ -601,7 +601,7 @@ async function startServer() {
         }
       });
 
-      const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-3.6-flash"];
+      const modelsToTry = ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite", "gemini-2.5-flash-preview-12-2025"];
       let responseText = "";
       let lastError: any = null;
 
@@ -666,20 +666,47 @@ Diga ao usuário que você está respondendo com base nas informações carregad
         return res.json({ text: responseText });
       }
 
-      const errMsg = lastError?.message || "Serviço temporariamente indisponível";
-      if (errMsg.includes("503") || errMsg.includes("high demand") || errMsg.includes("UNAVAILABLE")) {
+      let cleanErrorMessage = "Serviço temporariamente indisponível";
+      if (lastError) {
+        try {
+          if (typeof lastError.message === "string") {
+            const trimmed = lastError.message.trim();
+            if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+              const parsed = JSON.parse(trimmed);
+              cleanErrorMessage = parsed?.error?.message || parsed?.message || trimmed;
+            } else {
+              cleanErrorMessage = lastError.message;
+            }
+          } else if (lastError?.error?.message) {
+            cleanErrorMessage = lastError.error.message;
+          }
+        } catch {
+          cleanErrorMessage = String(lastError.message || lastError);
+        }
+      }
+
+      if (cleanErrorMessage.includes("503") || cleanErrorMessage.includes("high demand") || cleanErrorMessage.includes("UNAVAILABLE")) {
         return res.status(503).json({
           error: "O serviço de Inteligência Artificial do Google Gemini está enfrentando uma alta demanda temporária no servidor (Erro 503). Por favor, aguarde alguns segundos e tente novamente."
         });
       }
 
       return res.status(500).json({
-        error: `Erro ao processar com assistente inteligente: ${errMsg}`
+        error: `Erro ao processar com assistente inteligente: ${cleanErrorMessage}`
       });
     } catch (err: any) {
       console.error("[GEMINI-ASSISTANT] Server-side error:", err);
+      let errMsg = err?.message || "Serviço temporariamente indisponível";
+      try {
+        if (typeof errMsg === "string" && errMsg.trim().startsWith("{")) {
+          const parsed = JSON.parse(errMsg);
+          errMsg = parsed?.error?.message || parsed?.message || errMsg;
+        }
+      } catch {
+        // keep errMsg
+      }
       res.status(500).json({ 
-        error: `Erro ao processar com assistente inteligente: ${err?.message || "Serviço temporariamente indisponível"}` 
+        error: `Erro ao processar com assistente inteligente: ${errMsg}` 
       });
     }
   });

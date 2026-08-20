@@ -595,7 +595,22 @@ export default function ConsolidatedView({
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || "Erro geral do servidor ao processar.");
+        let errorMsg = "Erro geral do servidor ao processar.";
+        if (typeof data.error === "object" && data.error !== null) {
+          errorMsg = data.error.message || JSON.stringify(data.error);
+        } else if (typeof data.error === "string") {
+          try {
+            if (data.error.trim().startsWith("{")) {
+              const parsed = JSON.parse(data.error);
+              errorMsg = parsed?.error?.message || parsed?.message || data.error;
+            } else {
+              errorMsg = data.error;
+            }
+          } catch {
+            errorMsg = data.error;
+          }
+        }
+        throw new Error(errorMsg);
       }
 
       setChatHistory(prev => [...prev, { role: "assistant", text: data.text || "Não obtive resposta." }]);

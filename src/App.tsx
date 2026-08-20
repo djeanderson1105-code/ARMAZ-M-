@@ -14,6 +14,7 @@ import PauBrasilLogo from "./components/PauBrasilLogo";
 import ManagerLogin from "./components/ManagerLogin";
 import ManagersTab from "./components/ManagersTab";
 import PendingRequestsTab from "./components/PendingRequestsTab";
+import FaltasInversoesDashboard from "./components/FaltasInversoesDashboard";
 import RankingsView from "./components/RankingsView";
 import SstrOperationalAssistant from "./components/SstrOperationalAssistant";
 import DatabaseQuotaView from "./components/DatabaseQuotaView";
@@ -41,7 +42,8 @@ import {
   Laptop,
   Info,
   Sun,
-  Moon
+  Moon,
+  PieChart
 } from "lucide-react";
 
 import { SstrDataProvider, useSstrData } from "./context/SstrDataContext";
@@ -62,7 +64,7 @@ function MainApp() {
   } = useSstrData();
 
   const [activePortal, setActivePortal] = useState<"gestor" | "representante">("representante");
-  const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "import" | "export" | "pending" | "managers" | "rankings" | "dados">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "import" | "export" | "pending" | "faltas" | "managers" | "rankings" | "dados">("dashboard");
   const [isManagerLoggedIn, setIsManagerLoggedIn] = useState<boolean>(() => {
     return sessionStorage.getItem("is_sstr_manager_authenticated") === "true";
   });
@@ -452,7 +454,8 @@ function MainApp() {
                 {[
                   { id: "dashboard", label: "Dashboard Geral", icon: BarChart2 },
                   { id: "tracking", label: "Auditoria & Rastreamento", icon: Search },
-                  { id: "pending", label: "Solicitações Pendentes", icon: Clock },
+                  { id: "pending", label: "Faltas, Inversões & Vales", icon: Clock },
+                  { id: "faltas", label: "BI Faltas & Inversões", icon: PieChart },
                   { id: "rankings", label: "Rankings SSTR", icon: Award },
                   { id: "import", label: "Atualizar Base (Lançamentos)", icon: Upload },
                   { id: "export", label: "Exportador & PDF", icon: Download },
@@ -531,6 +534,10 @@ function MainApp() {
 
               {activeTab === "pending" && (
                 <PendingRequestsTab />
+              )}
+
+              {activeTab === "faltas" && (
+                <FaltasInversoesDashboard />
               )}
 
               {activeTab === "rankings" && (

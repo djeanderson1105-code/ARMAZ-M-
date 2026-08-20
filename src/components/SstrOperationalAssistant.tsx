@@ -203,7 +203,22 @@ export default function SstrOperationalAssistant({ records }: SstrOperationalAss
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || "Falha ao comunicar com o servidor de inteligência artificial.");
+        let errorMsg = "Falha ao comunicar com o servidor de inteligência artificial.";
+        if (typeof data.error === "object" && data.error !== null) {
+          errorMsg = data.error.message || JSON.stringify(data.error);
+        } else if (typeof data.error === "string") {
+          try {
+            if (data.error.trim().startsWith("{")) {
+              const parsed = JSON.parse(data.error);
+              errorMsg = parsed?.error?.message || parsed?.message || data.error;
+            } else {
+              errorMsg = data.error;
+            }
+          } catch {
+            errorMsg = data.error;
+          }
+        }
+        throw new Error(errorMsg);
       }
 
       setMessages(prev => [...prev, {

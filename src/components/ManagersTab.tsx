@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { safeSetItem, syncExchangeRecordsConsolidated, syncArrayToFirestore } from "../utils/apiSync";
 import { useSstrData } from "../context/SstrDataContext";
-import { isFaltaOrInversaoReq } from "../types";
+import { isFaltaOrInversaoReq, isInversaoOrSwapReq } from "../types";
 import * as XLSX from "xlsx";
 import { parseProductExcel, recalculateAllRecordsWithProducts } from "../utils/productExcelImport";
 import { calculateItemValue } from "../data/products";
@@ -2163,7 +2163,7 @@ export default function ManagersTab() {
     }
   };
 
-  const handleAddProduct = (e: React.FormEvent) => {
+  const handleAddProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
@@ -2180,6 +2180,7 @@ export default function ManagersTab() {
     }
 
     const currentList = getProductsDatabase();
+    let updated: ProductInfo[] = [];
 
     if (editingProductCodigo) {
       if (codigo !== editingProductCodigo && currentList.some(p => p.codigo === codigo)) {
@@ -2187,20 +2188,22 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = currentList.map(p =>
+      updated = currentList.map(p =>
         p.codigo === editingProductCodigo
           ? { codigo, descricao, fator, valor, fatorHecto }
           : p
       );
       setProductsList(updated);
+      setProductsCache(updated);
       localStorage.setItem("sstr_products_database", JSON.stringify(updated));
       clearProductsCache();
       window.dispatchEvent(new Event("storage"));
+      await saveProductsList(updated);
 
       setNewProductCodigo("");
       setNewProductDescricao("");
       setNewProductFator("12");
-      setNewProductValor("98.50");
+      setNewProductValor("");
       setNewProductFatorHecto("0.05");
       setEditingProductCodigo(null);
       setSuccess(`Produto "${descricao}" atualizado com sucesso!`);
@@ -2210,24 +2213,45 @@ export default function ManagersTab() {
         return;
       }
 
-      const updated = [...currentList, { codigo, descricao, fator, valor, fatorHecto }];
+      updated = [...currentList, { codigo, descricao, fator, valor, fatorHecto }];
       setProductsList(updated);
+      setProductsCache(updated);
       localStorage.setItem("sstr_products_database", JSON.stringify(updated));
       clearProductsCache();
       window.dispatchEvent(new Event("storage"));
+      await saveProductsList(updated);
 
       setNewProductCodigo("");
       setNewProductDescricao("");
       setNewProductFator("12");
-      setNewProductValor("98.50");
+      setNewProductValor("");
       setNewProductFatorHecto("0.05");
       setSuccess(`Produto "${descricao}" cadastrado com sucesso!`);
+    }
+
+    // Automatically recalculate requests and vales with new product pricing
+    if (updated.length > 0) {
+      const { updatedRequests, updatedVales } = recalculateAllRecordsWithProducts(
+        updated,
+        pendingRequests,
+        vales,
+        records
+      );
+
+      for (const req of updatedRequests) {
+        await savePendingRequest(req);
+      }
+      for (const vale of updatedVales) {
+        if (!isInversaoOrSwapReq(vale) && !isInversaoOrSwapReq(vale.originalRequest)) {
+          await saveValeEntry(vale);
+        }
+      }
     }
 
     setTimeout(() => setSuccess(null), 3000);
   };
 
-  const handleDeleteProduct = (codigo: string) => {
+  const handleDeleteProduct = async (codigo: string) => {
     setError(null);
     setSuccess(null);
     
@@ -2242,9 +2266,11 @@ export default function ManagersTab() {
 
     const updated = currentList.filter(p => p.codigo !== codigo);
     setProductsList(updated);
+    setProductsCache(updated);
     localStorage.setItem("sstr_products_database", JSON.stringify(updated));
     clearProductsCache();
     window.dispatchEvent(new Event("storage"));
+    await saveProductsList(updated);
 
     setSuccess(`Produto "${target.descricao}" excluído com sucesso.`);
     setConfirmDeleteProduct(null);

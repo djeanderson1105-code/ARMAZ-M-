@@ -180,7 +180,8 @@ export const DEFAULT_MOTORISTAS_ROTAS: Record<string, RouteDriverInfo> = {
   "R120": { rota: "R120", nome: "EDILSON DE ANDRADE LIMA JUNIOR", veiculo: "Motorista de Distribuição" },
   "R121": { rota: "R121", nome: "JEFFERSON JONES PAULINO COSTA", veiculo: "Motorista de Distribuição" },
   "R122": { rota: "R122", nome: "JOSE MATUZALEM PONTES DE OLIVEIRA", veiculo: "Motorista de Distribuição" },
-  "R123": { rota: "R123", nome: "JOSICLAUDIO DE OLIVEIRA RODRIGUES", veiculo: "Motorista de Distribuição" }
+  "R123": { rota: "R123", nome: "JOSICLAUDIO DE OLIVEIRA RODRIGUES", veiculo: "Motorista de Distribuição" },
+  "X": { rota: "X", nome: "X", veiculo: "Motorista Operacional (Sem Cobrança / Não Rateia)" }
 };
 
 let cachedMotoristasRotas: Record<string, RouteDriverInfo> | null = null;
@@ -303,9 +304,14 @@ export interface PendingRequest {
   baixadaUser?: string;
 
   // Shortage physical settlement properties (Faltas e Inversões)
+  tipoRegistroFalta?: boolean;
+  gerouVale?: boolean;
+  valeId?: string;
   faltaBaixa?: boolean;
   faltaBaixaDate?: string;
+  faltaDataBaixa?: string;
   faltaBaixaUser?: string;
+  faltaUsuarioBaixa?: string;
   faltaBaixaReciboName?: string;
   faltaBaixaReciboUrl?: string;
   faltaBaixaReciboType?: string;
@@ -336,6 +342,7 @@ export interface PendingRequest {
   placaVeiculo?: string;
   itemPlates?: Record<string, string>;
   lembreteNotificacao?: boolean;
+  reviewedByControle?: boolean;
 }
 
 export interface CrewMember {
@@ -390,8 +397,113 @@ export const DEFAULT_LISTA_CREW: CrewMember[] = [
   { nome: "RENAN DOS SANTOS LIMA", cargo: "AJUDANTE DE DISTRIBUICAO", cpf: "154.483.594-93" },
   { nome: "IRIMARQUE JOSE BATISTA DOS SANTOS", cargo: "AJUDANTE DE DISTRIBUICAO", cpf: "095.506.644-14" },
   { nome: "JORGE DO CARMO DAMIANO", cargo: "AJUDANTE DE DISTRIBUICAO", cpf: "049.127.314-20" },
-  { nome: "THIAGO JOSE SANTINO DOS SANTOS", cargo: "MOTORISTA DE DISTRIBUICAO", cpf: "061.720.027-08" }
+  { nome: "THIAGO JOSE SANTINO DOS SANTOS", cargo: "MOTORISTA DE DISTRIBUICAO", cpf: "061.720.027-08" },
+  { nome: "X", cargo: "MOTORISTA DE DISTRIBUICAO", cpf: "000.000.000-00" }
 ];
+
+export function isDriverX(driverName?: string | null): boolean {
+  if (!driverName) return false;
+  const clean = driverName.trim().toUpperCase();
+  return clean === "X" || clean === "MOTORISTA X" || clean === "X (SEM COBRANÇA)" || clean === "X - SEM COBRANÇA" || clean === "X (ISENTO)";
+}
+
+export interface ValeRateioResult {
+  isDriverX: boolean;
+  count: number;
+  individualValue: number;
+  driverExempt: boolean;
+  crew: Array<{
+    role: string;
+    name: string;
+    cpf?: string;
+    value: number;
+    isExempt: boolean;
+    label: string;
+  }>;
+}
+
+export function calculateValeRateio(
+  totalValue: number,
+  driverName?: string | null,
+  driverCpf?: string | null,
+  ajudante1Name?: string | null,
+  ajudante1Cpf?: string | null,
+  ajudante2Name?: string | null,
+  ajudante2Cpf?: string | null,
+  ajudantesCsv?: string | null
+): ValeRateioResult {
+  const isX = isDriverX(driverName);
+  let h1 = (ajudante1Name || "").trim();
+  let h1Cpf = ajudante1Cpf || "";
+  let h2 = (ajudante2Name || "").trim();
+  let h2Cpf = ajudante2Cpf || "";
+
+  if (!h1 && ajudantesCsv && ajudantesCsv.trim() && ajudantesCsv.toUpperCase() !== "NÃO DECLARADOS") {
+    const parts = ajudantesCsv.split(",").map(s => s.trim());
+    if (parts[0]) h1 = parts[0];
+    if (parts[1]) h2 = parts[1];
+  }
+
+  const helpers: Array<{ role: string; name: string; cpf?: string }> = [];
+  if (h1) helpers.push({ role: "Ajudante 1", name: h1, cpf: h1Cpf });
+  if (h2) helpers.push({ role: "Ajudante 2", name: h2, cpf: h2Cpf });
+
+  if (isX) {
+    if (helpers.length > 0) {
+      const splitValue = totalValue / helpers.length;
+      return {
+        isDriverX: true,
+        count: helpers.length,
+        individualValue: splitValue,
+        driverExempt: true,
+        crew: helpers.map((h) => ({
+          role: h.role,
+          name: h.name,
+          cpf: h.cpf,
+          value: splitValue,
+          isExempt: false,
+          label: helpers.length === 1 ? "100% Integral" : `1/${helpers.length} do Valor`
+        }))
+      };
+    } else {
+      // Driver X with no helpers registered yet
+      return {
+        isDriverX: true,
+        count: 1,
+        individualValue: totalValue,
+        driverExempt: true,
+        crew: [{
+          role: "Equipe Ajudante",
+          name: "Ajudante (A Definir)",
+          cpf: "",
+          value: totalValue,
+          isExempt: false,
+          label: "100% Integral"
+        }]
+      };
+    }
+  } else {
+    const fullCrew = [
+      { role: "Motorista", name: (driverName || "Motorista Não Declarado").trim(), cpf: driverCpf || "" },
+      ...helpers
+    ];
+    const splitValue = totalValue / fullCrew.length;
+    return {
+      isDriverX: false,
+      count: fullCrew.length,
+      individualValue: splitValue,
+      driverExempt: false,
+      crew: fullCrew.map(m => ({
+        role: m.role,
+        name: m.name,
+        cpf: m.cpf,
+        value: splitValue,
+        isExempt: false,
+        label: fullCrew.length === 1 ? "100% Integral" : `1/${fullCrew.length} do Valor`
+      }))
+    };
+  }
+}
 
 export const getListaCrew = (): CrewMember[] => {
   if (typeof window === "undefined") return DEFAULT_LISTA_CREW;
@@ -633,6 +745,20 @@ export function getCreatorRole(
 
   // Default to Admin for all platform / management creations
   return "admin";
+}
+
+export function isInversaoOrSwapReq(req: any): boolean {
+  if (!req) return false;
+  const m = String(req.motivo || "").toLowerCase().trim();
+  if (m.includes("invers") || m.includes("swap") || m.includes("troca de sku")) return true;
+  if (req.items && Array.isArray(req.items) && req.items.length > 0) {
+    return req.items.some((item: any) => {
+      const itemMotive = String(item.motivo || "").toLowerCase().trim();
+      const isItemSwap = !!item.produtoAhEnviar || !!item.produtoARecolher;
+      return isItemSwap || itemMotive.includes("invers") || itemMotive.includes("swap") || itemMotive.includes("troca de sku");
+    });
+  }
+  return false;
 }
 
 export function isFaltaOrInversaoReq(req: PendingRequest): boolean {

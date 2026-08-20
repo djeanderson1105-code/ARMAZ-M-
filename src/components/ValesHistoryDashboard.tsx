@@ -1,8 +1,40 @@
-import React, { useState, useMemo } from "react";
-import { Search, Printer, DollarSign, TrendingUp, Layers, UserCheck, AlertCircle, Trash2, PlusCircle, X, FileSpreadsheet, RefreshCw, CheckCircle2, Eye } from "lucide-react";
+import React, { useState, useMemo, useEffect } from "react";
+import { 
+  Search, 
+  Printer, 
+  DollarSign, 
+  TrendingUp, 
+  Layers, 
+  UserCheck, 
+  AlertCircle, 
+  Trash2, 
+  PlusCircle, 
+  X, 
+  FileSpreadsheet, 
+  RefreshCw, 
+  CheckCircle2, 
+  Eye,
+  Edit3,
+  User,
+  Users,
+  Check,
+  ShieldCheck,
+  Sparkles
+} from "lucide-react";
 import { exportValesPacotePrejuizoExcel } from "../utils/excelExport";
 import { useSstrData } from "../context/SstrDataContext";
-import { calculateRequestValueAndHL } from "../data/products";
+import { calculateRequestValueAndHL, getProductsDatabase } from "../data/products";
+import { 
+  isInversaoOrSwapReq, 
+  calculateValeRateio, 
+  isDriverX, 
+  MOTORISTAS_ROTAS, 
+  LISTA_CREW, 
+  getCrewDetailByName,
+  getMotoristasRotas,
+  getListaCrew,
+  PendingRequest
+} from "../types";
 
 export interface ValeEntry {
   id: string;
@@ -63,24 +95,147 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
   const [avulsoError, setAvulsoError] = useState<string | null>(null);
 
   // Recalculate Vales State
-  const { saveValeEntry, records: promaxRecords } = useSstrData();
+  const { saveValeEntry, deleteValeEntry, records: promaxRecords, pendingRequests, savePendingRequest } = useSstrData();
   const [isRecalculating, setIsRecalculating] = useState(false);
   const [recalculateModalOpen, setRecalculateModalOpen] = useState(false);
   const [recalculateSummary, setRecalculateSummary] = useState<{
     totalAnalyzed: number;
     totalUpdated: number;
+    totalDeletedInversions: number;
     changes: { id: string; nf: string; oldVal: number; newVal: number; oldHl: number; newHl: number }[];
   } | null>(null);
+
+  // Edit Driver & Crew Modal State
+  const [isEditDriverModalOpen, setIsEditDriverModalOpen] = useState(false);
+  const [editingVale, setEditingVale] = useState<ValeEntry | null>(null);
+  const [editMotoristaName, setEditMotoristaName] = useState("");
+  const [editMotoristaCpf, setEditMotoristaCpf] = useState("");
+  const [editAjudante1Name, setEditAjudante1Name] = useState("");
+  const [editAjudante1Cpf, setEditAjudante1Cpf] = useState("");
+  const [editAjudante2Name, setEditAjudante2Name] = useState("");
+  const [editAjudante2Cpf, setEditAjudante2Cpf] = useState("");
+  const [isSavingDriverEdit, setIsSavingDriverEdit] = useState(false);
+  const [driverEditFeedback, setDriverEditFeedback] = useState<string | null>(null);
+
+  const handleOpenEditDriverModal = (vale: ValeEntry) => {
+    setEditingVale(vale);
+    setEditMotoristaName(vale.motorista || "");
+    setEditMotoristaCpf(vale.motoristaCpf || "");
+    setEditAjudante1Name(vale.ajudante1 || "");
+    setEditAjudante1Cpf(vale.ajudante1Cpf || "");
+    setEditAjudante2Name(vale.ajudante2 || "");
+    setEditAjudante2Cpf(vale.ajudante2Cpf || "");
+    setDriverEditFeedback(null);
+    setIsEditDriverModalOpen(true);
+  };
+
+  const handleSaveDriverEdit = async () => {
+    if (!editingVale) return;
+    setIsSavingDriverEdit(true);
+
+    try {
+      const isX = isDriverX(editMotoristaName);
+      const cleanDriverName = editMotoristaName.trim() || (isX ? "X" : "Motorista Não Declarado");
+      const cleanDriverCpf = isX ? "000.000.000-00" : (editMotoristaCpf.trim() || "");
+
+      const helpersList: string[] = [];
+      if (editAjudante1Name.trim()) helpersList.push(editAjudante1Name.trim());
+      if (editAjudante2Name.trim()) helpersList.push(editAjudante2Name.trim());
+      const helpersCsv = helpersList.join(", ");
+
+      const updatedVale: ValeEntry = {
+        ...editingVale,
+        motorista: cleanDriverName,
+        motoristaCpf: cleanDriverCpf,
+        ajudante1: editAjudante1Name.trim(),
+        ajudante1Cpf: editAjudante1Cpf.trim(),
+        ajudante2: editAjudante2Name.trim(),
+        ajudante2Cpf: editAjudante2Cpf.trim(),
+        ajudantes: helpersCsv || (editAjudante1Name.trim() ? editAjudante1Name.trim() : "Sem Ajudantes"),
+        originalRequest: editingVale.originalRequest ? {
+          ...editingVale.originalRequest,
+          faltaMotorista: cleanDriverName,
+          faltaMotoristaCpf: cleanDriverCpf,
+          faltaAjudante1: editAjudante1Name.trim(),
+          faltaAjudante1Cpf: editAjudante1Cpf.trim(),
+          faltaAjudante2: editAjudante2Name.trim(),
+          faltaAjudante2Cpf: editAjudante2Cpf.trim(),
+          faltaAjudantes: helpersCsv
+        } : editingVale.originalRequest
+      };
+
+      // 1. Save updated Vale
+      await saveValeEntry(updatedVale);
+
+      // 2. Synchronize and update corresponding PendingRequest in "Faltas e Inversões"
+      const matchingReq = pendingRequests.find(r => 
+        r.id === editingVale.requestId || 
+        r.id === editingVale.originalRequest?.id || 
+        (r as any).valeId === editingVale.id ||
+        (r.nf === editingVale.nf && (r as any).mapa === (editingVale.originalRequest?.mapa || (editingVale as any).mapa))
+      );
+
+      if (matchingReq) {
+        const updatedReq: PendingRequest = {
+          ...matchingReq,
+          faltaMotorista: cleanDriverName,
+          faltaMotoristaCpf: cleanDriverCpf,
+          faltaAjudante1: editAjudante1Name.trim(),
+          faltaAjudante1Cpf: editAjudante1Cpf.trim(),
+          faltaAjudante2: editAjudante2Name.trim(),
+          faltaAjudante2Cpf: editAjudante2Cpf.trim(),
+          faltaAjudantes: helpersCsv
+        };
+        await savePendingRequest(updatedReq);
+      }
+
+      setDriverEditFeedback("Motorista e equipe atualizados com sucesso no Vale e na guia de Faltas/Inversões!");
+      setTimeout(() => {
+        setIsEditDriverModalOpen(false);
+        setEditingVale(null);
+        setDriverEditFeedback(null);
+      }, 1200);
+
+    } catch (err: any) {
+      alert("Erro ao sincronizar motorista: " + err.message);
+    } finally {
+      setIsSavingDriverEdit(false);
+    }
+  };
+
+  // Auto-cleanup any historical vales that were generated for Inversion (inversão não gera vale)
+  useEffect(() => {
+    if (!vales || vales.length === 0) return;
+    vales.forEach(v => {
+      if (isInversaoOrSwapReq(v) || isInversaoOrSwapReq(v.originalRequest)) {
+        deleteValeEntry(v.id);
+      }
+    });
+  }, [vales, deleteValeEntry]);
+
+  // Valid Vales (Strictly excluding any inversion / swap records)
+  const validVales = useMemo(() => {
+    return vales.filter(v => !isInversaoOrSwapReq(v) && !isInversaoOrSwapReq(v.originalRequest));
+  }, [vales]);
 
   const handleRecalculateAllVales = async () => {
     setIsRecalculating(true);
     let totalAnalyzed = 0;
     let totalUpdated = 0;
+    let totalDeletedInversions = 0;
     const changes: { id: string; nf: string; oldVal: number; newVal: number; oldHl: number; newHl: number }[] = [];
 
     for (const v of vales) {
       totalAnalyzed++;
       const origReq = v.originalRequest;
+      
+      // Inversions must NOT generate vales: purge them
+      if (isInversaoOrSwapReq(v) || isInversaoOrSwapReq(origReq)) {
+        await deleteValeEntry(v.id);
+        totalDeletedInversions++;
+        continue;
+      }
+
       if (!origReq) continue;
 
       const { valorTotal, hectolitros } = calculateRequestValueAndHL(origReq, promaxRecords);
@@ -114,6 +269,7 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
     setRecalculateSummary({
       totalAnalyzed,
       totalUpdated,
+      totalDeletedInversions,
       changes
     });
     setIsRecalculating(false);
@@ -131,15 +287,15 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
   // Extract unique routes for dropdown filter
   const uniqueRoutes = useMemo(() => {
     const rSet = new Set<string>();
-    vales.forEach(v => {
+    validVales.forEach(v => {
       if (v.rota) rSet.add(v.rota.trim());
     });
     return Array.from(rSet).sort();
-  }, [vales]);
+  }, [validVales]);
 
   // General Filtered Vales List
   const filteredVales = useMemo(() => {
-    return vales.filter(v => {
+    return validVales.filter(v => {
       const matchSearch = !searchTerm ||
         v.nf.toLowerCase().includes(searchTerm.toLowerCase()) ||
         v.motorista.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -154,7 +310,7 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
 
       return matchSearch && matchRoute && matchStatus;
     });
-  }, [vales, searchTerm, selectedRoute, selectedStatusFilter]);
+  }, [validVales, searchTerm, selectedRoute, selectedStatusFilter]);
 
   // Aggregate stats of filtered vales
   const stats = useMemo(() => {
@@ -167,7 +323,7 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
   // Driver ranking analytics (Top 5)
   const driverRanking = useMemo(() => {
     const rankMap: Record<string, { name: string; cpf: string; count: number; val: number; hl: number }> = {};
-    vales.forEach(v => {
+    validVales.forEach(v => {
       const name = v.motorista.trim().toUpperCase();
       if (!name || name === "NÃO DECLARADO") return;
       if (!rankMap[name]) {
@@ -181,13 +337,13 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
     return Array.from(Object.values(rankMap))
       .sort((a, b) => b.hl - a.hl) // Sort sorted by HL descending (standard Ambev metrics)
       .slice(0, 5);
-  }, [vales]);
+  }, [validVales]);
 
   // Helper/Crew ranking analytics (Top 5)
   const helperRanking = useMemo(() => {
     const rankMap: Record<string, { name: string; cpf: string; count: number; val: number; hl: number }> = {};
     
-    vales.forEach(v => {
+    validVales.forEach(v => {
       const helpersList = [];
       if (v.ajudante1 && v.ajudante1.trim()) {
         helpersList.push({ name: v.ajudante1.trim(), cpf: v.ajudante1Cpf });
@@ -217,7 +373,7 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
     return Array.from(Object.values(rankMap))
       .sort((a, b) => b.hl - a.hl) // Sort sorted by HL descending (volume impact)
       .slice(0, 5);
-  }, [vales]);
+  }, [validVales]);
 
   return (
     <div className="space-y-6 text-left" id="vales-dashboard-container">
@@ -487,10 +643,27 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
 
                     {/* Driver */}
                     <td className="p-3">
-                      <div className="font-semibold text-slate-200 uppercase truncate max-w-[140px]" title={vale.motorista}>
-                        {vale.motorista}
+                      <div className="flex items-center gap-1.5">
+                        <div className="font-semibold text-slate-200 uppercase truncate max-w-[140px]" title={vale.motorista}>
+                          {vale.motorista}
+                        </div>
+                        {isDriverX(vale.motorista) && (
+                          <span className="px-1.5 py-0.2 bg-purple-950 border border-purple-800 text-purple-300 font-mono text-[8px] font-bold rounded">
+                            X (Isento)
+                          </span>
+                        )}
                       </div>
-                      <span className="font-mono text-[9px] text-slate-500 block">CPF: {vale.motoristaCpf || "Ausente"}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[9px] text-slate-500 block">CPF: {vale.motoristaCpf || "Ausente"}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditDriverModal(vale)}
+                          className="text-[9px] text-indigo-400 hover:text-indigo-300 font-mono underline font-bold cursor-pointer"
+                          title="Alterar/corrigir motorista e ajudantes deste vale (sincroniza com faltas e inversões)"
+                        >
+                          Corrigir
+                        </button>
+                      </div>
                     </td>
 
                     {/* Helpers */}
@@ -544,6 +717,16 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
                     {/* Actions */}
                     <td className="p-3 text-center shrink-0">
                       <div className="flex items-center justify-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditDriverModal(vale)}
+                          className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-amber-500/80 rounded-lg text-[10px] font-bold text-amber-400 hover:text-white flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                          title="Corrigir condutor/equipe do vale e sincronizar com faltas e inversões"
+                        >
+                          <Edit3 className="w-3 h-3 text-amber-400" />
+                          <span>Alterar Condutor</span>
+                        </button>
+
                         {onInspectRequest && (
                           <button
                             type="button"
@@ -897,6 +1080,267 @@ export default function ValesHistoryDashboard({ vales, onReimprimir, onDeleteSin
               >
                 Entendido & Fechar
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Editar Condutor e Ajudantes do Vale (Sincroniza com Faltas e Inversões) */}
+      {isEditDriverModalOpen && editingVale && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm animate-fade-in text-left">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-xl w-full shadow-2xl space-y-4 relative overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
+                  <UserCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-white font-mono uppercase">
+                    Corrigir Condutor & Equipe do Vale
+                  </h3>
+                  <p className="text-[10.5px] text-slate-400">
+                    NF: <strong className="text-blue-400 font-mono">{editingVale.nf}</strong> | Rota: <strong className="text-amber-400 font-mono">{editingVale.rota}</strong>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditDriverModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5 text-xs font-sans">
+              {/* Driver Selector with Quick Driver "X" Selection */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-slate-300 font-mono uppercase">
+                    Motorista / Condutor *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditMotoristaName("X");
+                      setEditMotoristaCpf("000.000.000-00");
+                    }}
+                    className="text-[9.5px] font-mono font-bold text-purple-400 hover:text-purple-300 underline cursor-pointer"
+                  >
+                    + Selecionar Motorista "X" (Isento)
+                  </button>
+                </div>
+
+                {/* Predefined Driver Select */}
+                <select
+                  value={editMotoristaName}
+                  onChange={(e) => {
+                    const selectedName = e.target.value;
+                    setEditMotoristaName(selectedName);
+                    if (isDriverX(selectedName)) {
+                      setEditMotoristaCpf("000.000.000-00");
+                    } else {
+                      const crewMatch = getCrewDetailByName(selectedName);
+                      if (crewMatch?.cpf) setEditMotoristaCpf(crewMatch.cpf);
+                    }
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-10 text-xs text-white font-mono focus:border-amber-500 focus:outline-none mb-1.5"
+                >
+                  <option value="">-- Selecione na Lista de Condutores Cadastrados --</option>
+                  <option value="X" className="font-bold text-purple-400">
+                    ⭐ MOTORISTA X (Isento de Cobrança / Rateia só com Ajudantes)
+                  </option>
+                  {LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA") && c.nome !== "X").map((d) => (
+                    <option key={d.nome} value={d.nome}>{d.nome}</option>
+                  ))}
+                  {Object.values(MOTORISTAS_ROTAS).filter(r => r.nome !== "X").map((r) => (
+                    <option key={r.rota} value={r.nome}>{r.rota} - {r.nome}</option>
+                  ))}
+                </select>
+
+                {/* Or Custom Driver Name Input */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-2">
+                    <input
+                      type="text"
+                      placeholder="Ou digite o nome do condutor..."
+                      value={editMotoristaName}
+                      onChange={(e) => setEditMotoristaName(e.target.value.toUpperCase())}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono uppercase focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <input
+                      type="text"
+                      placeholder="CPF Condutor"
+                      value={editMotoristaCpf}
+                      onChange={(e) => setEditMotoristaCpf(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Helpers Selection */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                {/* Ajudante 1 */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-300 font-mono uppercase block">
+                    Ajudante 1
+                  </label>
+                  <select
+                    value={editAjudante1Name}
+                    onChange={(e) => {
+                      const sel = e.target.value;
+                      setEditAjudante1Name(sel);
+                      const crewMatch = getCrewDetailByName(sel);
+                      if (crewMatch?.cpf) setEditAjudante1Cpf(crewMatch.cpf);
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none mb-1"
+                  >
+                    <option value="">-- Selecionar da Equipe --</option>
+                    {LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map((a) => (
+                      <option key={a.nome} value={a.nome}>{a.nome}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    placeholder="Nome Ajudante 1"
+                    value={editAjudante1Name}
+                    onChange={(e) => setEditAjudante1Name(e.target.value.toUpperCase())}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-8 text-[11px] text-white font-mono uppercase focus:border-amber-500 focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="CPF Ajudante 1"
+                    value={editAjudante1Cpf}
+                    onChange={(e) => setEditAjudante1Cpf(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-8 text-[11px] text-slate-400 font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+
+                {/* Ajudante 2 */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-300 font-mono uppercase block">
+                    Ajudante 2 (Opcional)
+                  </label>
+                  <select
+                    value={editAjudante2Name}
+                    onChange={(e) => {
+                      const sel = e.target.value;
+                      setEditAjudante2Name(sel);
+                      const crewMatch = getCrewDetailByName(sel);
+                      if (crewMatch?.cpf) setEditAjudante2Cpf(crewMatch.cpf);
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none mb-1"
+                  >
+                    <option value="">-- Selecionar da Equipe --</option>
+                    {LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map((a) => (
+                      <option key={a.nome} value={a.nome}>{a.nome}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    placeholder="Nome Ajudante 2"
+                    value={editAjudante2Name}
+                    onChange={(e) => setEditAjudante2Name(e.target.value.toUpperCase())}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-8 text-[11px] text-white font-mono uppercase focus:border-amber-500 focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="CPF Ajudante 2"
+                    value={editAjudante2Cpf}
+                    onChange={(e) => setEditAjudante2Cpf(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-8 text-[11px] text-slate-400 font-mono focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* LIVE RATEIO PREVIEW */}
+              {(() => {
+                const totalVal = editingVale.valorTotal || 0;
+                const isX = isDriverX(editMotoristaName);
+                const rateio = calculateValeRateio(
+                  totalVal,
+                  editMotoristaName,
+                  editMotoristaCpf,
+                  editAjudante1Name,
+                  editAjudante1Cpf,
+                  editAjudante2Name,
+                  editAjudante2Cpf
+                );
+
+                return (
+                  <div className={`p-3 rounded-2xl border ${
+                    isX 
+                      ? "bg-purple-950/40 border-purple-800/60 text-purple-200" 
+                      : "bg-slate-950 border-slate-800 text-slate-300"
+                  }`}>
+                    <div className="flex items-center justify-between font-mono text-[10px] font-bold border-b border-slate-800/80 pb-1.5 mb-2">
+                      <span className="uppercase flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                        {isX ? "Regra Especial: Motorista X (Isento de Cobrança)" : "Rateio Padrão entre Integrantes"}
+                      </span>
+                      <span className="text-emerald-400 font-bold">Total: {formatCurrency(totalVal)}</span>
+                    </div>
+
+                    {isX ? (
+                      <div className="space-y-1 text-[11px]">
+                        <p className="text-purple-300 font-sans">
+                          ✓ O condutor <strong>X</strong> não participa do desconto. O valor integral de <strong>{formatCurrency(totalVal)}</strong> será rateado exclusivamente entre os <strong>{rateio.count} ajudante(s)</strong> cadastrados ({formatCurrency(rateio.individualValue)} cada).
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1 text-[11px]">
+                        <p className="text-slate-400 font-sans">
+                          Divisão igualitária entre <strong>{rateio.count} integrante(s)</strong> (Condutor + Ajudantes): <strong>{formatCurrency(rateio.individualValue)}</strong> por pessoa.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {driverEditFeedback && (
+                <div className="p-3 bg-emerald-950/80 border border-emerald-800 rounded-xl text-emerald-300 font-mono text-[11px] flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{driverEditFeedback}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between border-t border-slate-800 pt-3">
+              <span className="text-[10px] text-slate-500 font-sans">
+                A alteração atualiza o Vale e a guia de Faltas/Inversões instantaneamente.
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditDriverModalOpen(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveDriverEdit}
+                  disabled={isSavingDriverEdit}
+                  className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-xs font-extrabold rounded-xl cursor-pointer transition-all shadow-md hover:scale-[1.02] flex items-center gap-1.5"
+                >
+                  {isSavingDriverEdit ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Salvando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Salvar & Sincronizar</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

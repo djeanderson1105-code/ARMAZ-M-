@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { ExchangeRecord } from "../types";
+import { ExchangeRecord, calculateValeRateio, isDriverX } from "../types";
 import { PRODUCT_DATABASE } from "../data/products";
 import { getHectoFactor, getRecordHL } from "./hectoFactors";
 
@@ -124,8 +124,18 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
     const nb = orig.nb || "000000";
     const cliente = orig.nomeCliente || orig.razaoSocial || orig.nomeFantasia || "PONTO DE VENDA (PDV)";
 
-    // Helpers count & split calculation
-    let countPessoas = 1; // Motorista
+    const valorTotal = v.valorTotal || 0;
+    const rateioInfo = calculateValeRateio(
+      valorTotal,
+      v.motorista,
+      v.motoristaCpf,
+      v.ajudante1,
+      v.ajudante1Cpf,
+      v.ajudante2,
+      v.ajudante2Cpf,
+      v.ajudantes
+    );
+
     let h1 = v.ajudante1 || "";
     let h2 = v.ajudante2 || "";
     if (!h1 && v.ajudantes && v.ajudantes.trim() && v.ajudantes.toUpperCase() !== "NÃO DECLARADOS") {
@@ -134,11 +144,9 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
       if (parts[1]) h2 = parts[1];
     }
 
-    if (h1 && h1.trim()) countPessoas++;
-    if (h2 && h2.trim()) countPessoas++;
-
-    const valorTotal = v.valorTotal || 0;
-    const valorRateado = countPessoas > 0 ? Number((valorTotal / countPessoas).toFixed(2)) : valorTotal;
+    const countPessoas = rateioInfo.count;
+    const valorRateado = Number(rateioInfo.individualValue.toFixed(2));
+    const isX = rateioInfo.isDriverX;
 
     // SKUs string formatting
     let skusDetail = "";
@@ -167,7 +175,7 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
       "Nota Fiscal (NF)": v.nf || "-",
       "Mapa de Carga": mapa,
       "Rota / Setor": v.rota || "-",
-      "Motorista": v.motorista || "Não Declarado",
+      "Motorista": v.motorista ? (isX ? `${v.motorista} (Isento de Rateio)` : v.motorista) : "Não Declarado",
       "CPF Motorista": v.motoristaCpf || "Ausente",
       "Ajudante 1": h1 || "-",
       "CPF Ajudante 1": v.ajudante1Cpf || "Ausente",
@@ -177,7 +185,7 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
       "Status do Vale": statusLabel,
       "Volume Total (HL)": Number((v.hectolitros || 0).toFixed(4)),
       "Valor Total Prejuízo (R$)": Number(valorTotal.toFixed(2)),
-      "Total Integrantes Equipe": countPessoas,
+      "Total Integrantes Rateio": isX ? `${countPessoas} Ajudante(s) (Motorista X Isento)` : `${countPessoas} Integrante(s)`,
       "Valor Rateado p/ Pessoa (R$)": valorRateado,
       "Qtd Itens": v.itemsCount || 1,
       "Código Cliente (NB)": nb,
