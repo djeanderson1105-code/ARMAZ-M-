@@ -140,11 +140,6 @@ export default function ValesHistoryDashboard({
     changes: { id: string; nf: string; oldVal: number; newVal: number; oldHl: number; newHl: number }[];
   } | null>(null);
 
-  // Generator of Fictitious Vales Modal State
-  const [isGeneratorModalOpen, setIsGeneratorModalOpen] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generatorResult, setGeneratorResult] = useState<{ count: number; totalVal: number; totalHl: number; byMonth: Record<number, number> } | null>(null);
-
   // Edit Driver & Crew Modal State
   const [isEditDriverModalOpen, setIsEditDriverModalOpen] = useState(false);
   const [editingVale, setEditingVale] = useState<ValeEntry | null>(null);
@@ -671,20 +666,6 @@ export default function ValesHistoryDashboard({
 
         {/* Action Buttons & Tab Switcher */}
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-          {/* Fictitious Data Generator Trigger Button */}
-          <button
-            type="button"
-            onClick={() => {
-              setGeneratorResult(null);
-              setIsGeneratorModalOpen(true);
-            }}
-            className="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-extrabold px-3.5 py-2 rounded-xl text-xs font-mono transition-all shadow-lg flex items-center justify-center gap-1.5 cursor-pointer hover:scale-[1.02] active:scale-95 shrink-0"
-            title="Gerar base de vales fictícios de Janeiro a Julho usando média de Julho/Agosto com todos os motoristas"
-          >
-            <Sparkles className="w-4 h-4 text-slate-950 fill-slate-950" />
-            <span>Gerador Fictício (Jan a Jul)</span>
-          </button>
-
           {/* Mode Switcher Tabs */}
           <div className="flex bg-slate-950 border border-slate-800 p-1 rounded-xl">
             <button
@@ -1299,124 +1280,6 @@ export default function ValesHistoryDashboard({
               >
                 Sim, Excluir Vale
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* FICTITIOUS DATA GENERATOR MODAL */}
-      {isGeneratorModalOpen && (
-        <div 
-          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 animate-fade-in no-print"
-          onClick={() => !isGenerating && setIsGeneratorModalOpen(false)}
-        >
-          <div 
-            className="bg-slate-900 border border-slate-800 w-full max-w-xl rounded-3xl shadow-2xl overflow-hidden text-left"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-800 bg-slate-950">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400">
-                  <Sparkles className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-sm text-white font-mono uppercase">
-                    Gerador de Vales Fictícios (Janeiro a Julho)
-                  </h3>
-                  <p className="text-[10.5px] text-slate-400 font-sans">
-                    Distribuição automática calibrada na média de Julho e Agosto para todos os condutores
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsGeneratorModalOpen(false)}
-                disabled={isGenerating}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer disabled:opacity-30"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-4">
-              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2.5 text-xs text-slate-300">
-                <h4 className="font-bold text-white font-mono flex items-center gap-1.5 text-xs uppercase text-amber-400">
-                  <Info className="w-4 h-4" /> Parâmetros de Geração Automatizada:
-                </h4>
-                <ul className="space-y-1.5 text-[11px] list-disc list-inside text-slate-300 font-sans">
-                  <li><strong>Período:</strong> Janeiro, Fevereiro, Março, Abril, Maio, Junho e Julho de 2026.</li>
-                  <li><strong>Escala de Motoristas:</strong> Utiliza todos os <strong>17 motoristas cadastrados</strong> na base (incluindo o motorista <strong>X</strong> com regra de isenção e divisão aos ajudantes).</li>
-                  <li><strong>Ajudantes e Equipes:</strong> Associa ajudantes reais de distribuição da lista oficial.</li>
-                  <li><strong>Produtos Ambev:</strong> Seleciona itens oficiais (Skol, Brahma, Spaten, Stella, Guaraná Antarctica, etc.) com cálculo automático de Hectolitros e preços de tabela.</li>
-                  <li><strong>Calibragem:</strong> Mantém a média mensal de 4 a 6 vales por mês com valores controlados e equilibrados.</li>
-                </ul>
-              </div>
-
-              {generatorResult && (
-                <div className="p-4 bg-emerald-950/80 border border-emerald-700/80 rounded-2xl space-y-2 text-emerald-200">
-                  <div className="flex items-center gap-2 text-xs font-bold font-mono text-emerald-300">
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>Dados Fictícios Gerados com Sucesso!</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 text-center pt-1 font-mono text-xs">
-                    <div className="bg-slate-950/60 p-2 rounded-xl border border-emerald-900/60">
-                      <span className="text-[10px] text-slate-400 block">Total Vales</span>
-                      <strong className="text-white text-sm">{generatorResult.count}</strong>
-                    </div>
-                    <div className="bg-slate-950/60 p-2 rounded-xl border border-emerald-900/60">
-                      <span className="text-[10px] text-slate-400 block">Volume Total</span>
-                      <strong className="text-amber-400 text-sm">{generatorResult.totalHl.toFixed(3)} HL</strong>
-                    </div>
-                    <div className="bg-slate-950/60 p-2 rounded-xl border border-emerald-900/60">
-                      <span className="text-[10px] text-slate-400 block">Montante Total</span>
-                      <strong className="text-emerald-400 text-sm">{formatCurrency(generatorResult.totalVal)}</strong>
-                    </div>
-                  </div>
-                  <p className="text-[10.5px] font-sans text-emerald-300/80 pt-1">
-                    Os vales foram salvos nas guias de Histórico e sincronizados com a guia de Faltas/Inversões.
-                  </p>
-                </div>
-              )}
-
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-2 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={handleClearFictitiousVales}
-                  disabled={isGenerating}
-                  className="w-full sm:w-auto px-3.5 py-2 bg-slate-950 hover:bg-rose-950/80 hover:text-rose-300 text-slate-400 border border-slate-800 hover:border-rose-800 rounded-xl text-xs font-mono transition-colors cursor-pointer"
-                >
-                  Limpar Vales Fictícios
-                </button>
-
-                <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-                  <button
-                    type="button"
-                    onClick={() => setIsGeneratorModalOpen(false)}
-                    disabled={isGenerating}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs font-bold rounded-xl cursor-pointer"
-                  >
-                    Fechar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleGenerateFictitiousVales}
-                    disabled={isGenerating}
-                    className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-xs font-black rounded-xl cursor-pointer transition-all shadow-lg hover:scale-[1.02] flex items-center gap-1.5"
-                  >
-                    {isGenerating ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Gerando Vales...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Zap className="w-3.5 h-3.5 fill-slate-950" />
-                        <span>Gerar Vales Agora</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
             </div>
           </div>
         </div>
