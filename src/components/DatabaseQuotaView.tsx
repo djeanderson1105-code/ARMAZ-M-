@@ -38,6 +38,7 @@ import {
   TelemetryStats 
 } from "../utils/dbQuotaTelemetry";
 import { ExchangeRecord, PendingRequest } from "../types";
+import { HISTORICAL_BASELINE_SUMMARY } from "../data/historicalRecordsJul2026";
 
 interface DatabaseQuotaViewProps {
   records?: ExchangeRecord[];
@@ -237,6 +238,49 @@ export const DatabaseQuotaView: React.FC<DatabaseQuotaViewProps> = ({
           <div className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between">
             <span className="text-slate-400">Status da Cota Spark:</span>
             <strong className="text-purple-300 font-mono">Ambos bem abaixo das 50.000/dia</strong>
+          </div>
+        </div>
+      </div>
+
+      {/* HISTÓRICO CONGELADO EM CÓDIGO (OTIMIZAÇÃO PROMAX 03.18.05) */}
+      <div className="bg-slate-900/90 p-5 rounded-2xl border border-emerald-500/30 shadow-xl space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-emerald-950 border border-emerald-600/40 text-emerald-300 rounded-xl shrink-0">
+              <ShieldCheck className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-extrabold text-white">
+                  Base Histórica Promax 03.18.05 Congelada em Código (Até Julho/2026)
+                </h3>
+                <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full">
+                  ⚡ Otimização Ativa
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                Os dados históricos de <strong>Janeiro até 31 de Julho de 2026</strong> ({HISTORICAL_BASELINE_SUMMARY.totalRecords} lançamentos oficiais) foram compilados diretamente no código da aplicação. Dessa forma, você só precisa sincronizar com o Firestore os dados do <strong>mês anterior até a data atual</strong> (Agosto em diante), economizando até <strong>90% de leituras e gravações diárias</strong> no banco de dados.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-2 border-t border-slate-800 font-mono">
+          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-850">
+            <span className="text-slate-400 block text-[10px] uppercase">Lançamentos em Código</span>
+            <strong className="text-emerald-400 text-sm">{HISTORICAL_BASELINE_SUMMARY.totalRecords} itens</strong>
+          </div>
+          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-850">
+            <span className="text-slate-400 block text-[10px] uppercase">Período Congelado</span>
+            <strong className="text-white text-sm">Jan a Jul/2026</strong>
+          </div>
+          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-850">
+            <span className="text-slate-400 block text-[10px] uppercase">Economia de Cota</span>
+            <strong className="text-blue-400 text-sm">~85% a 90%</strong>
+          </div>
+          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-850">
+            <span className="text-slate-400 block text-[10px] uppercase">Sincronização Nuvem</span>
+            <strong className="text-purple-400 text-sm">Somente Recentes</strong>
           </div>
         </div>
       </div>

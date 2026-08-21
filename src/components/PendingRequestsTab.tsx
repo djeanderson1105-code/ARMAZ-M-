@@ -9,6 +9,7 @@ import { getPdvDatabase } from "../data/pdvData";
 import { getHectoFactor, calculateHL } from "../utils/hectoFactors";
 import { exportRegistrationPdf, generatePdfFilename, NETWORK_REGISTROS_PATH } from "../utils/pdfGenerator";
 import ValesHistoryDashboard, { ValeEntry } from "./ValesHistoryDashboard";
+import PdfDocumentViewer from "./PdfDocumentViewer";
 import { 
   Clock, 
   Truck,
@@ -6036,81 +6037,12 @@ export default function PendingRequestsTab() {
 
       {/* FULLSCREEN PHOTO / PDF ZOOM MODAL */}
       {zoomPhoto && (
-        <div 
-          className="fixed inset-0 z-[99999] bg-black/95 flex items-center justify-center p-3 sm:p-5 animate-fade-in no-print"
-          onClick={() => setZoomPhoto(null)}
-        >
-          <div 
-            className="relative w-full max-w-4xl max-h-[90vh] bg-slate-900 p-4 rounded-2xl border border-slate-800 shadow-2xl flex flex-col items-center"
-            onClick={e => e.stopPropagation()}
-          >
-            <button
-              onClick={() => setZoomPhoto(null)}
-              className="absolute -top-3 -right-3 p-2 bg-slate-950 text-slate-350 hover:text-white rounded-full border border-slate-800 shadow-md cursor-pointer z-10"
-              title="Fechar Visualizador"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            {/* Check if media is PDF or placeholder */}
-            {typeof zoomPhoto === "string" && (
-              zoomPhoto.startsWith("data:application/pdf") || 
-              zoomPhoto.toLowerCase().includes(".pdf") || 
-              zoomPhoto === "pdf_placeholder" || 
-              zoomPhoto.startsWith("blob:")
-            ) ? (
-              <div className="w-full flex flex-col items-center gap-3">
-                <div className="w-full flex justify-between items-center bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs font-mono">
-                  <div className="flex items-center gap-2 text-emerald-400 font-bold truncate">
-                    <FileText className="w-4 h-4 shrink-0 text-emerald-400" />
-                    <span className="truncate">Visualizador de Documento PDF</span>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {zoomPhoto !== "pdf_placeholder" && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const win = window.open();
-                          if (win) {
-                            win.document.write(`<iframe src="${zoomPhoto}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`);
-                          }
-                        }}
-                        className="px-2.5 py-1 bg-emerald-950 hover:bg-emerald-900 border border-emerald-700 text-emerald-300 rounded text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        <span>Abrir em Nova Aba</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {zoomPhoto === "pdf_placeholder" ? (
-                  <div className="w-full h-[65vh] bg-slate-955 rounded-xl border border-slate-800 flex flex-col items-center justify-center p-6 text-center space-y-3">
-                    <FileText className="w-16 h-16 text-emerald-400 animate-pulse" />
-                    <h4 className="text-sm font-bold text-slate-200">Documento PDF Registrado Oficialmente</h4>
-                    <p className="text-xs text-slate-400 max-w-md font-mono">
-                      O arquivo PDF do recibo/comprovante foi assinado e salvo com sucesso no banco de dados.
-                    </p>
-                  </div>
-                ) : (
-                  <iframe 
-                    src={zoomPhoto} 
-                    className="w-full h-[70vh] rounded-xl border border-slate-800 bg-slate-955 shadow-inner"
-                    title="Documento PDF"
-                  />
-                )}
-              </div>
-            ) : (
-              <img 
-                src={zoomPhoto} 
-                alt="Visualização" 
-                className="max-w-full max-h-[78vh] object-contain rounded-xl"
-                referrerPolicy="no-referrer"
-              />
-            )}
-            <p className="mt-2.5 text-[10px] font-mono text-slate-450">Clique fora do modal ou no ícone superior para fechar.</p>
-          </div>
-        </div>
+        <PdfDocumentViewer 
+          source={zoomPhoto} 
+          onClose={() => setZoomPhoto(null)} 
+          title="Visualizador de Documento / Recibo de Baixa"
+          fileName="comprovante_sstr.pdf"
+        />
       )}
 
       {/* DETAILED INSPECTION MODAL (ANÁLISE DE LANÇAMENTOS E ANEXOS) */}

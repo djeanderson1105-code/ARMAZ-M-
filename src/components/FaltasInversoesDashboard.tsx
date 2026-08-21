@@ -26,7 +26,17 @@ import {
 } from "../types";
 import { ValeEntry } from "./ValesHistoryDashboard";
 import { useSstrData } from "../context/SstrDataContext";
-import { PRODUCT_DATABASE, calculateRequestValueAndHL } from "../data/products";
+import { 
+  PRODUCT_DATABASE, 
+  calculateRequestValueAndHL,
+  calculateItemValue,
+  calculateItemHL,
+  getProductCatalogInfo,
+  getProductDescription,
+  getProductBoxPrice 
+} from "../data/products";
+import { isRecordReposicao } from "../utils/processTypes";
+import ShortageTreeBreakdown from "./ShortageTreeBreakdown";
 import * as XLSX from "xlsx";
 import { 
   Layers, 
@@ -117,14 +127,132 @@ export default function FaltasInversoesDashboard({
     }).format(val || 0);
   };
 
-  // Filter shortage requests for the dashboard
+  // Filter and unify ALL shortage & reposição requests (Total consolidado de Faltas e Inversões)
   const shortageRequests = useMemo(() => {
-    return requests.filter(r => {
+    const map = new Map<string, PendingRequest>();
+
+    // Process all representative shortage & reposição requests
+    requests.forEach((r, idx) => {
+      if (!r) return;
+      const rId = String(r.id || "");
+      if (rId.startsWith("rec_") || rId.startsWith("req_hist_short_")) return;
+
       const cast = r as any;
       const m = (r.motivo || "").toLowerCase();
-      const isShortage = m.includes("falta") || m.includes("invers") || m.includes("swap") || m.includes("reposi") || cast.tipoRegistroFalta === true || !!cast.faltaTipoErro;
-      return isShortage;
+      const subM = (r.subMotivo || cast.subMotivo || "").toLowerCase();
+      const obs = (r.observacao || cast.observacao || "").toLowerCase();
+      const just = (cast.justificativa || "").toLowerCase();
+
+      const isShortage = 
+        m.includes("falta") || 
+        m.includes("invers") || 
+        m.includes("swap") || 
+        m.includes("reposi") || 
+        cast.tipoRegistroFalta === true || 
+        !!cast.faltaTipoErro;
+
+      if (!isShortage) return;
+
+      // Discard rejected/cancelled requests that do not generate financial cost
+      if (cast.status === "reprovado" || cast.status === "cancelado" || cast.statusPromax === "reprovado" || cast.statusPromax === "cancelado") {
+        return;
+      }
+
+      const rawCode = String(r.item || cast.itemCode || cast.produto || "").trim();
+      const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
+      const prod = getProductCatalogInfo(rawCode);
+
+      const isUnd = ["und", "un", "unidade", "unidades"].includes(String(r.unidadeMedida || r.um || "").toLowerCase().trim());
+      const qty = Number(r.quantidade) || 1;
+      
+      const boxPrice = prod?.valor && prod.valor > 0 ? prod.valor : (r.customUnitPrice || cast.valorUnitario || 0);
+      const embalagem = prod?.fator || r.fatorEmbalagem || (isUnd ? 12 : 1);
+      const unitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
+      
+      // Calculate real item financial value based on SKU price and unit of measure (avoiding full NF invoice totals)
+      let calculatedVal = calculateItemValue({
+        item: rawCode,
+        quantidade: qty,
+        unidadeMedida: r.unidadeMedida || r.um,
+        fatorEmbalagem: embalagem,
+        customUnitPrice: r.customUnitPrice,
+        precoCalculated: cast.precoCalculated,
+        descricao: r.descricaoProduto,
+        motivo: r.motivo
+      });
+
+      if (!calculatedVal || calculatedVal <= 0) {
+        if (r.valorTotal && r.valorTotal > 0 && r.valorTotal < 2000) {
+          calculatedVal = Number(r.valorTotal.toFixed(2));
+        } else if (unitPrice > 0) {
+          calculatedVal = Number((unitPrice * qty).toFixed(2));
+        }
+      }
+
+      // Discard items with zero financial value
+      if (!calculatedVal || calculatedVal <= 0) {
+        return;
+      }
+
+      // Calculate accurate HL
+      let calculatedHl = calculateItemHL({
+        item: rawCode,
+        quantidade: qty,
+        unidadeMedida: r.unidadeMedida || r.um,
+        fatorEmbalagem: embalagem,
+        fatorHecto: prod?.fatorHecto || r.fatorHecto,
+        descricao: r.descricaoProduto
+      });
+      if (!calculatedHl || calculatedHl <= 0) {
+        const factorHl = prod?.fatorHecto || r.fatorHecto || 0.042;
+        calculatedHl = isUnd ? Number(((factorHl / embalagem) * qty).toFixed(4)) : Number((factorHl * qty).toFixed(4));
+      }
+
+      // Classify error: Carregamento (Armazém CD) vs Descarregamento (Rota / Entrega / Vales)
+      let errorType = cast.faltaTipoErro ? cast.faltaTipoErro.toLowerCase() : "";
+      if (!errorType) {
+        const isCarregamento = 
+          m.includes("carregamento") || 
+          m.includes("armazém") || 
+          m.includes("armazem") || 
+          m.includes("doca") || 
+          m.includes("separação") || 
+          m.includes("separacao") ||
+          subM.includes("carregamento") ||
+          subM.includes("palete") ||
+          subM.includes("doca") ||
+          obs.includes("carregamento") ||
+          obs.includes("armazém") ||
+          obs.includes("armazem") ||
+          just.includes("carregamento") ||
+          just.includes("armazém");
+
+        errorType = isCarregamento ? "carregamento" : "entrega";
+      }
+
+      const driverName = (r.faltaMotorista || cast.motorista || cast.nomeMotorista || "NÃO DECLARADO").trim().toUpperCase();
+      const isX = isDriverX(driverName);
+      const isCarreg = errorType === "carregamento";
+
+      const key = r.id || `shortage_${r.nf}_${r.item}_${r.data}_${idx}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          ...r,
+          id: key,
+          descricaoProduto: getProductDescription(rawCode, r.descricaoProduto),
+          valorTotal: calculatedVal,
+          hectolitros: calculatedHl,
+          motivo: isCarreg ? (r.motivo || "Falta de SKU no Carregamento (Armazém)") : (r.motivo || "Falta no Descarregamento (Rota / Entrega)"),
+          subMotivo: r.subMotivo || (isCarreg ? "Separação Incompleta no Palete da Doca" : "Divergência na Conferência do PDV"),
+          faltaTipoErro: errorType as "carregamento" | "entrega",
+          gerouVale: !isCarreg && !isX,
+          faltaMotorista: driverName,
+          tipoRegistroFalta: true
+        });
+      }
     });
+
+    return Array.from(map.values());
   }, [requests]);
 
   // Aggregate Metrics and Analytics
@@ -164,13 +292,14 @@ export default function FaltasInversoesDashboard({
 
     shortageRequests.forEach(req => {
       const cast = req as any;
-      const { valorTotal, hectolitros } = calculateRequestValueAndHL(req, promaxRecords);
+      const valorTotal = req.valorTotal || 0;
+      const hectolitros = req.hectolitros || 0;
       const isSwap = isInversaoOrSwapReq(req);
       const errorType = (cast.faltaTipoErro || "").toLowerCase();
       
       // Determine error category
       const isCarregamento = errorType === "carregamento" || (!errorType && isSwap);
-      const isDescarregamento = errorType === "entrega" || errorType === "descarregamento" || (!errorType && !isSwap && (cast.faltaMotorista || cast.gerouVale));
+      const isDescarregamento = errorType === "entrega" || errorType === "descarregamento" || (!errorType && !isSwap);
 
       // Parse date for monthly breakdown
       const dateStr = req.data || (req as any).createdAt || "";
@@ -179,14 +308,18 @@ export default function FaltasInversoesDashboard({
         if (dateStr.includes("/")) {
           const parts = dateStr.split("/");
           if (parts.length >= 2) {
-            monthIndex = Math.max(0, Math.min(11, parseInt(parts[1], 10) - 1));
+            const m = parseInt(parts[1], 10) - 1;
+            if (!isNaN(m) && m >= 0 && m <= 11) monthIndex = m;
           }
         } else if (dateStr.includes("-")) {
           const parts = dateStr.split("-");
           if (parts.length >= 2) {
-            monthIndex = Math.max(0, Math.min(11, parseInt(parts[1], 10) - 1));
+            const m = parseInt(parts[1], 10) - 1;
+            if (!isNaN(m) && m >= 0 && m <= 11) monthIndex = m;
           }
         }
+      } else if (req.timestamp) {
+        monthIndex = new Date(req.timestamp).getMonth();
       }
 
       if (isCarregamento) {
@@ -358,14 +491,14 @@ export default function FaltasInversoesDashboard({
         { nome: "ROMARIO RODRIGUES DA SILVA", cpf: "125.316.744-38" }
       ];
 
-      // Products to use for realistic low value shortages
+      // Products to use for realistic low value shortages (Official Ambev SKUs)
       const sampleProducts = [
-        { code: "1002", name: "SKOL LATA 350ML C24", price: 84.90, factor: 24, hl: 0.0840 },
-        { code: "1004", name: "BRAHMA DUPLO MALTE 350ML C24", price: 92.40, factor: 24, hl: 0.0840 },
-        { code: "1008", name: "CORONA EXTRA LONG NECK 330ML C24", price: 142.80, factor: 24, hl: 0.0792 },
-        { code: "1012", name: "BUDWEISER LATA 350ML C12", price: 46.80, factor: 12, hl: 0.0420 },
-        { code: "1015", name: "SPATEN PURO MALTE LN 355ML C24", price: 128.50, factor: 24, hl: 0.0852 },
-        { code: "1020", name: "GUARANA ANTARCTICA PET 2L C06", price: 48.00, factor: 6, hl: 0.1200 }
+        { code: "9068", name: "SKOL LATA 350ML CX CART C 24", price: 80.40, factor: 24, hl: 0.0840 },
+        { code: "28164", name: "CERV BRAHMA DUPLO MALTE 350ML CX 24", price: 89.76, factor: 24, hl: 0.0840 },
+        { code: "18836", name: "CORONA EXTRA N LONG NECK 330ML CX CART C 24", price: 118.01, factor: 24, hl: 0.0792 },
+        { code: "37450", name: "CERV BUDWEISER LATA 350ML C12", price: 41.69, factor: 12, hl: 0.0420 },
+        { code: "21020", name: "CERV SPATEN PURO MALTE LN 355ML C24", price: 104.90, factor: 24, hl: 0.0852 },
+        { code: "2349", name: "REFRIG GUARANA ANTARCTICA PET 2L C06", price: 28.50, factor: 6, hl: 0.1200 }
       ];
 
       // Target monthly loss values (< R$ 500 / month)
@@ -1074,12 +1207,25 @@ export default function FaltasInversoesDashboard({
             </div>
           </div>
 
-          {/* Bar Chart Visualization */}
-          <div className="h-72 w-full">
+          {/* Bar Chart Visualization with Click to Stratify */}
+          <div className="h-72 w-full cursor-pointer" title="Clique em qualquer mês para abrir a estratificação em árvore detalhada">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
                 data={filteredBarData}
                 margin={{ top: 10, right: 10, left: -15, bottom: 0 }}
+                onClick={(data: any) => {
+                  if (data && data.activePayload && data.activePayload.length > 0) {
+                    const payload = data.activePayload[0].payload;
+                    if (payload && payload.monthIdx !== undefined) {
+                      setSelectedMonth(payload.monthIdx);
+                      setTimeframeFilter("mes");
+                      setTimeout(() => {
+                        const el = document.getElementById("shortage-tree-breakdown");
+                        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }, 50);
+                    }
+                  }
+                }}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                 <XAxis 
@@ -1100,9 +1246,14 @@ export default function FaltasInversoesDashboard({
                       const data = payload[0].payload;
                       return (
                         <div className="bg-slate-950 border border-slate-800 p-3 rounded-xl shadow-2xl text-left font-sans text-xs space-y-1.5 z-50">
-                          <p className="font-extrabold text-white uppercase text-[11px] border-b border-slate-800 pb-1">
-                            {data.fullName} {selectedYear}
-                          </p>
+                          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1">
+                            <p className="font-extrabold text-white uppercase text-[11px]">
+                              {data.fullName} {selectedYear}
+                            </p>
+                            <span className="text-[9px] text-emerald-400 font-mono font-bold bg-emerald-950 px-1.5 py-0.2 rounded border border-emerald-800">
+                              Clique p/ Estratificar  árvore
+                            </span>
+                          </div>
                           <div className="space-y-1 text-[10px] font-mono">
                             <div className="flex justify-between items-center gap-4 text-blue-400">
                               <span>📦 Carregamento:</span>
@@ -1153,11 +1304,30 @@ export default function FaltasInversoesDashboard({
           </div>
 
           <div className="flex items-center justify-between text-[10px] text-slate-400 border-t border-slate-800 pt-2 font-sans">
-            <span>Dica: Alterne entre <strong>HL (Volume)</strong>, <strong>R$ (Financeiro)</strong> e <strong>Qtd</strong> para examinar diferentes ângulos operacionais.</span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-emerald-400 font-bold">💡 Dica:</span>
+              <span>Clique em qualquer mês ou barra do gráfico para estratificar os erros e o impacto financeiro em árvore.</span>
+            </span>
             <span className="font-mono text-slate-500 font-semibold">{filteredBarData.reduce((s, c) => s + c.totalCount, 0)} ocorrências no período</span>
           </div>
         </div>
       </div>
+
+      {/* 3.1 ESTRATIFICAÇÃO DETALHADA EM ÁRVORE HIERÁRQUICA (Hierarchical Tree Table Breakdown) */}
+      <ShortageTreeBreakdown
+        requests={shortageRequests}
+        vales={vales}
+        selectedMonth={timeframeFilter === "mes" ? selectedMonth : null}
+        onSelectMonth={(m) => {
+          if (m === null) {
+            setTimeframeFilter("ano");
+          } else {
+            setSelectedMonth(m);
+            setTimeframeFilter("mes");
+          }
+        }}
+        onSelectRequest={onSelectRequest}
+      />
 
       {/* 4. DRIVER RANKING & TIMELINE HIGHLIGHTS */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

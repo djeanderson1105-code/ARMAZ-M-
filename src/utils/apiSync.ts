@@ -26,6 +26,12 @@ import firebaseConfig from "../../firebase-applet-config.json";
 import { extractImagesToIDB, restoreImagesFromCache, initLargeKVCacheFromIDB, saveLargeKVToIDB, deleteLargeKVFromIDB } from "./indexedDbCache";
 import { parseCSVToRecords } from "./csvParser";
 import { RAW_SAMPLE_DATA } from "../sampleData";
+import { 
+  HISTORICAL_RECORDS_JAN_JUL_2026, 
+  filterDynamicRecentRecords, 
+  combineBaselineWithDynamic, 
+  isRecordInHistoricalPeriod 
+} from "../data/historicalRecordsJul2026";
 import { getProductsDatabase } from "../data/products";
 import { DEFAULT_LISTA_CREW, DEFAULT_REPRESENTATIVOS_SETOR, DEFAULT_MOTORISTAS_ROTAS } from "../types";
 import { getAuth } from "firebase/auth";
@@ -245,11 +251,60 @@ export function safeRemoveItem(key: string) {
   deleteLargeKVFromIDB(key).catch(err => console.error("[IDB-ERR] Delete failed:", err));
 }
 
-// OFFLINE QUEUE MANAGER: Ensures data stored locally is pushed to Firestore when network / quota recovers
+// OFFLINE QUEUE MANAGER & WRITE STREAM BACKPRESSURE THROTTLE
 interface QueueItem {
   key: string;
   value: any;
   timestamp: number;
+}
+
+let writeQueueChain: Promise<any> = Promise.resolve();
+let cooldownUntil = 0;
+let isFlushingOfflineQueue = false;
+
+export function isFirestoreInCooldown(): boolean {
+  return Date.now() < cooldownUntil;
+}
+
+/**
+ * Sequential Mutex for all Firestore write operations.
+ * Ensures only ONE batch/write is dispatched to Firestore at any time,
+ * preventing "Write stream exhausted maximum allowed queued writes" (resource-exhausted).
+ */
+export function enqueueFirestoreWrite<T>(task: () => Promise<T>): Promise<T | undefined> {
+  if (Date.now() < cooldownUntil) {
+    console.warn("[SYNC-THROTTLE] Write deferred/skipped due to active Firestore write stream cooldown.");
+    return Promise.resolve(undefined);
+  }
+
+  const runTask = async (): Promise<T | undefined> => {
+    if (Date.now() < cooldownUntil) {
+      return undefined;
+    }
+    try {
+      const result = await task();
+      // Gentle pacing (60ms) to allow Firestore gRPC/WebSocket stream to clear buffer
+      await new Promise(res => setTimeout(res, 60));
+      return result;
+    } catch (err: any) {
+      const errMsg = err?.message || String(err || "");
+      if (
+        errMsg.includes("resource-exhausted") || 
+        errMsg.includes("maximum allowed queued writes") || 
+        errMsg.includes("maximum backoff delay") || 
+        err?.code === "resource-exhausted"
+      ) {
+        console.warn("[SYNC-BACKOFF] Resource-exhausted / Write stream saturated detected. Setting 60s cooldown to allow Firestore stream recovery...", err);
+        cooldownUntil = Date.now() + 60000;
+        notifySyncIssue("Tráfego do banco de dados temporariamente saturado. O sistema pausou sincronizações de segundo plano por 60s para auto-recuperação sem perda de dados.", err, true);
+      }
+      throw err;
+    }
+  };
+
+  const resultPromise = writeQueueChain.then(runTask, runTask);
+  writeQueueChain = resultPromise.catch(() => {});
+  return resultPromise;
 }
 
 export function addToOfflineQueue(key: string, value: any) {
@@ -280,15 +335,19 @@ export function removeFromOfflineQueue(key: string) {
 }
 
 export async function flushOfflineSyncQueue() {
+  if (isFlushingOfflineQueue || isFirestoreInCooldown()) return;
   const queueStr = safeGetItem("sstr_offline_pending_sync_queue");
   if (!queueStr) return;
+
   try {
     const queue: QueueItem[] = JSON.parse(queueStr);
     if (!Array.isArray(queue) || queue.length === 0) return;
 
+    isFlushingOfflineQueue = true;
     console.log(`[OFFLINE-SYNC-FLUSH] Network connection active! Flushing ${queue.length} queued offline datasets to Firestore database...`);
     
-    for (const item of queue) {
+    for (const item of [...queue]) {
+      if (isFirestoreInCooldown()) break;
       const mapping = COLLECTION_MAP[item.key];
       if (!mapping) continue;
 
@@ -304,14 +363,18 @@ export async function flushOfflineSyncQueue() {
         await syncArrayToFirestore(mapping.name, [], currentParsed);
       }
       removeFromOfflineQueue(item.key);
+      await new Promise(r => setTimeout(r, 100));
     }
-    console.log("[OFFLINE-SYNC-FLUSH] Offline data queue successfully flushed to database!");
+    console.log("[OFFLINE-SYNC-FLUSH] Offline data queue processed.");
   } catch (err) {
     console.warn("[OFFLINE-SYNC-FLUSH-WARN] Error flushing offline queue:", err);
+  } finally {
+    isFlushingOfflineQueue = false;
   }
 }
 
 export async function performPeriodicLocalStorageBackup() {
+  if (isFirestoreInCooldown()) return;
   try {
     const backupSummary: Record<string, number> = {};
     for (const [localKey, mapping] of Object.entries(COLLECTION_MAP)) {
@@ -331,13 +394,15 @@ export async function performPeriodicLocalStorageBackup() {
     await flushOfflineSyncQueue();
 
     // Store periodic snapshot in Firestore for total redundancy against field device data loss
-    const backupDocRef = doc(firestoreDb, "localStorage_backups", "latest_field_backup");
-    await setDoc(backupDocRef, sanitizeForFirestore({
-      timestamp: Date.now(),
-      dateStr: new Date().toISOString(),
-      summary: backupSummary,
-      deviceAgent: typeof navigator !== "undefined" ? navigator.userAgent : "field-device"
-    }), { merge: true });
+    await enqueueFirestoreWrite(async () => {
+      const backupDocRef = doc(firestoreDb, "localStorage_backups", "latest_field_backup");
+      await setDoc(backupDocRef, sanitizeForFirestore({
+        timestamp: Date.now(),
+        dateStr: new Date().toISOString(),
+        summary: backupSummary,
+        deviceAgent: typeof navigator !== "undefined" ? navigator.userAgent : "field-device"
+      }), { merge: true });
+    });
 
     console.log("[PERIODIC-BACKUP] Redundancy backup from localStorage to Firestore completed:", backupSummary);
   } catch (err) {
@@ -345,17 +410,23 @@ export async function performPeriodicLocalStorageBackup() {
   }
 }
 
-// Attach automatic online event listener & periodic flush/backup timers
+// Attach automatic online event listener & gentle background maintenance
 if (typeof window !== "undefined") {
+  let onlineDebounce: any = null;
   window.addEventListener("online", () => {
-    console.log("[NETWORK-ONLINE] Device back online. Triggering offline sync flush and backup...");
-    flushOfflineSyncQueue();
-    performPeriodicLocalStorageBackup();
+    console.log("[NETWORK-ONLINE] Device back online. Scheduling offline sync flush...");
+    if (onlineDebounce) clearTimeout(onlineDebounce);
+    onlineDebounce = setTimeout(() => {
+      flushOfflineSyncQueue();
+    }, 2000);
   });
+
+  // Low-frequency maintenance: every 5 minutes (instead of aggressive 30s)
   setInterval(() => {
-    flushOfflineSyncQueue();
-    performPeriodicLocalStorageBackup();
-  }, 30000);
+    if (!isFirestoreInCooldown()) {
+      flushOfflineSyncQueue();
+    }
+  }, 5 * 60 * 1000);
 }
 
 // Mapping of LocalStorage keys to Firestore Collections
@@ -383,6 +454,7 @@ function getItemId(item: any): string {
 }
 
 export async function syncArrayToFirestore(collectionName: string, oldList: any[], newList: any[]) {
+  if (isFirestoreInCooldown()) return;
   const oldMap = new Map<string, any>();
   const newMap = new Map<string, any>();
 
@@ -417,41 +489,46 @@ export async function syncArrayToFirestore(collectionName: string, oldList: any[
   const totalOps = toSet.length + toDelete.length;
   if (totalOps === 0) return;
 
-  // We split operations into safe chunks of 300 (well below Firestore's 500 batch limit)
-  const chunkSize = 300;
+  // Safe chunk size (100) to keep Firestore client write buffer low
+  const chunkSize = 100;
   const allOps: { type: "set" | "delete"; id: string; data?: any }[] = [
     ...toSet.map(([id, data]) => ({ type: "set" as const, id, data })),
     ...toDelete.map(id => ({ type: "delete" as const, id }))
   ];
 
-  try {
-    for (let i = 0; i < allOps.length; i += chunkSize) {
-      const chunk = allOps.slice(i, i + chunkSize);
-      const batch = writeBatch(firestoreDb);
-      for (const op of chunk) {
-        const docRef = doc(firestoreDb, collectionName, op.id);
-        if (op.type === "set") {
-          batch.set(docRef, sanitizeForFirestore(op.data));
-        } else {
-          batch.delete(docRef);
+  await enqueueFirestoreWrite(async () => {
+    try {
+      for (let i = 0; i < allOps.length; i += chunkSize) {
+        if (isFirestoreInCooldown()) break;
+        const chunk = allOps.slice(i, i + chunkSize);
+        const batch = writeBatch(firestoreDb);
+        for (const op of chunk) {
+          const docRef = doc(firestoreDb, collectionName, op.id);
+          if (op.type === "set") {
+            batch.set(docRef, sanitizeForFirestore(op.data));
+          } else {
+            batch.delete(docRef);
+          }
         }
+        await batch.commit();
+        recordWrites(chunk.length);
+        console.log(`[SYNC-WRITE] Committed batch of ${chunk.length} changes to Firestore collection "${collectionName}".`);
+        await new Promise(r => setTimeout(r, 80));
       }
-      await batch.commit();
-      recordWrites(chunk.length);
-      console.log(`[SYNC-WRITE] Committed batch of ${chunk.length} changes to Firestore collection "${collectionName}".`);
+      const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
+      if (key) removeFromOfflineQueue(key);
+    } catch (err: any) {
+      console.warn(`[SYNC-WRITE-OFFLINE] Firestore write error for ${collectionName}. Storing in offline queue for auto-retry when online.`, err);
+      notifySyncIssue(`Erro ao gravar alterações na coleção "${collectionName}": ${err?.message || err}`, err);
+      const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
+      if (key) addToOfflineQueue(key, newList);
+      throw err;
     }
-    // Remove from offline queue if successful
-    const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
-    if (key) removeFromOfflineQueue(key);
-  } catch (err: any) {
-    console.warn(`[SYNC-WRITE-OFFLINE] Firestore write error for ${collectionName}. Storing in offline queue for auto-retry when online.`, err);
-    notifySyncIssue(`Erro ao gravar alterações na coleção "${collectionName}": ${err?.message || err}`, err);
-    const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
-    if (key) addToOfflineQueue(key, newList);
-  }
+  });
 }
 
 export async function syncObjectToFirestore(collectionName: string, oldObj: Record<string, any>, newObj: Record<string, any>) {
+  if (isFirestoreInCooldown()) return;
   const toSet: [string, any][] = [];
   const toDelete: string[] = [];
 
@@ -475,36 +552,41 @@ export async function syncObjectToFirestore(collectionName: string, oldObj: Reco
   const totalOps = toSet.length + toDelete.length;
   if (totalOps === 0) return;
 
-  const chunkSize = 300;
+  const chunkSize = 100;
   const allOps: { type: "set" | "delete"; id: string; data?: any }[] = [
     ...toSet.map(([id, data]) => ({ type: "set" as const, id, data })),
     ...toDelete.map(id => ({ type: "delete" as const, id }))
   ];
 
-  try {
-    for (let i = 0; i < allOps.length; i += chunkSize) {
-      const chunk = allOps.slice(i, i + chunkSize);
-      const batch = writeBatch(firestoreDb);
-      for (const op of chunk) {
-        const docRef = doc(firestoreDb, collectionName, op.id);
-        if (op.type === "set") {
-          batch.set(docRef, sanitizeForFirestore(op.data));
-        } else {
-          batch.delete(docRef);
+  await enqueueFirestoreWrite(async () => {
+    try {
+      for (let i = 0; i < allOps.length; i += chunkSize) {
+        if (isFirestoreInCooldown()) break;
+        const chunk = allOps.slice(i, i + chunkSize);
+        const batch = writeBatch(firestoreDb);
+        for (const op of chunk) {
+          const docRef = doc(firestoreDb, collectionName, op.id);
+          if (op.type === "set") {
+            batch.set(docRef, sanitizeForFirestore(op.data));
+          } else {
+            batch.delete(docRef);
+          }
         }
+        await batch.commit();
+        recordWrites(chunk.length);
+        console.log(`[SYNC-WRITE] Committed object batch of ${chunk.length} key changes to Firestore collection "${collectionName}".`);
+        await new Promise(r => setTimeout(r, 80));
       }
-      await batch.commit();
-      recordWrites(chunk.length);
-      console.log(`[SYNC-WRITE] Committed object batch of ${chunk.length} key changes to Firestore collection "${collectionName}".`);
+      const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
+      if (key) removeFromOfflineQueue(key);
+    } catch (err: any) {
+      console.warn(`[SYNC-WRITE-OFFLINE] Firestore object write error for ${collectionName}. Storing in offline queue for auto-retry when online.`, err);
+      notifySyncIssue(`Erro ao sincronizar objeto "${collectionName}": ${err?.message || err}`, err);
+      const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
+      if (key) addToOfflineQueue(key, newObj);
+      throw err;
     }
-    const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
-    if (key) removeFromOfflineQueue(key);
-  } catch (err: any) {
-    console.warn(`[SYNC-WRITE-OFFLINE] Firestore object write error for ${collectionName}. Storing in offline queue for auto-retry when online.`, err);
-    notifySyncIssue(`Erro ao sincronizar objeto "${collectionName}": ${err?.message || err}`, err);
-    const key = Object.keys(COLLECTION_MAP).find(k => COLLECTION_MAP[k]?.name === collectionName);
-    if (key) addToOfflineQueue(key, newObj);
-  }
+  });
 }
 
 
@@ -512,89 +594,108 @@ let isWritingExchangeRecords = false;
 let lastLocalWriteTimestamp = 0;
 
 export async function syncExchangeRecordsConsolidated(newList: any[]) {
+  if (isFirestoreInCooldown()) return;
   isWritingExchangeRecords = true;
   lastLocalWriteTimestamp = Date.now();
-  try {
-    const chunkSize = 150;
-    const chunks: any[][] = [];
-    for (let i = 0; i < newList.length; i += chunkSize) {
-      chunks.push(newList.slice(i, i + chunkSize));
-    }
+  
+  await enqueueFirestoreWrite(async () => {
+    try {
+      // ⚡ COST & PERFORMANCE OPTIMIZATION:
+      // Historical 03.18.05 records up to July 31, 2026 (Jan-Jul) are permanently frozen into the platform codebase.
+      // We only write and synchronize dynamic / recent records (August 2026 onwards or new delta imports) to Firestore.
+      const dynamicList = filterDynamicRecentRecords(newList);
+      const chunkSize = 150;
+      const chunks: any[][] = [];
+      for (let i = 0; i < dynamicList.length; i += chunkSize) {
+        chunks.push(dynamicList.slice(i, i + chunkSize));
+      }
 
-    const operations: { ref: any; data?: any; isDelete: boolean }[] = [];
-    
-    // Metadata doc
-    const metaRef = doc(firestoreDb, "exchangeRecords_chunks", "metadata");
-    operations.push({
-      ref: metaRef,
-      data: { totalChunks: chunks.length, timestamp: Date.now() },
-      isDelete: false
-    });
-
-    // Chunk docs
-    for (let i = 0; i < chunks.length; i++) {
-      const chunkRef = doc(firestoreDb, "exchangeRecords_chunks", `chunk_${i}`);
+      const operations: { ref: any; data?: any; isDelete: boolean }[] = [];
+      
+      // Metadata doc
+      const metaRef = doc(firestoreDb, "exchangeRecords_chunks", "metadata");
       operations.push({
-        ref: chunkRef,
-        data: sanitizeForFirestore({ data: chunks[i] }),
+        ref: metaRef,
+        data: { 
+          totalChunks: chunks.length, 
+          dynamicRecordsCount: dynamicList.length,
+          hasHistoricalBaselineInCode: true,
+          timestamp: Date.now() 
+        },
         isDelete: false
       });
-    }
 
-    // Clean up obsolete chunks safely based on remote metadata (or local fallback if offline)
-    let remotePrevTotalChunks = 0;
-    try {
-      const metaSnap = await getDoc(metaRef);
-      if (metaSnap.exists()) {
-        recordReads(1);
-        const metaData = metaSnap.data();
-        remotePrevTotalChunks = metaData?.totalChunks || 0;
+      // Chunk docs
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkRef = doc(firestoreDb, "exchangeRecords_chunks", `chunk_${i}`);
+        operations.push({
+          ref: chunkRef,
+          data: sanitizeForFirestore({ data: chunks[i] }),
+          isDelete: false
+        });
       }
-    } catch (e) {
-      console.warn("[SYNC-CONSOLIDATED] Could not read remote metadata for chunk cleanup, falling back to local count:", e);
-    }
 
-    const localPrevChunksStr = safeGetItem("sstr_prev_total_chunks") || "0";
-    const localPrevChunks = parseInt(localPrevChunksStr, 10) || 0;
-    const prevTotalChunks = Math.max(remotePrevTotalChunks, localPrevChunks, chunks.length);
+      // Clean up obsolete chunks safely based on remote metadata (or local fallback if offline)
+      let remotePrevTotalChunks = 0;
+      try {
+        const metaSnap = await getDoc(metaRef);
+        if (metaSnap.exists()) {
+          recordReads(1);
+          const metaData = metaSnap.data();
+          remotePrevTotalChunks = metaData?.totalChunks || 0;
+        }
+      } catch (e) {
+        console.warn("[SYNC-CONSOLIDATED] Could not read remote metadata for chunk cleanup, falling back to local count:", e);
+      }
 
-    for (let i = chunks.length; i < Math.min(prevTotalChunks + 10, 150); i++) {
-      const chunkRef = doc(firestoreDb, "exchangeRecords_chunks", `chunk_${i}`);
-      operations.push({
-        ref: chunkRef,
-        isDelete: true
-      });
-    }
-    safeSetItem("sstr_prev_total_chunks", String(chunks.length));
+      const localPrevChunksStr = safeGetItem("sstr_prev_total_chunks") || "0";
+      const localPrevChunks = parseInt(localPrevChunksStr, 10) || 0;
+      const prevTotalChunks = Math.max(remotePrevTotalChunks, localPrevChunks);
 
-    // Chunk operations into safe batches of max 300 ops to respect Firestore limits
-    const maxOpsPerBatch = 300;
-    for (let b = 0; b < operations.length; b += maxOpsPerBatch) {
-      const batchOps = operations.slice(b, b + maxOpsPerBatch);
-      const batch = writeBatch(firestoreDb);
-      for (const op of batchOps) {
-        if (op.isDelete) {
-          batch.delete(op.ref);
-        } else {
-          batch.set(op.ref, op.data);
+      // Only delete chunks that previously existed beyond current chunks count
+      if (prevTotalChunks > chunks.length) {
+        for (let i = chunks.length; i < prevTotalChunks; i++) {
+          const chunkRef = doc(firestoreDb, "exchangeRecords_chunks", `chunk_${i}`);
+          operations.push({
+            ref: chunkRef,
+            isDelete: true
+          });
         }
       }
-      await batch.commit();
-      recordWrites(batchOps.length);
-    }
+      safeSetItem("sstr_prev_total_chunks", String(chunks.length));
 
-    console.log(`[SYNC-CONSOLIDATED] Successfully wrote ${newList.length} records in ${chunks.length} chunks to Firestore.`);
-    removeFromOfflineQueue("sstr_cached_records_v1");
-  } catch (err: any) {
-    console.warn("[SYNC-CONSOLIDATED-OFFLINE] Firestore chunk write error. Storing in local storage offline queue for auto-sync when online.", err);
-    notifySyncIssue(`Erro ao gravar relatório base de trocas no Firestore: ${err?.message || err}`, err);
-    addToOfflineQueue("sstr_cached_records_v1", newList);
-  } finally {
-    // Hold write flag for 10 seconds so incoming snapshots don't overwrite fresh local changes
-    setTimeout(() => {
-      isWritingExchangeRecords = false;
-    }, 10000);
-  }
+      // Chunk operations into safe batches of max 100 ops to respect Firestore limits
+      const maxOpsPerBatch = 100;
+      for (let b = 0; b < operations.length; b += maxOpsPerBatch) {
+        if (isFirestoreInCooldown()) break;
+        const batchOps = operations.slice(b, b + maxOpsPerBatch);
+        const batch = writeBatch(firestoreDb);
+        for (const op of batchOps) {
+          if (op.isDelete) {
+            batch.delete(op.ref);
+          } else {
+            batch.set(op.ref, op.data);
+          }
+        }
+        await batch.commit();
+        recordWrites(batchOps.length);
+        await new Promise(r => setTimeout(r, 80));
+      }
+
+      console.log(`[SYNC-CONSOLIDATED] Optimizado: Gravados ${dynamicList.length} registros dinâmicos (Agosto em diante) em ${chunks.length} chunks no Firestore. (${HISTORICAL_RECORDS_JAN_JUL_2026.length} registros Jan-Jul preservados no código estático).`);
+      removeFromOfflineQueue("sstr_cached_records_v1");
+    } catch (err: any) {
+      console.warn("[SYNC-CONSOLIDATED-OFFLINE] Firestore chunk write error. Storing in local storage offline queue for auto-sync when online.", err);
+      notifySyncIssue(`Erro ao gravar relatório base de trocas no Firestore: ${err?.message || err}`, err);
+      addToOfflineQueue("sstr_cached_records_v1", newList);
+      throw err;
+    } finally {
+      // Hold write flag for 10 seconds so incoming snapshots don't overwrite fresh local changes
+      setTimeout(() => {
+        isWritingExchangeRecords = false;
+      }, 10000);
+    }
+  });
 }
 
 function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
@@ -637,6 +738,12 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
         
         const metadata = docsMap.get("metadata");
         if (!metadata) {
+          // If no remote chunks exist yet, ensure local has the in-code historical baseline
+          const localStr = safeGetItem(localKey);
+          if (!localStr || localStr === "[]") {
+            safeSetItem(localKey, JSON.stringify(HISTORICAL_RECORDS_JAN_JUL_2026));
+            window.dispatchEvent(new Event("storage"));
+          }
           if (!resolved) {
             resolved = true;
             resolve();
@@ -655,11 +762,11 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
         
         const totalChunks = metadata.totalChunks || 0;
         let allChunksPresent = true;
-        const combinedList: any[] = [];
+        const dynamicListFromRemote: any[] = [];
         for (let i = 0; i < totalChunks; i++) {
           const chunkDoc = docsMap.get(`chunk_${i}`);
           if (chunkDoc && Array.isArray(chunkDoc.data)) {
-            combinedList.push(...chunkDoc.data);
+            dynamicListFromRemote.push(...chunkDoc.data);
           } else {
             allChunksPresent = false;
             break;
@@ -675,23 +782,19 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
           return;
         }
 
+        // ⚡ COMBINE IN-CODE HISTORICAL BASELINE (Jan-Jul) WITH REMOTE DYNAMIC RECORDS (Aug onwards)
+        const unifiedRecords = combineBaselineWithDynamic(dynamicListFromRemote);
+
         const localStr = safeGetItem(localKey) || "[]";
-        let localCount = 0;
         let localRecords: any[] = [];
         try {
           localRecords = JSON.parse(localStr);
-          if (Array.isArray(localRecords)) {
-            localCount = localRecords.length;
-          }
         } catch (e) {}
 
-        // SAFETY SHIELD 1: Check for unconfirmed local write pending in queue
+        // SAFETY SHIELD 1: If there is an unconfirmed local write pending in queue, preserve local state without initiating recursive write
         const isPendingOffline = hasPendingOfflineWrite(localKey);
         if (isPendingOffline) {
-          console.warn(`[SYNC-SHIELD] Unconfirmed local write pending in queue for "${localKey}" (${localCount} records). Preserving local cache and attempting repair push to Firestore...`);
-          if (localCount > 0) {
-            syncExchangeRecordsConsolidated(localRecords).catch(e => console.warn("[SYNC-REPAIR-WARN] Repair push error:", e));
-          }
+          console.log(`[SYNC-SHIELD] Unconfirmed local write pending in queue for "${localKey}". Preserving local cache.`);
           if (!resolved) {
             resolved = true;
             resolve();
@@ -699,20 +802,7 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
           return;
         }
 
-        // SAFETY SHIELD 2: If remote snapshot returns 0 records, but local cache has records (> 0),
-        // DO NOT wipe local cache with empty remote snapshot!
-        // Instead, preserve local records and push them to Firestore to repair remote collection.
-        if (combinedList.length === 0 && localCount > 0) {
-          console.warn(`[SYNC-SHIELD] Remote database returned 0 records, but local cache holds ${localCount} records. Preserving local records and repairing Firestore...`);
-          syncExchangeRecordsConsolidated(localRecords).catch(e => console.warn("[SYNC-REPAIR-WARN] Repair push error:", e));
-          if (!resolved) {
-            resolved = true;
-            resolve();
-          }
-          return;
-        }
-        
-        const remoteStr = JSON.stringify(combinedList);
+        const remoteStr = JSON.stringify(unifiedRecords);
         
         if (localStr !== remoteStr) {
           isSyncingFromFirestore = true;
@@ -830,6 +920,7 @@ function getActiveUser(): string {
 
 // Advanced operation diff tracker and logger
 async function logChange(key: string, oldList: any[], newList: any[]) {
+  if (isFirestoreInCooldown()) return;
   try {
     const operator = getActiveUser();
     const logsCol = collection(firestoreDb, "sstr_logs");
@@ -860,8 +951,15 @@ async function logChange(key: string, oldList: any[], newList: any[]) {
       }
     }
     
-    const createLogEntry = async (action: "CRIACAO" | "EDICAO" | "EXCLUSAO", details: string, itemData: any) => {
+    const totalChanges = added.length + modified.length + deleted.length;
+    if (totalChanges === 0) return;
+
+    await enqueueFirestoreWrite(async () => {
       try {
+        const action = added.length > 0 && modified.length === 0 && deleted.length === 0 ? "CRIACAO" :
+                       deleted.length > 0 && added.length === 0 && modified.length === 0 ? "EXCLUSAO" : "EDICAO";
+        const details = `Operação em lote: ${added.length} criados, ${modified.length} alterados, ${deleted.length} excluídos na tabela "${COLLECTION_MAP[key]?.name || key}".`;
+        
         await addDoc(logsCol, sanitizeForFirestore({
           usuario: operator,
           action,
@@ -869,39 +967,12 @@ async function logChange(key: string, oldList: any[], newList: any[]) {
           dataHora: new Date().toLocaleString("pt-BR"),
           timestamp: Date.now(),
           detalhes: details,
-          dados: itemData
+          summary: { added: added.length, modified: modified.length, deleted: deleted.length }
         }));
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, "sstr_logs");
+        // Non-critical audit log failure
       }
-    };
-    
-    if (added.length > 10) {
-      await createLogEntry("CRIACAO", `Cadastro em lote: ${added.length} novos registros adicionados na tabela "${COLLECTION_MAP[key]?.name || key}".`, { count: added.length });
-    } else {
-      for (const item of added) {
-        const name = item.nomeCliente || item.nome || item.razaoSocial || item.fileName || item.username || "Novo Item";
-        await createLogEntry("CRIACAO", `Lançamento criado: "${name}"`, item);
-      }
-    }
-    
-    if (modified.length > 10) {
-      await createLogEntry("EDICAO", `Atualização em lote: ${modified.length} registros modificados na tabela "${COLLECTION_MAP[key]?.name || key}".`, { count: modified.length });
-    } else {
-      for (const change of modified) {
-        const name = change.new.nomeCliente || change.new.nome || change.new.razaoSocial || change.new.fileName || change.new.username || "Item Modificado";
-        await createLogEntry("EDICAO", `Lançamento atualizado: "${name}"`, change.new);
-      }
-    }
-    
-    if (deleted.length > 10) {
-      await createLogEntry("EXCLUSAO", `Remoção em lote: ${deleted.length} registros excluídos na tabela "${COLLECTION_MAP[key]?.name || key}".`, { count: deleted.length });
-    } else {
-      for (const item of deleted) {
-        const name = item.nomeCliente || item.nome || item.razaoSocial || item.fileName || item.username || "Item Removido";
-        await createLogEntry("EXCLUSAO", `Lançamento removido: "${name}"`, item);
-      }
-    }
+    });
   } catch (err) {
     console.error("Error writing audit logs to Firestore:", err);
   }
@@ -1159,11 +1230,11 @@ function seedLocalStorageDefaults() {
     console.log("[SEED-SKIP] Local storage already contains user records. Preserving existing user database.");
   } else {
     console.log("Seeding local storage with default demonstration dataset...");
-    const defaultRecords = parseCSVToRecords(RAW_SAMPLE_DATA, "Planilha Base Pau Brasil");
+    const defaultRecords = HISTORICAL_RECORDS_JAN_JUL_2026;
     const initialBatch = {
       id: "batch_default",
       timestamp: Date.now(),
-      fileName: "Planilha Base Pau Brasil.csv",
+      fileName: "Base Promax 03.18.05 (Jan-Jul 2026 Congelada)",
       recordCount: defaultRecords.length,
       totalValue: defaultRecords.reduce((acc: number, r: any) => acc + r.valorTotal, 0)
     };
@@ -1197,42 +1268,8 @@ function seedLocalStorageDefaults() {
 }
 
 async function seedFirestoreBaselines() {
-  console.log("Seeding Firestore databases with initial demonstration datasets...");
-  const existingRecordsStr = safeGetItem("sstr_cached_records_v1");
-  let recordsToSeed: any[] = [];
-  if (existingRecordsStr) {
-    try {
-      const parsed = JSON.parse(existingRecordsStr);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        recordsToSeed = parsed;
-        console.log(`[SEED-PRESERVE] Using ${recordsToSeed.length} existing user records for Firestore baseline seed.`);
-      }
-    } catch (e) {}
-  }
-  if (recordsToSeed.length === 0) {
-    recordsToSeed = parseCSVToRecords(RAW_SAMPLE_DATA, "Planilha Base Pau Brasil");
-  }
-
-  const existingBatchesStr = safeGetItem("sstr_cached_batches_v1");
-  let batchesToSeed: any[] = [];
-  if (existingBatchesStr) {
-    try {
-      const parsed = JSON.parse(existingBatchesStr);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        batchesToSeed = parsed;
-      }
-    } catch (e) {}
-  }
-  if (batchesToSeed.length === 0) {
-    batchesToSeed = [{
-      id: "batch_default",
-      timestamp: Date.now(),
-      fileName: "Planilha Base Pau Brasil.csv",
-      recordCount: recordsToSeed.length,
-      totalValue: recordsToSeed.reduce((acc: number, r: any) => acc + (r.valorTotal || 0), 0)
-    }];
-  }
-
+  console.log("Seeding Firestore baseline credentials...");
+  
   const defaultManagers = [
     { username: "gestor", password: "paubrasil2026", name: "Gestor Principal" },
     { username: "admin", password: "admin", name: "Administrador" },
@@ -1248,77 +1285,63 @@ async function seedFirestoreBaselines() {
 
   isSyncingFromFirestore = true;
 
-  const seedArrayInChunks = async (colName: string, items: any[]) => {
-    let chunk: any[] = [];
-    for (let i = 0; i < items.length; i++) {
-      chunk.push(items[i]);
-      if (chunk.length === 200 || i === items.length - 1) {
-        const batch = writeBatch(firestoreDb);
-        chunk.forEach(item => {
-          const id = getItemId(item);
-          if (id) {
-            batch.set(doc(firestoreDb, colName, id), sanitizeForFirestore(item));
-          }
-        });
-        try {
-          await batch.commit();
-        } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, colName);
-        }
-        chunk = [];
-      }
-    }
-  };
-
-  const seedObjectInFirestore = async (colName: string, obj: Record<string, any>) => {
+  await enqueueFirestoreWrite(async () => {
     const batch = writeBatch(firestoreDb);
-    for (const [key, val] of Object.entries(obj)) {
-      batch.set(doc(firestoreDb, colName, key), sanitizeForFirestore(val));
-    }
+    defaultManagers.forEach(m => {
+      batch.set(doc(firestoreDb, "managers", m.username), sanitizeForFirestore(m));
+    });
+    // Set minimal metadata doc for chunk management
+    const metaRef = doc(firestoreDb, "exchangeRecords_chunks", "metadata");
+    batch.set(metaRef, {
+      totalChunks: 0,
+      dynamicRecordsCount: 0,
+      hasHistoricalBaselineInCode: true,
+      timestamp: Date.now()
+    });
     try {
       await batch.commit();
+      recordWrites(defaultManagers.length + 1);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, colName);
+      handleFirestoreError(err, OperationType.WRITE, "managers");
     }
-  };
-
-  await syncExchangeRecordsConsolidated(recordsToSeed);
-  await seedArrayInChunks("batches", batchesToSeed);
-  await seedArrayInChunks("managers", defaultManagers);
-  await seedArrayInChunks("products", getProductsDatabase());
-  await seedArrayInChunks("crewList", DEFAULT_LISTA_CREW);
-  await seedObjectInFirestore("repsSetor", DEFAULT_REPRESENTATIVOS_SETOR);
-  await seedObjectInFirestore("motoristasRotas", DEFAULT_MOTORISTAS_ROTAS);
+  });
 
   seedLocalStorageDefaults();
-
   isSyncingFromFirestore = false;
-  console.log("Seeding process completed successfully!");
+  console.log("Firestore baseline seed completed smoothly.");
 }
 
 // Granular Document-Level Write Helpers for Instant Real-Time Operations (Task 4)
 export async function setFirestoreDoc(collectionName: string, id: string, data: any) {
-  try {
-    const docRef = doc(firestoreDb, collectionName, id);
-    await setDoc(docRef, sanitizeForFirestore(data));
-    recordWrites(1);
-    console.log(`[GRANULAR-WRITE] Updated document "${id}" in Firestore collection "${collectionName}".`);
-  } catch (err) {
-    console.error(`[GRANULAR-WRITE-ERROR] Failed to write doc "${id}" to "${collectionName}":`, err);
-    handleFirestoreError(err, OperationType.WRITE, collectionName);
-  }
+  if (isFirestoreInCooldown()) return;
+  return enqueueFirestoreWrite(async () => {
+    try {
+      const docRef = doc(firestoreDb, collectionName, id);
+      await setDoc(docRef, sanitizeForFirestore(data));
+      recordWrites(1);
+      console.log(`[GRANULAR-WRITE] Updated document "${id}" in Firestore collection "${collectionName}".`);
+    } catch (err) {
+      console.error(`[GRANULAR-WRITE-ERROR] Failed to write doc "${id}" to "${collectionName}":`, err);
+      handleFirestoreError(err, OperationType.WRITE, collectionName);
+      throw err;
+    }
+  });
 }
 
 export async function deleteFirestoreDoc(collectionName: string, id: string) {
-  try {
-    const docRef = doc(firestoreDb, collectionName, id);
-    await deleteDoc(docRef);
-    recordDeletes(1);
-    console.log(`[GRANULAR-DELETE] Deleted document "${id}" from Firestore collection "${collectionName}".`);
-  } catch (err) {
-    console.error(`[GRANULAR-DELETE-ERROR] Failed to delete doc "${id}" from "${collectionName}":`, err);
-    handleFirestoreError(err, OperationType.DELETE, collectionName);
-  }
+  if (isFirestoreInCooldown()) return;
+  return enqueueFirestoreWrite(async () => {
+    try {
+      const docRef = doc(firestoreDb, collectionName, id);
+      await deleteDoc(docRef);
+      recordDeletes(1);
+      console.log(`[GRANULAR-DELETE] Deleted document "${id}" from Firestore collection "${collectionName}".`);
+    } catch (err) {
+      console.error(`[GRANULAR-DELETE-ERROR] Failed to delete doc "${id}" from "${collectionName}":`, err);
+      handleFirestoreError(err, OperationType.DELETE, collectionName);
+      throw err;
+    }
+  });
 }
 
 export function startPolling() {

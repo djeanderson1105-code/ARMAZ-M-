@@ -15,6 +15,14 @@ import {
 import { onSnapshot, collection, getDocs, query, limit } from "firebase/firestore";
 import { extractImagesToIDB, restoreImagesFromCache } from "../utils/indexedDbCache";
 import { getProductsDatabase, setProductsCache, ProductInfo } from "../data/products";
+import { 
+  HISTORICAL_RECORDS_JAN_JUL_2026, 
+  combineBaselineWithDynamic 
+} from "../data/historicalRecordsJul2026";
+import { 
+  combineShortagesWithDynamic, 
+  combineValesWithDynamic 
+} from "../data/historicalShortages2026";
 
 export interface SstrDataContextType {
   // Collections State
@@ -111,16 +119,27 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Hydrate local state from storage immediately
   const hydrateFromLocalStorage = useCallback(() => {
     const localRequests = readLocal("sstr_representative_pending_requests", []);
-    const sanitizedRequests = localRequests.map((req: any) => {
-      if (req.reviewedByControle !== true && req.faltaTipoErro) {
-        const { faltaTipoErro, ...rest } = req;
-        return rest;
-      }
-      return req;
-    });
-    setPendingRequests(sanitizedRequests);
-    setRecords(readLocal("sstr_cached_records_v1", []));
-    setBatches(readLocal("sstr_cached_batches_v1", []));
+    const unifiedRequests = combineShortagesWithDynamic(localRequests);
+    setPendingRequests(unifiedRequests);
+    
+    // Unify cached dynamic records with the permanent in-code historical baseline (Jan-Jul 2026)
+    const rawCachedRecords = readLocal("sstr_cached_records_v1", []);
+    const unifiedRecords = combineBaselineWithDynamic(rawCachedRecords);
+    setRecords(unifiedRecords);
+    
+    const cachedBatches = readLocal("sstr_cached_batches_v1", []);
+    if (cachedBatches.length === 0) {
+      const defaultBatch: ImportBatch = {
+        id: "batch_default_hist",
+        timestamp: Date.now(),
+        fileName: "Base Promax 03.18.05 (Jan-Jul 2026 Congelada)",
+        recordCount: HISTORICAL_RECORDS_JAN_JUL_2026.length,
+        totalValue: HISTORICAL_RECORDS_JAN_JUL_2026.reduce((acc, r) => acc + (r.valorTotal || 0), 0)
+      };
+      setBatches([defaultBatch]);
+    } else {
+      setBatches(cachedBatches);
+    }
     
     // Normalize and merge saved managers with DEFAULT_MANAGERS fallback
     const savedManagers = readLocal("sstr_registered_managers", DEFAULT_MANAGERS);
@@ -140,7 +159,11 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
     setCrewList(readLocal("sstr_lista_crew", DEFAULT_LISTA_CREW));
     setRepsList(readLocal("sstr_reps_setor", DEFAULT_REPRESENTATIVOS_SETOR));
     setMotoristasList(readLocal("sstr_motoristas_rotas", DEFAULT_MOTORISTAS_ROTAS));
-    setVales(readLocal("sstr_vales_historico_reg", []));
+    
+    const localVales = readLocal("sstr_vales_historico_reg", []);
+    const unifiedVales = combineValesWithDynamic(localVales);
+    setVales(unifiedVales);
+
     setProducts(readLocal("sstr_products_database", getProductsDatabase()));
   }, [readLocal]);
 
@@ -177,167 +200,6 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
       window.removeEventListener("storage", handleStorageEvent);
     };
   }, [hydrateFromLocalStorage]);
-
-  // Real-time listener for Pending Requests
-  useEffect(() => {
-    if (!firestoreDb) return;
-    const colRef = collection(firestoreDb, "pendingRequests");
-    const unsubscribe = onSnapshot(colRef, (snapshot) => {
-      const items: PendingRequest[] = snapshot.docs.map(doc => doc.data() as PendingRequest);
-      
-      // Auto cleanup > 30 days & old base64 images without triggering remote sync loop
-      const now = Date.now();
-      const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-      const autoPurgeImgMs = 2 * 24 * 60 * 60 * 1000;
-
-      let freshList = items.filter(req => {
-        if (!req.timestamp) return true;
-        return (now - req.timestamp) <= thirtyDaysMs;
-      });
-
-      freshList = freshList.map(req => {
-        const cast = req as any;
-        const isProcessed = req.statusPromax === "cadastrado" || req.statusPromax === "reprovado";
-        let updated = req;
-        if (isProcessed && req.timestamp && (now - req.timestamp) > autoPurgeImgMs && req.fotoUrl && req.fotoUrl.startsWith("data:image")) {
-          updated = { ...updated, fotoUrl: "imagem_purgada" };
-        }
-        if (cast.reviewedByControle !== true && cast.faltaTipoErro) {
-          const { faltaTipoErro, ...rest } = cast;
-          updated = rest as PendingRequest;
-        }
-        return updated;
-      });
-
-      freshList.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-
-      setPendingRequests(freshList);
-      safeSetItem("sstr_representative_pending_requests", JSON.stringify(freshList));
-    }, (err) => {
-      console.warn("[CONTEXT-PENDING-LISTENER] Error subscribing to pendingRequests:", err);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // Real-time listener for Vales
-  useEffect(() => {
-    if (!firestoreDb) return;
-    const colRef = collection(firestoreDb, "vales");
-    const unsubscribe = onSnapshot(colRef, (snapshot) => {
-      const items: ValeEntry[] = snapshot.docs.map(doc => doc.data() as ValeEntry);
-      items.sort((a, b) => (b.requestId || "").localeCompare(a.requestId || ""));
-      setVales(items);
-      safeSetItem("sstr_vales_historico_reg", JSON.stringify(items));
-    }, (err) => {
-      console.warn("[CONTEXT-VALES-LISTENER] Error subscribing to vales:", err);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // Real-time listener for Managers
-  useEffect(() => {
-    if (!firestoreDb) return;
-    const colRef = collection(firestoreDb, "managers");
-    const unsubscribe = onSnapshot(colRef, (snapshot) => {
-      const remoteItems = snapshot.docs.map(doc => doc.data());
-      const localStr = safeGetItem("sstr_registered_managers");
-      let localItems: any[] = [];
-      try {
-        localItems = localStr ? JSON.parse(localStr) : DEFAULT_MANAGERS;
-      } catch (e) {
-        localItems = DEFAULT_MANAGERS;
-      }
-      if (!Array.isArray(localItems)) localItems = DEFAULT_MANAGERS;
-
-      // Merge carefully: map by normalized username
-      const managerMap = new Map<string, any>();
-
-      // Defaults first
-      DEFAULT_MANAGERS.forEach(m => {
-        const norm = normalizeManagerUsername(m.username);
-        if (norm) managerMap.set(norm, { ...m, username: norm });
-      });
-
-      // Local items next
-      localItems.forEach(m => {
-        const norm = normalizeManagerUsername(m.username || m.id);
-        if (norm) managerMap.set(norm, { ...m, username: norm });
-      });
-
-      // Firestore remote items on top
-      remoteItems.forEach(m => {
-        const norm = normalizeManagerUsername(m.username || m.id);
-        if (norm) managerMap.set(norm, { ...m, username: norm });
-      });
-
-      const merged = Array.from(managerMap.values());
-      setManagers(merged);
-      safeSetItem("sstr_registered_managers", JSON.stringify(merged));
-    }, (err) => {
-      console.warn("[CONTEXT-MANAGERS-LISTENER] Error subscribing to managers:", err);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // Real-time listener for Crew List
-  useEffect(() => {
-    if (!firestoreDb) return;
-    const colRef = collection(firestoreDb, "crewList");
-    const unsubscribe = onSnapshot(colRef, (snapshot) => {
-      const items = snapshot.docs.map(doc => doc.data() as CrewMember);
-      if (items.length > 0) {
-        setCrewList(items);
-        safeSetItem("sstr_lista_crew", JSON.stringify(items));
-      }
-    }, (err) => {
-      console.warn("[CONTEXT-CREW-LISTENER] Error subscribing to crewList:", err);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // Real-time listener for Reps Setor
-  useEffect(() => {
-    if (!firestoreDb) return;
-    const colRef = collection(firestoreDb, "repsSetor");
-    const unsubscribe = onSnapshot(colRef, (snapshot) => {
-      const obj: Record<string, any> = {};
-      snapshot.docs.forEach(doc => {
-        obj[doc.id] = doc.data();
-      });
-      if (Object.keys(obj).length > 0) {
-        setRepsList(obj);
-        safeSetItem("sstr_reps_setor", JSON.stringify(obj));
-      }
-    }, (err) => {
-      console.warn("[CONTEXT-REPS-LISTENER] Error subscribing to repsSetor:", err);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // Real-time listener for Motoristas Rotas
-  useEffect(() => {
-    if (!firestoreDb) return;
-    const colRef = collection(firestoreDb, "motoristasRotas");
-    const unsubscribe = onSnapshot(colRef, (snapshot) => {
-      const obj: Record<string, any> = {};
-      snapshot.docs.forEach(doc => {
-        obj[doc.id] = doc.data();
-      });
-      if (Object.keys(obj).length > 0) {
-        setMotoristasList(obj);
-        safeSetItem("sstr_motoristas_rotas", JSON.stringify(obj));
-      }
-    }, (err) => {
-      console.warn("[CONTEXT-DRIVERS-LISTENER] Error subscribing to motoristasRotas:", err);
-    });
-
-    return () => unsubscribe();
-  }, []);
 
   // Granular Actions (Task 4)
   const savePendingRequest = async (req: PendingRequest) => {

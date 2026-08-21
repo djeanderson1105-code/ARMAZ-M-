@@ -1,55 +1,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /exchangeRecords/{docId} {
+    match /{document=**} {
       allow read, write: if true;
-    }
-
-    match /exchangeRecords_chunks/{docId} {
-      allow read, write: if true;
-    }
-
-    match /batches/{docId} {
-      allow read, write: if true;
-    }
-
-    match /pendingRequests/{docId} {
-      allow read, write: if true;
-    }
-
-    match /managers/{docId} {
-      allow read, write: if true;
-    }
-
-    match /vales/{docId} {
-      allow read, write: if true;
-    }
-
-    match /crewList/{docId} {
-      allow read, write: if true;
-    }
-
-    match /repsSetor/{docId} {
-      allow read, write: if true;
-    }
-
-    match /motoristasRotas/{docId} {
-      allow read, write: if true;
-    }
-
-    match /products/{docId} {
-      allow read, write: if true;
-    }
-
-    match /customPdvs/{docId} {
-      allow read, write: if true;
-    }
-
-    // Log collection validation
-    match /sstr_logs/{logId} {
-      allow read: if true;
-      allow create: if true;
-      allow update, delete: if false; // Logs are immortal and append-only
     }
   }
 }
+

@@ -339,6 +339,14 @@ export interface PendingRequest {
   contingenciaBaixadaDate?: string;
   contingenciaBaixadaUser?: string;
   valorTotal?: number;
+  customUnitPrice?: number;
+  fatorEmbalagem?: number;
+  solicitacao?: string;
+  cliente?: string;
+  hora?: string;
+  turno?: string;
+  subMotivo?: string;
+  faltaConferente?: string;
   placaVeiculo?: string;
   itemPlates?: Record<string, string>;
   lembreteNotificacao?: boolean;

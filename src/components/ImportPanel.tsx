@@ -3,6 +3,11 @@ import { ExchangeRecord } from "../types";
 import { parseCSVToRecords } from "../utils/csvParser";
 import * as XLSX from "xlsx";
 import { 
+  HISTORICAL_CUTOFF_DATE, 
+  filterDynamicRecentRecords, 
+  isRecordInHistoricalPeriod 
+} from "../data/historicalRecordsJul2026";
+import { 
   UploadCloud, 
   CheckCircle, 
   AlertTriangle, 
@@ -577,6 +582,38 @@ export default function ImportPanel({
                   </div>
                 </div>
               )}
+
+              {/* ⚡ Performance & Firestore Quota Optimization Insight */}
+              {(() => {
+                const dynamicCount = filterDynamicRecentRecords(parsedPreview.records).length;
+                const baselineCount = parsedPreview.records.length - dynamicCount;
+                const percentSaved = parsedPreview.records.length > 0 
+                  ? Math.round((baselineCount / parsedPreview.records.length) * 100)
+                  : 0;
+
+                return (
+                  <div className="bg-gradient-to-r from-blue-950/60 to-indigo-950/60 p-4 border border-blue-800/60 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <div className="bg-blue-600/30 p-1.5 rounded-lg border border-blue-500/40">
+                          <HardDrive className="w-4 h-4 text-blue-400" />
+                        </div>
+                        <span className="text-xs font-bold text-blue-200">
+                          Otimização Ativa de Performance & Quota Firestore
+                        </span>
+                      </div>
+                      {percentSaved > 0 && (
+                        <span className="bg-emerald-950 border border-emerald-700 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono">
+                          ⚡ -{percentSaved}% de Operações
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      A base histórica (Jan até 31/Jul/2026) é mantida de forma estática e ultra-rápida no código da plataforma. Ao sincronizar com o banco de dados em nuvem, apenas os <strong>{dynamicCount} lançamentos dinâmicos/recentes</strong> (Agosto em diante) consumirão cotas de gravação, eliminando <strong>{baselineCount} gravações e leituras desnecessárias</strong>.
+                    </p>
+                  </div>
+                );
+              })()}
 
               {/* Action Buttons to Import & Update Entire Platform */}
               <div className="space-y-3 pt-2">

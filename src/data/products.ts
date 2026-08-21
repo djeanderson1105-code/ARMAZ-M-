@@ -1,4 +1,12 @@
-import { safeSetItem } from "../utils/apiSync";
+function safeSaveProducts(key: string, value: string) {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(key, value);
+    }
+  } catch (e) {
+    // Ignore storage errors in isolated context
+  }
+}
 
 export interface ProductInfo {
   codigo: string;
@@ -15,6 +23,8 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "9068", descricao: "SKOL LATA 350ML SH C/12 NPAL", fator: 12, valor: 28.52, fatorHecto: 0.042 },
   { codigo: "34608", descricao: "SKOL LATA 350ML SH C/12 NPAL MULTIPACK", fator: 12, valor: 39.00, fatorHecto: 0.042 },
   { codigo: "33820", descricao: "BRAHMA CHOPP LT 350ML SH C/12 NP MULTIPK", fator: 12, valor: 34.90, fatorHecto: 0.042 },
+  { codigo: "28164", descricao: "BRAHMA DUPLO MALTE LT 350ML SH C/12 NPAL", fator: 12, valor: 37.40, fatorHecto: 0.042 },
+  { codigo: "9883", descricao: "SKOL LT 473ML SH C/12 NPAL", fator: 12, valor: 37.84, fatorHecto: 0.05676 },
   { codigo: "13205", descricao: "SKOL GFA VD 300ML CX C/23", fator: 23, valor: 39.14, fatorHecto: 0.069 },
   { codigo: "19164", descricao: "GUARANA CHP ANTARCTICA PET 1L PACK C/2 MULTPACK", fator: 2, valor: 3.90, fatorHecto: 0.02 },
   { codigo: "21020", descricao: "BUDWEISER LT SLEEK 350ML CX CART C 12", fator: 12, valor: 31.78, fatorHecto: 0.042 },
@@ -27,6 +37,8 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "1743", descricao: "ANTARCTICA PILSEN GFA VD 1L COM TTC", fator: 12, valor: 40.76, fatorHecto: 0.12 },
   { codigo: "2319", descricao: "GUARANA CHP ANTARCTICA PET 1L CAIXA C/12", fator: 12, valor: 34.22, fatorHecto: 0.12 },
   { codigo: "2349", descricao: "GUARANA CHP ANTARCTICA PET 2L CAIXA C/6", fator: 6, valor: 28.39, fatorHecto: 0.12 },
+  { codigo: "2350", descricao: "SODA LIMONADA ANTARCTICA PET 2L CAIXA C/6", fator: 6, valor: 27.02, fatorHecto: 0.12 },
+  { codigo: "2358", descricao: "SODA LIMONADA ANTARCTICA PET 2L CAIXA C/6", fator: 6, valor: 27.02, fatorHecto: 0.12 },
   { codigo: "2353", descricao: "GUARANA CHP ANTARCTICA DIET PET 2L CAIXA C/6", fator: 6, valor: 28.09, fatorHecto: 0.12 },
   { codigo: "2538", descricao: "ANTARCTICA PILSEN 600ML", fator: 12, valor: 48.22, fatorHecto: 0.072 },
   { codigo: "2546", descricao: "ORIGINAL 600ML", fator: 12, valor: 61.02, fatorHecto: 0.072 },
@@ -378,6 +390,9 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "37450", descricao: "BUDWEISER LT SLEEK 350ML SH C 12 MULTIPACK", fator: 12, valor: 41.69, fatorHecto: 0.042 },
   { codigo: "31795", descricao: "BRUTAL FRUIT LONG NECK 275ML SIX PACK SH C 2", fator: 12, valor: 103.80, fatorHecto: 0.033 },
   { codigo: "35338", descricao: "BUDWEISER ZERO LT 473ML SH C/12 NPAL", fator: 12, valor: 55.90, fatorHecto: 0.05676 },
+  { codigo: "22188", descricao: "BUDWEISER ZERO LONG NECK 330ML SIX-PACK CX C/24", fator: 24, valor: 86.52, fatorHecto: 0.0792 },
+  { codigo: "28538", descricao: "STELLA ARTOIS 600ML", fator: 12, valor: 64.71, fatorHecto: 0.072 },
+  { codigo: "33828", descricao: "BRAHMA CHOPP LT 350ML SH C/12 NP MULTIPK", fator: 12, valor: 34.90, fatorHecto: 0.042 },
   { codigo: "33212", descricao: "SKOL BEATS SENSES PET 1 L SH C/06", fator: 6, valor: 75.36, fatorHecto: 0.06 }
 ];
 
@@ -390,7 +405,7 @@ export const clearProductsCache = () => {
 export const setProductsCache = (newList: ProductInfo[]) => {
   cachedProducts = newList;
   if (typeof window !== "undefined") {
-    safeSetItem("sstr_products_database", JSON.stringify(newList));
+    safeSaveProducts("sstr_products_database", JSON.stringify(newList));
   }
 };
 
@@ -446,7 +461,7 @@ export const getProductsDatabase = (): ProductInfo[] => {
     }
   }
   
-  safeSetItem("sstr_products_database", JSON.stringify(DEFAULT_PRODUCT_DATABASE));
+  safeSaveProducts("sstr_products_database", JSON.stringify(DEFAULT_PRODUCT_DATABASE));
   cachedProducts = DEFAULT_PRODUCT_DATABASE;
   return DEFAULT_PRODUCT_DATABASE;
 };
@@ -472,9 +487,60 @@ export function getProductByCodeOrName(term: string): ProductInfo | undefined {
   const t = term.trim().toLowerCase();
   if (!t) return undefined;
   const list = getProductsDatabase();
-  return list.find(
-    (p) => p.codigo === t || p.codigo === t.replace(/^0+/, "") || p.descricao.toLowerCase().includes(t)
+
+  // 1. Direct code match
+  const codeMatch = list.find((p) => p.codigo === t || p.codigo === t.replace(/^0+/, ""));
+  if (codeMatch) return codeMatch;
+
+  // 2. Exact or substring match by description
+  const directMatch = list.find((p) => {
+    const d = p.descricao.toLowerCase();
+    return d === t || d.includes(t) || t.includes(d);
+  });
+  if (directMatch) return directMatch;
+
+  // 3. Keyword matching (e.g., "corona" & "330", "skol" & "350", "spaten", "brahma", "original")
+  const keywords = t.split(/[\s,/-]+/).filter((w) => w.length > 2);
+  if (keywords.length > 0) {
+    let bestMatch: ProductInfo | undefined;
+    let maxMatched = 0;
+    for (const p of list) {
+      const d = p.descricao.toLowerCase();
+      let matched = 0;
+      for (const kw of keywords) {
+        if (d.includes(kw)) matched++;
+      }
+      if (matched > maxMatched && matched >= 2) {
+        maxMatched = matched;
+        bestMatch = p;
+      }
+    }
+    if (bestMatch) return bestMatch;
+  }
+
+  return undefined;
+}
+
+export function getProductCatalogInfo(skuOrItem?: string | null): ProductInfo | undefined {
+  if (!skuOrItem) return undefined;
+  const rawCode = String(skuOrItem).trim();
+  const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
+  const db = getProductsDatabase();
+  const found = db.find(
+    (p) => p.codigo === rawCode || p.codigo === cleanCode || p.codigo.replace(/^0+/, "") === cleanCode
   );
+  if (found) return found;
+
+  // If sku is not a known numeric code, attempt description matching
+  return getProductByCodeOrName(rawCode);
+}
+
+export function getProductBoxPrice(skuOrItem?: string | null, fallbackPrice: number = 0): number {
+  const prod = getProductCatalogInfo(skuOrItem);
+  if (prod && prod.valor && prod.valor > 0) {
+    return prod.valor;
+  }
+  return fallbackPrice;
 }
 
 // Calculate accurate HL for single item accounting for UND vs CX unit of measure
@@ -752,4 +818,50 @@ export function calculateRequestValueAndHL(
     hectolitros: Number((totalHl || 0).toFixed(4))
   };
 }
+
+export function getProductDescription(skuOrItem?: string | null, fallbackDesc?: string | null): string {
+  if (fallbackDesc && fallbackDesc.trim()) {
+    const upper = fallbackDesc.trim().toUpperCase();
+    if (upper !== "PRODUTO NÃO ESPECIFICADO" && upper !== "PRODUTO N/D" && upper !== "PRODUTO NÃO INFORMADO" && upper !== "N/D" && upper !== "SEM DESCRIÇÃO") {
+      return fallbackDesc.trim();
+    }
+  }
+
+  const rawCode = String(skuOrItem || "").trim();
+  const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
+  if (!cleanCode) {
+    return fallbackDesc && fallbackDesc.trim() ? fallbackDesc : "PRODUTO NÃO ESPECIFICADO";
+  }
+
+  const db = getProductsDatabase();
+  const found = db.find(p => 
+    p.codigo === rawCode || 
+    p.codigo === cleanCode || 
+    p.codigo.replace(/^0+/, "") === cleanCode
+  );
+
+  if (found && found.descricao) {
+    return found.descricao;
+  }
+
+  // Fallback known common items
+  if (cleanCode === "2349") return "GUARANA CHP ANTARCTICA PET 2L CAIXA C/6";
+  if (cleanCode === "33820") return "BRAHMA CHOPP LT 350ML SH C/12 NP MULTIPK";
+  if (cleanCode === "988") return "BRAHMA CHOPP 600ML";
+  if (cleanCode === "28164") return "BRAHMA DUPLO MALTE LT 350ML SH C/12 NPAL";
+  if (cleanCode === "9083" || cleanCode === "9883") return "SKOL LT 473ML SH C/12 NPAL";
+  if (cleanCode === "9067") return "ANTARCTICA PILSEN LATA 350ML SH C/12 NPAL";
+  if (cleanCode === "9068") return "SKOL LATA 350ML SH C/12 NPAL";
+  if (cleanCode === "2350") return "SODA LIMONADA ANTARCTICA PET 2L CAIXA C/6";
+  if (cleanCode === "17808") return "BUDWEISER OW 330ML CX C/24";
+  if (cleanCode === "2546") return "ORIGINAL 600ML";
+  if (cleanCode === "2548") return "BUDWEISER 600ML";
+  if (cleanCode === "23186") return "SPATEN N 600ML";
+  if (cleanCode === "13205") return "SKOL GFA VD 300ML CX C/23";
+
+  return fallbackDesc && fallbackDesc.trim() && !fallbackDesc.includes("NÃO ESPECIFICADO")
+    ? fallbackDesc
+    : `SKU ${rawCode}`;
+}
+
 
