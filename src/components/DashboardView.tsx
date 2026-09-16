@@ -1,9 +1,10 @@
 import React, { useState, useMemo } from "react";
 import { ExchangeRecord, SectorAnalytics, REPRESENTATIVOS_SETOR } from "../types";
+import { useSstrData } from "../context/SstrDataContext";
 import { getApiUrl } from "../utils/apiUrl";
 import { parseSectorAnalytics } from "../utils/csvParser";
 import { getRecordHL, getHectoFactor, isRecordApproved } from "../utils/hectoFactors";
-import { isRecordReposicao, isRecordTroca } from "../utils/processTypes";
+import { isRecordReposicao, isRecordTroca, getUnifiedOfficialRecords } from "../utils/processTypes";
 import ConsolidatedView from "./ConsolidatedView";
 import { 
   TrendingUp, 
@@ -80,10 +81,12 @@ const formatCurrency = (val: number) => {
 };
 
 export default function DashboardView({ records: rawRecords, onSelectSector }: DashboardViewProps) {
-  // Exclude manual representative portal entries so we only count officially imported Promax data (User request)
+  const { pendingRequests } = useSstrData();
+
+  // Combine 03.18.05 Promax records with all platform-sent reposições that were BAIXADAS
   const records = useMemo(() => {
-    return rawRecords.filter(r => r.sistemaOrigem !== "Portal de Campo SSTR");
-  }, [rawRecords]);
+    return getUnifiedOfficialRecords(rawRecords, pendingRequests);
+  }, [rawRecords, pendingRequests]);
 
   const [selectedSector, setSelectedSector] = useState<string>("");
   const [sectorChartMetric, setSectorChartMetric] = useState<"valor" | "hl" | "unidades">("valor");
@@ -869,8 +872,8 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
       totalReprovadosNoFiltro: formatCurrency(stats.reprovedValue),
       quantidadeDeRegistrosFiltrados: stats.totalCount,
       quantidadeDeRegistrosTotalNoBanco: records.length,
-      volumeTotalHectolitrosNoFiltro: `${totalHLFiltered.toFixed(3)} HL`,
-      volumeTotalHectolitrosGeral: `${totalHLAll.toFixed(3)} HL`,
+      volumeTotalHectolitrosNoFiltro: `${totalHLFiltered.toFixed(2)} HL`,
+      volumeTotalHectolitrosGeral: `${totalHLAll.toFixed(2)} HL`,
       limiteMetaAtivoNoPeriodo: formatCurrency(activeGoal),
       metaAnualTotalSSTR: formatCurrency(META_ANUAL),
       percentualAtingimentoNoPeriodo: `${monthlyAtingimento.toFixed(1)}%`,

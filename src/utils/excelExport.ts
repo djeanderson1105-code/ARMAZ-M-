@@ -1,7 +1,33 @@
 import * as XLSX from "xlsx";
-import { ExchangeRecord, calculateValeRateio, isDriverX } from "../types";
-import { PRODUCT_DATABASE } from "../data/products";
+import { ExchangeRecord, PendingRequest, calculateValeRateio, isDriverX } from "../types";
+import { ValeEntry } from "../components/ValesHistoryDashboard";
+import { PRODUCT_DATABASE, calculateRequestValueAndHL } from "../data/products";
 import { getHectoFactor, getRecordHL } from "./hectoFactors";
+import { isRequestWithVale } from "./valeCheck";
+import { getPdvDatabase } from "../data/pdvData";
+
+/**
+ * Formats a date string (YYYY-MM-DD or DD/MM/YYYY) cleanly to DD/MM/YYYY for Excel export
+ */
+function formatExcelDate(dStr?: string): string {
+  if (!dStr) return "-";
+  const clean = String(dStr).trim();
+  const isoMatch = clean.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (isoMatch) {
+    const y = isoMatch[1];
+    const m = isoMatch[2].padStart(2, "0");
+    const d = isoMatch[3].padStart(2, "0");
+    return `${d}/${m}/${y}`;
+  }
+  const brMatch = clean.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+  if (brMatch) {
+    const d = brMatch[1].padStart(2, "0");
+    const m = brMatch[2].padStart(2, "0");
+    const y = brMatch[3];
+    return `${d}/${m}/${y}`;
+  }
+  return clean;
+}
 
 /**
  * Exports all active records to an Excel (.xlsx) file with detailed quantity,
@@ -118,13 +144,68 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
     return;
   }
 
-  const data = vales.map((v, idx) => {
+  const pdvDb = getPdvDatabase();
+
+  const data = vales.map((v) => {
     const orig = v.originalRequest || {};
     const mapa = orig.mapa || v.mapa || "S/M";
-    const nb = orig.nb || "000000";
-    const cliente = orig.nomeCliente || orig.razaoSocial || orig.nomeFantasia || "PONTO DE VENDA (PDV)";
+    const nb = orig.nb || (v as any).nb || "000000";
+    let cliente = orig.nomeCliente || orig.razaoSocial || orig.nomeFantasia || "";
+    if (!cliente || cliente === "PONTO DE VENDA (PDV)") {
+      if (pdvDb[nb]) {
+        cliente = pdvDb[nb].nomeFantasia || pdvDb[nb].razaoSocial || "PONTO DE VENDA (PDV)";
+      } else {
+        cliente = "PONTO DE VENDA (PDV)";
+      }
+    }
 
-    const valorTotal = v.valorTotal || 0;
+    // 1ª Coluna: Data (formatada DD/MM/YYYY)
+    const rawDate = v.dataEmissao || orig.data || orig.cadastroDate || "";
+    const dataFormatada = formatExcelDate(rawDate);
+
+    // 2ª Coluna: Código, 3ª Coluna: Descrição, 4ª Coluna: Quantidade
+    let codigo = "";
+    let descricao = "";
+    let quantidade = 1;
+
+    if (orig.items && Array.isArray(orig.items) && orig.items.length > 0) {
+      if (orig.items.length === 1) {
+        const first = orig.items[0];
+        codigo = String(first.item || first.itemCode || first.produto || first.codigo || "").trim();
+        descricao = first.descricao || first.productDesc || first.descricaoProduto || "";
+        quantidade = Number(first.quantidade) || 1;
+      } else {
+        codigo = orig.items.map((it: any) => it.item || it.itemCode || it.produto || it.codigo).filter(Boolean).join(", ");
+        descricao = orig.items.map((it: any) => it.descricao || it.productDesc || it.descricaoProduto || it.item).filter(Boolean).join(" | ");
+        quantidade = orig.items.reduce((acc: number, it: any) => acc + (Number(it.quantidade) || 0), 0) || 1;
+      }
+    }
+
+    if (!codigo) {
+      codigo = String(orig.item || orig.itemCode || orig.produto || orig.codigo || (v as any).itemCode || (v as any).item || (v as any).produto || "").trim();
+    }
+
+    if (!descricao) {
+      descricao = orig.descricaoProduto || orig.descricao || orig.productDesc || (v as any).itemDesc || (v as any).descricao || "";
+    }
+
+    // Resolução precisa da descrição através do banco de produtos
+    if (!descricao || descricao === "N/A" || descricao === "-") {
+      const cleanCode = codigo.replace(/^0+/, "");
+      const prod = PRODUCT_DATABASE.find(p => p.codigo === codigo || p.codigo === cleanCode);
+      if (prod && prod.descricao) {
+        descricao = prod.descricao;
+      }
+    }
+
+    if (!quantidade || quantidade <= 0) {
+      quantidade = Number(orig.quantidade) || Number(v.itemsCount) || 1;
+    }
+
+    // 5ª Coluna: Valor Total (inalterado e coerente com a realidade)
+    const valorTotal = v.valorTotal != null ? Number(v.valorTotal) : (orig.valorTotal != null ? Number(orig.valorTotal) : 0);
+    const valorTotalNum = Number(valorTotal.toFixed(2));
+
     const rateioInfo = calculateValeRateio(
       valorTotal,
       v.motorista,
@@ -159,7 +240,9 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
         return `${code} - ${desc} (${qty} ${um})`;
       }).join(" | ");
     } else if (orig.item) {
-      skusDetail = `${orig.item} - ${orig.descricao || ""} (${orig.quantidade || 1} ${orig.unidadeMedida || "CX"})`;
+      skusDetail = `${orig.item} - ${orig.descricao || orig.descricaoProduto || ""} (${orig.quantidade || 1} ${orig.unidadeMedida || "CX"})`;
+    } else if (codigo && codigo !== "-") {
+      skusDetail = `${codigo} - ${descricao} (${quantidade} CX)`;
     } else {
       skusDetail = `REPOSIÇÃO SSTR SKU (${v.itemsCount || 1} ITENS)`;
     }
@@ -170,26 +253,27 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
       v.status === "emitido" ? "Emitido" : "Pendente de Assinatura";
 
     return {
-      "Item Nº": idx + 1,
-      "Data Emissão": v.dataEmissao || "-",
-      "Nota Fiscal (NF)": v.nf || "-",
-      "Mapa de Carga": mapa,
-      "Rota / Setor": v.rota || "-",
-      "Motorista": v.motorista ? (isX ? `${v.motorista} (Isento de Rateio)` : v.motorista) : "Não Declarado",
-      "CPF Motorista": v.motoristaCpf || "Ausente",
-      "Ajudante 1": h1 || "-",
-      "CPF Ajudante 1": v.ajudante1Cpf || "Ausente",
-      "Ajudante 2": h2 || "-",
-      "CPF Ajudante 2": v.ajudante2Cpf || "Ausente",
-      "Equipe Completa": v.ajudantes || (h1 ? `${h1}${h2 ? `, ${h2}` : ""}` : "Sem Ajudantes"),
-      "Status do Vale": statusLabel,
-      "Volume Total (HL)": Number((v.hectolitros || 0).toFixed(4)),
-      "Valor Total Prejuízo (R$)": Number(valorTotal.toFixed(2)),
-      "Total Integrantes Rateio": isX ? `${countPessoas} Ajudante(s) (Motorista X Isento)` : `${countPessoas} Integrante(s)`,
-      "Valor Rateado p/ Pessoa (R$)": valorRateado,
-      "Qtd Itens": v.itemsCount || 1,
+      "Data": dataFormatada,
+      "Código": codigo || "-",
+      "Descrição": descricao || "-",
+      "Quantidade": quantidade,
+      "Valor Total": valorTotalNum,
+      "Motorista": v.motorista ? (isX ? `${v.motorista} (Isento de Rateio)` : v.motorista) : (orig.faltaMotorista || "Não Declarado"),
+      "CPF Motorista": v.motoristaCpf || orig.faltaMotoristaCpf || "Ausente",
+      "Ajudante 1": h1 || orig.faltaAjudante1 || "-",
+      "CPF Ajudante 1": v.ajudante1Cpf || orig.faltaAjudante1Cpf || "Ausente",
+      "Ajudante 2": h2 || orig.faltaAjudante2 || "-",
+      "CPF Ajudante 2": v.ajudante2Cpf || orig.faltaAjudante2Cpf || "Ausente",
+      "Equipe Completa": v.ajudantes || orig.faltaAjudantes || (h1 ? `${h1}${h2 ? `, ${h2}` : ""}` : "Sem Ajudantes"),
       "Código Cliente (NB)": nb,
       "Razão Social / Cliente": cliente,
+      "Nota Fiscal (NF)": v.nf || orig.nf || "-",
+      "Mapa de Carga": mapa,
+      "Rota / Setor": v.rota || orig.setor || "-",
+      "Volume Total (HL)": Number((v.hectolitros || orig.hectolitros || 0).toFixed(4)),
+      "Status do Vale": statusLabel,
+      "Total Integrantes Rateio": isX ? `${countPessoas} Ajudante(s) (Motorista X Isento)` : `${countPessoas} Integrante(s)`,
+      "Valor Rateado p/ Pessoa (R$)": valorRateado,
       "Detalhamento dos SKUs / Faltas": skusDetail,
       "ID Vale SSTR": v.id || "-"
     };
@@ -198,11 +282,11 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
   const worksheet = XLSX.utils.json_to_sheet(data);
 
   worksheet["!cols"] = [
-    { wch: 8 },  // Item Nº
-    { wch: 14 }, // Data Emissão
-    { wch: 16 }, // NF
-    { wch: 14 }, // Mapa
-    { wch: 12 }, // Rota
+    { wch: 14 }, // Data (1ª)
+    { wch: 14 }, // Código (2ª)
+    { wch: 38 }, // Descrição (3ª)
+    { wch: 12 }, // Quantidade (4ª)
+    { wch: 16 }, // Valor Total (5ª)
     { wch: 28 }, // Motorista
     { wch: 18 }, // CPF Motorista
     { wch: 24 }, // Ajudante 1
@@ -210,22 +294,148 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
     { wch: 24 }, // Ajudante 2
     { wch: 18 }, // CPF Ajudante 2
     { wch: 32 }, // Equipe Completa
+    { wch: 18 }, // Código Cliente (NB)
+    { wch: 35 }, // Razão Social / Cliente
+    { wch: 16 }, // Nota Fiscal (NF)
+    { wch: 14 }, // Mapa de Carga
+    { wch: 12 }, // Rota / Setor
+    { wch: 16 }, // Volume Total (HL)
     { wch: 20 }, // Status do Vale
-    { wch: 18 }, // Volume HL
-    { wch: 22 }, // Valor Total Prejuízo
-    { wch: 20 }, // Total Integrantes
-    { wch: 24 }, // Valor Rateado
-    { wch: 12 }, // Qtd Itens
-    { wch: 16 }, // Código Cliente
-    { wch: 35 }, // Cliente
-    { wch: 50 }, // SKUs
-    { wch: 24 }  // ID Vale
+    { wch: 22 }, // Total Integrantes Rateio
+    { wch: 24 }, // Valor Rateado p/ Pessoa (R$)
+    { wch: 50 }, // Detalhamento dos SKUs / Faltas
+    { wch: 24 }  // ID Vale SSTR
   ];
 
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Pacote Prejuízo Vales");
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Base de Vales");
 
   const timestampStr = new Date().toISOString().slice(0, 10);
   XLSX.writeFile(workbook, `${filenamePrefix}_${timestampStr}.xlsx`);
+}
+
+/**
+ * Exports the filtered requests database with exact period, financial,
+ * and voucher (vale) tracking information to an Excel (.xlsx) file.
+ */
+export function exportFilteredRequestsExcel(
+  requests: PendingRequest[],
+  valesList: ValeEntry[] = [],
+  promaxRecords: ExchangeRecord[] = [],
+  filters: {
+    startDate?: string;
+    endDate?: string;
+    sectorFilter?: string;
+    processTypeFilter?: string;
+    valeFilter?: string;
+  } = {}
+) {
+  if (!requests || requests.length === 0) {
+    alert("Nenhum registro correspondente ao filtro aplicado para exportação.");
+    return;
+  }
+
+  const data = requests.map((req) => {
+    const hasVale = isRequestWithVale(req, valesList);
+    const { valorTotal, hectolitros } = calculateRequestValueAndHL(req, promaxRecords);
+    
+    // Resolve product / SKU info
+    let sku = req.item || req.produto || "";
+    let desc = req.descricaoProduto || req.productDesc || "";
+    let qtd = req.quantidade || 0;
+    let um = (req.unidadeMedida || (req as any).um || "CX").toUpperCase();
+
+    if (req.items && req.items.length > 0) {
+      if (req.items.length === 1) {
+        sku = req.items[0].item || req.items[0].itemCode || (req.items[0] as any).produto || sku;
+        desc = req.items[0].descricao || desc;
+        qtd = req.items[0].quantidade || qtd;
+        um = (req.items[0].unidadeMedida || um).toUpperCase();
+      } else {
+        sku = req.items.map(it => it.item || it.itemCode || (it as any).produto).filter(Boolean).join(", ");
+        desc = req.items.map(it => `${it.descricao || it.item} (${it.quantidade} ${it.unidadeMedida || "cx"})`).join(" | ");
+        qtd = req.items.reduce((acc, it) => acc + (it.quantidade || 0), 0);
+      }
+    }
+
+    if (!desc || desc === "N/A" || desc === "-") {
+      const cleanCode = String(sku).replace(/^0+/, "");
+      const prod = PRODUCT_DATABASE.find(p => p.codigo === sku || p.codigo === cleanCode);
+      if (prod && prod.descricao) {
+        desc = prod.descricao;
+      }
+    }
+
+    const motivoLower = (req.motivo || "").toLowerCase();
+    const isRep = motivoLower.includes("falta") || (req.items && req.items.some(it => (it.motivo || "").toLowerCase().includes("falta")));
+    const cast = req as any;
+    const isBaixada = !!cast.faltaBaixa || !!cast.contingenciaBaixada || cast.status === "baixado" || cast.status === "concluido" || req.statusPromax === "cadastrado";
+
+    return {
+      "Data": formatExcelDate(req.data || req.cadastroDate),
+      "Código": sku || "-",
+      "Descrição": desc || "-",
+      "Quantidade": qtd,
+      "Valor Total": Number(valorTotal.toFixed(2)),
+      "Motorista": req.faltaMotorista || "-",
+      "Ajudantes": req.faltaAjudantes || "-",
+      "Código Cliente (NB)": req.nb || "-",
+      "Nota Fiscal (NF)": req.nf || "-",
+      "Mapa": req.mapa || "-",
+      "Setor / Rota": req.setor || "-",
+      "Unidade Medida (UM)": um,
+      "Volume (HL)": Number(hectolitros.toFixed(4)),
+      "Motivo Declarado": req.motivo || "-",
+      "Tipo de Processo": isRep ? "Reposição (Falta)" : "Troca",
+      "Elegível Recibo Contingência": (!req.motivo?.toLowerCase().includes("completo") && !req.motivo?.toLowerCase().includes("fechado") && req.statusPromax !== "reprovado") ? "SIM" : "NÃO",
+      "Status Promax": req.statusPromax || "-",
+      "Situação da Baixa": isBaixada ? "Baixada" : "Pendente",
+      "Status do Vale": hasVale ? "COM VALE EMITIDO" : "SEM VALE",
+      "ID Vale": req.valeId || (hasVale ? "Identificado p/ Mapa e SKU" : "-"),
+      "Origem Cadastro": req.cadastroRole || req.origem || "-",
+      "Usuário Cadastro": req.cadastroUser || "-",
+      "ID Solicitação": req.id,
+      "Observações": req.observacao || "-"
+    };
+  });
+
+  const worksheet = XLSX.utils.json_to_sheet(data);
+
+  worksheet["!cols"] = [
+    { wch: 14 }, // Data (1ª)
+    { wch: 14 }, // Código (2ª)
+    { wch: 38 }, // Descrição (3ª)
+    { wch: 12 }, // Quantidade (4ª)
+    { wch: 16 }, // Valor Total (5ª)
+    { wch: 26 }, // Motorista
+    { wch: 26 }, // Ajudantes
+    { wch: 18 }, // Código Cliente (NB)
+    { wch: 16 }, // Nota Fiscal (NF)
+    { wch: 14 }, // Mapa
+    { wch: 14 }, // Setor / Rota
+    { wch: 12 }, // UM
+    { wch: 14 }, // Volume HL
+    { wch: 24 }, // Motivo Declarado
+    { wch: 20 }, // Tipo Processo
+    { wch: 22 }, // Elegível Recibo Contingência
+    { wch: 16 }, // Status Promax
+    { wch: 16 }, // Situação Baixa
+    { wch: 20 }, // Status do Vale
+    { wch: 26 }, // ID Vale
+    { wch: 18 }, // Origem Cadastro
+    { wch: 22 }, // Usuário Cadastro
+    { wch: 26 }, // ID Solicitação
+    { wch: 40 }  // Observações
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Base Filtrada SSTR");
+
+  const startStr = filters.startDate ? filters.startDate.replace(/-/g, "") : "ini";
+  const endStr = filters.endDate ? filters.endDate.replace(/-/g, "") : "fim";
+  const valeSuffix = filters.valeFilter === "sem_vale" ? "_SemVale" : filters.valeFilter === "com_vale" ? "_ComVale" : "";
+  const filename = `base_filtrada_sstr_${startStr}_a_${endStr}${valeSuffix}.xlsx`;
+
+  XLSX.writeFile(workbook, filename);
 }
 

@@ -1659,11 +1659,11 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                 ? "Volume Reprovado (HL)"
                 : "Volume Recadastrar (HL)"}
             </span>
-            <span className="text-xl lg:text-2xl font-extrabold text-indigo-400 font-mono block">{dashStats.totalHl.toFixed(3)} HL</span>
+            <span className="text-xl lg:text-2xl font-extrabold text-indigo-400 font-mono block">{dashStats.totalHl.toFixed(2)} HL</span>
             <span className="text-[10px] text-slate-400 font-mono block leading-tight">
               {dashStats.hasActiveSearchTerm ? (
                 <>
-                  <span className="text-indigo-450 font-bold">{dashStats.percentHl.toFixed(1)}%</span> do período ({dashStats.baselineHl.toFixed(3)} HL)
+                  <span className="text-indigo-450 font-bold">{dashStats.percentHl.toFixed(1)}%</span> do período ({dashStats.baselineHl.toFixed(2)} HL)
                 </>
               ) : selectedStatus === "todos" ? (
                 "Volume total das solicitações"
@@ -1788,7 +1788,7 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
               metricView === "value" 
                 ? formatCurrency(totalAllValor) 
                 : metricView === "volume" 
-                  ? `${totalAllHl.toFixed(3)} HL` 
+                  ? `${totalAllHl.toFixed(2)} HL` 
                   : `${totalAllSols} Sols.`
             }</span>
           </div>
@@ -1869,7 +1869,7 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">Volume Físico:</span>
-                <span className="font-semibold text-slate-200 font-mono">{dashStats.bApprovedHl.toFixed(3)} HL</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bApprovedHl.toFixed(2)} HL</span>
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">Solicitações:</span>
@@ -1898,7 +1898,7 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">Volume Físico:</span>
-                <span className="font-semibold text-slate-200 font-mono">{dashStats.bPendingHl.toFixed(3)} HL</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bPendingHl.toFixed(2)} HL</span>
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">Solicitações:</span>
@@ -1927,7 +1927,7 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">Volume Físico:</span>
-                <span className="font-semibold text-slate-200 font-mono">{dashStats.bRejectedHl.toFixed(3)} HL</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bRejectedHl.toFixed(2)} HL</span>
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">Solicitações:</span>
@@ -1956,7 +1956,7 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">Volume Físico:</span>
-                <span className="font-semibold text-slate-200 font-mono">{dashStats.bRecadastrarHl.toFixed(3)} HL</span>
+                <span className="font-semibold text-slate-200 font-mono">{dashStats.bRecadastrarHl.toFixed(2)} HL</span>
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">Solicitações:</span>

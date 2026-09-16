@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback, useDeferredValue } from "react";
 import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, getDisplayCadastroUser, getCreatorRole, isFaltaOrInversaoReq, isAllowedInPending, isInversaoOrSwapReq, calculateValeRateio, isDriverX } from "../types";
 import AvariasPackagingChart from "./AvariasPackagingChart";
 import { getApiUrl } from "../utils/apiUrl";
@@ -8,6 +8,8 @@ import { PRODUCT_DATABASE, getProductsDatabase, calculateItemValue, calculateIte
 import { getPdvDatabase } from "../data/pdvData";
 import { getHectoFactor, calculateHL } from "../utils/hectoFactors";
 import { exportRegistrationPdf, generatePdfFilename, NETWORK_REGISTROS_PATH } from "../utils/pdfGenerator";
+import { exportFilteredRequestsExcel } from "../utils/excelExport";
+import { isRequestWithVale } from "../utils/valeCheck";
 import ValesHistoryDashboard, { ValeEntry } from "./ValesHistoryDashboard";
 import PdfDocumentViewer from "./PdfDocumentViewer";
 import { 
@@ -43,7 +45,8 @@ import {
   Copy,
   Sliders,
   RotateCcw,
-  Undo2
+  Undo2,
+  Download
 } from "lucide-react";
 
 // Helper to check if a request or any of its items is a "Falta de SKU Fechado / Completo"
@@ -199,38 +202,94 @@ const getInspectItems = (req: PendingRequest, promaxRecords: ExchangeRecord[] = 
 };
 
 // Helper function to extract or parse request date safely for range filtering and sorting
-const getReqDate = (req: PendingRequest): Date | null => {
-  if (req.timestamp) {
-    return new Date(req.timestamp);
+export const getReqNormalizedDate = (req: PendingRequest | undefined | null): string | null => {
+  if (!req) return null;
+  const cast = req as any;
+
+  // 1. Prioritize explicit business/operational dates over system creation timestamps
+  const candidates = [
+    req.data,
+    cast.data,
+    cast.faltaBaixaDate,
+    cast.faltaDataBaixa,
+    cast.cadastroDate,
+    cast.dataFalta,
+    cast.dataEmissao,
+    cast.mapaDataAnomalia,
+    cast.dataEntregaRecibo
+  ];
+
+  for (const raw of candidates) {
+    if (!raw) continue;
+    if (typeof raw === "string") {
+      const clean = raw.trim();
+      // Match DD/MM/YYYY or D/M/YYYY or DD-MM-YYYY
+      const ptMatch = clean.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+      if (ptMatch) {
+        const day = ptMatch[1].padStart(2, "0");
+        const month = ptMatch[2].padStart(2, "0");
+        const year = ptMatch[3];
+        return `${year}-${month}-${day}`;
+      }
+      // Match YYYY-MM-DD or YYYY/MM/DD
+      const isoMatch = clean.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+      if (isoMatch) {
+        const year = isoMatch[1];
+        const month = isoMatch[2].padStart(2, "0");
+        const day = isoMatch[3].padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      }
+    }
   }
+
+  // 2. Check id if it contains a unix timestamp (pending_req_1725345678901)
   if (req.id && req.id.startsWith("pending_req_")) {
     const ts = parseInt(req.id.replace("pending_req_", ""), 10);
     if (!isNaN(ts) && ts > 1000000000000) {
-      return new Date(ts);
-    }
-  }
-  const dateStr = req.data || req.cadastroDate;
-  if (dateStr) {
-    const match = dateStr.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
-    if (match) {
-      const day = parseInt(match[1], 10);
-      const month = parseInt(match[2], 10) - 1;
-      const year = parseInt(match[3], 10);
-      const timeMatch = dateStr.match(/às\s+(\d{2}):(\d{2})/);
-      let hour = 0;
-      let minute = 0;
-      if (timeMatch) {
-        hour = parseInt(timeMatch[1], 10);
-        minute = parseInt(timeMatch[2], 10);
+      const d = new Date(ts);
+      if (!isNaN(d.getTime())) {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
       }
-      return new Date(year, month, day, hour, minute);
-    }
-    const isoMatch = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (isoMatch) {
-      return new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
     }
   }
+
+  // 3. Fallback to timestamp if no operational date string was present
+  if (req.timestamp && typeof req.timestamp === "number" && req.timestamp > 0) {
+    const d = new Date(req.timestamp);
+    if (!isNaN(d.getTime())) {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+  }
+
   return null;
+};
+
+export const getReqDate = (req: PendingRequest): Date | null => {
+  const ymd = getReqNormalizedDate(req);
+  if (!ymd) return null;
+  const [year, month, day] = ymd.split("-").map(Number);
+  return new Date(year, month - 1, day, 12, 0, 0);
+};
+
+// Universal helper to determine if a request has been Baixada / Finalizada / Concluída
+export const isRequestBaixada = (req: PendingRequest | undefined | null): boolean => {
+  if (!req) return false;
+  const cast = req as any;
+  if (req.faltaBaixa === true || cast.faltaBaixa === true) return true;
+  if (cast.contingenciaBaixada === true) return true;
+  if (req.status === "baixado" || req.status === "concluido" || cast.status === "baixado" || cast.status === "concluido") return true;
+  if (req.statusPromax === "cadastrado" || cast.status === "cadastrado") return true;
+  if (Boolean(cast.faltaBaixaDate || cast.faltaDataBaixa)) return true;
+  if (Boolean(cast.faltaBaixaReciboUrl || cast.faltaBaixaReciboName)) return true;
+  if (cast.reviewedByControle === true) return true;
+  if (req.id && (req.id.startsWith("req_hist_") || req.id.startsWith("rec_"))) return true;
+  return false;
 };
 
 // Helper to determine if a request contains a shortage ("Falta") or an inversion ("Inversão")
@@ -266,7 +325,7 @@ export const getRequestHL = (req: PendingRequest): number => {
       ...item,
       unidadeMedida: item.unidadeMedida || (req as any).unidadeMedida || (req as any).um
     }), 0);
-    if (total > 0) return Number(total.toFixed(4));
+    if (total > 0) return Number(total.toFixed(2));
   }
 
   if (req.item) {
@@ -277,11 +336,11 @@ export const getRequestHL = (req: PendingRequest): number => {
       fatorHecto: (req as any).fatorHecto,
       fatorEmbalagem: (req as any).fatorEmbalagem
     });
-    if (hl > 0) return Number(hl.toFixed(4));
+    if (hl > 0) return Number(hl.toFixed(2));
   }
 
   if (req.hectolitros !== undefined && req.hectolitros > 0) {
-    return req.hectolitros;
+    return Number(req.hectolitros.toFixed(2));
   }
 
   return 0;
@@ -450,26 +509,42 @@ export default function PendingRequestsTab() {
   }, [requests, savePendingRequest]);
 
   const [searchTerm, setSearchTerm] = useState("");
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+
   const [activeTab, setActiveTab] = useState<"pendente" | "cadastrado" | "reprovado" | "faltas_inversoes" | "historico_baixas" | "historico_vales" | "espelho">("pendente");
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [sectorFilter, setSectorFilter] = useState<string>("todos");
   const [createdRoleFilter, setCreatedRoleFilter] = useState<"todos" | "motorista" | "rn" | "admin">("todos");
   const [processTypeFilter, setProcessTypeFilter] = useState<string>("todos");
+  const [valeFilter, setValeFilter] = useState<"todos" | "sem_vale" | "com_vale">("todos");
   const [dateSortOrder, setDateSortOrder] = useState<"desc" | "asc">("desc");
+  const [historicoBaixasStatusFilter, setHistoricoBaixasStatusFilter] = useState<"todos" | "aprovados" | "reprovados" | "baixados" | "pendentes" | "duplicatas">("todos");
+  const [onlyContingenciaFilter, setOnlyContingenciaFilter] = useState(false);
   const [zoomPhoto, setZoomPhoto] = useState<string | null>(null);
   const [inspectRequest, setInspectRequest] = useState<PendingRequest | null>(null);
+
+  // Pagination state for ultra-fast rendering & zero tab-switching lag
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(30);
+
+  // Reset page to 1 when filters or tabs change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, startDate, endDate, sectorFilter, createdRoleFilter, processTypeFilter, valeFilter, activeTab, historicoBaixasStatusFilter]);
 
   // Espelho de Reposições state variables
   const [searchEspelho, setSearchEspelho] = useState("");
 
   // Auto-migrate pre-existing non-motorista pending trocas to "cadastrado" so they exit Pending and remain in History
+  const hasMigratedStaleTrocas = useRef(false);
   useEffect(() => {
-    if (!requests || requests.length === 0) return;
+    if (hasMigratedStaleTrocas.current || !requests || requests.length === 0) return;
     const stalePendingTrocas = requests.filter(req => {
       return req.statusPromax === "pendente" && !isAllowedInPending(req, repsList, motoristasList);
     });
     if (stalePendingTrocas.length > 0) {
+      hasMigratedStaleTrocas.current = true;
       stalePendingTrocas.forEach(req => {
         savePendingRequest({
           ...req,
@@ -480,15 +555,21 @@ export default function PendingRequestsTab() {
   }, [requests, repsList, motoristasList, savePendingRequest]);
 
   // Auto-purge any historical vales that were generated for Inversion (inversão não gera vale)
+  const hasPurgedInversionVales = useRef(false);
   useEffect(() => {
-    if (!valesHistorico || valesHistorico.length === 0) return;
+    if (hasPurgedInversionVales.current || !valesHistorico || valesHistorico.length === 0) return;
     const reqMap = new Map(requests.map(r => [r.id, r]));
+    let purgedAny = false;
     valesHistorico.forEach(v => {
       const targetReq = reqMap.get(v.requestId || v.originalRequest?.id) || v.originalRequest;
       if (targetReq && (isSwapRequest(targetReq) || isInversaoOrSwapReq(targetReq) || isInversaoOrSwapReq(v))) {
         deleteValeEntry(v.id);
+        purgedAny = true;
       }
     });
+    if (purgedAny) {
+      hasPurgedInversionVales.current = true;
+    }
   }, [valesHistorico, requests, deleteValeEntry]);
   const [filterEspelhoDate, setFilterEspelhoDate] = useState(() => {
     return new Date().toLocaleDateString("pt-BR");
@@ -496,7 +577,7 @@ export default function PendingRequestsTab() {
   const [isPrintingEspelho, setIsPrintingEspelho] = useState(false);
   const [espelhoPlates, setEspelhoPlates] = useState<Record<string, string>>({});
   const [espelhoCityInputs, setEspelhoCityInputs] = useState<Record<string, string>>({});
-  const [espelhoStatusFilter, setEspelhoStatusFilter] = useState<"todos" | "pendentes" | "carregados">("todos");
+  const [espelhoStatusFilter, setEspelhoStatusFilter] = useState<"todos" | "pendentes" | "carregados" | "baixados">("todos");
 
   // States for returning a card back to PENDENTE status via modal
   const [returnToPendingModalReq, setReturnToPendingModalReq] = useState<PendingRequest | null>(null);
@@ -571,10 +652,6 @@ export default function PendingRequestsTab() {
   // Faltas & Inversões specific filters
   const [lackFilterStatus, setLackFilterStatus] = useState<"todos" | "abertos" | "baixados">("abertos");
   const [lackFilterErrorType, setLackFilterErrorType] = useState<"todos" | "carregamento" | "entrega" | "indefinido">("todos");
-  
-  // Status filter for Histórico de Baixas (Requirement 4)
-  const [historicoBaixasStatusFilter, setHistoricoBaixasStatusFilter] = useState<"todos" | "aprovados" | "reprovados" | "baixados" | "pendentes" | "duplicatas">("todos");
-  const [onlyContingenciaFilter, setOnlyContingenciaFilter] = useState(false);
 
   // States for physical settlement ("Dar Baixa" with signed receipt attachment)
   const [baixandoFalta, setBaixandoFalta] = useState<PendingRequest | null>(null);
@@ -2076,20 +2153,24 @@ export default function PendingRequestsTab() {
   // Filtered list according to espelhoStatusFilter and sorted by city alphabetically
   const espelhoFiltrado = useMemo(() => {
     return espelhoFiltradoBase.filter((item: any) => {
+      const itemReq = requests.find(r => r.id === item.requestId);
+      const isBaixado = isRequestBaixada(itemReq);
+
       const itemKey = `${item.requestId}_${item.productCode}`;
       const currentPlate = espelhoPlates[itemKey] !== undefined 
         ? espelhoPlates[itemKey] 
         : (item.placaVeiculo || item.placa || "");
       const isCarregado = Boolean(currentPlate && currentPlate.trim());
 
-      if (espelhoStatusFilter === "pendentes") return !isCarregado;
-      if (espelhoStatusFilter === "carregados") return isCarregado;
+      if (espelhoStatusFilter === "pendentes") return !isBaixado && !isCarregado;
+      if (espelhoStatusFilter === "carregados") return !isBaixado && isCarregado;
+      if (espelhoStatusFilter === "baixados") return isBaixado;
       return true;
     }).sort((a: any, b: any) =>
       (a.municipio || "").localeCompare(b.municipio || "", "pt-BR", { sensitivity: "base" }) ||
       (a.razaoSocial || "").localeCompare(b.razaoSocial || "", "pt-BR", { sensitivity: "base" })
     );
-  }, [espelhoFiltradoBase, espelhoPlates, espelhoStatusFilter]);
+  }, [espelhoFiltradoBase, espelhoPlates, espelhoStatusFilter, requests]);
 
   // Unique cities for the FILTERED Espelho view and their item count
   const espelhoCidadesDoDia = useMemo(() => {
@@ -2108,11 +2189,17 @@ export default function PendingRequestsTab() {
     })).sort((a, b) => a.city.localeCompare(b.city, "pt-BR", { sensitivity: "base" }));
   }, [espelhoFiltrado]);
 
-  // Counts for pending vs loaded items
+  // Counts for pending vs loaded vs baixados items
   const espelhoCounts = useMemo(() => {
     let pendentes = 0;
     let carregados = 0;
+    let baixados = 0;
     espelhoFiltradoBase.forEach(item => {
+      const req = requests.find(r => r.id === item.requestId);
+      if (isRequestBaixada(req)) {
+        baixados++;
+        return;
+      }
       const itemKey = `${item.requestId}_${item.productCode}`;
       const currentPlate = espelhoPlates[itemKey] !== undefined 
         ? espelhoPlates[itemKey] 
@@ -2123,8 +2210,8 @@ export default function PendingRequestsTab() {
         pendentes++;
       }
     });
-    return { total: espelhoFiltradoBase.length, pendentes, carregados };
-  }, [espelhoFiltradoBase, espelhoPlates]);
+    return { total: espelhoFiltradoBase.length, pendentes, carregados, baixados };
+  }, [espelhoFiltradoBase, espelhoPlates, requests]);
 
   // Helper to calculate request/item age in days
   const getItemAgeInDays = (item: any, req?: any): number => {
@@ -2154,8 +2241,7 @@ export default function PendingRequestsTab() {
   const delayedCarregados = useMemo(() => {
     return approvedReplacements.filter(item => {
       const req = requests.find(r => r.id === item.requestId);
-      const isBaixado = !!(req as any)?.faltaBaixa;
-      if (isBaixado) return false;
+      if (isRequestBaixada(req)) return false;
 
       const itemKey = `${item.requestId}_${item.productCode}`;
       const currentPlate = espelhoPlates[itemKey] !== undefined 
@@ -2311,20 +2397,164 @@ export default function PendingRequestsTab() {
     }
   }, [requests, deletePendingRequest]);
 
+  // Pre-indexed Maps for O(1) lightning fast Promax and Client lookups (eliminates 10,000x loops)
+  const promaxLookup = useMemo(() => {
+    const byNf = new Map<string, ExchangeRecord>();
+    const bySol = new Map<string, ExchangeRecord>();
+    const byMap = new Map<string, ExchangeRecord>();
+    const byClientNb = new Map<string, ExchangeRecord>();
+
+    for (let i = 0; i < promaxRecords.length; i++) {
+      const r = promaxRecords[i];
+      if (r.nf) {
+        const clean = r.nf.trim();
+        byNf.set(clean, r);
+        const withoutZeros = clean.replace(/^0+/, "");
+        if (withoutZeros) byNf.set(withoutZeros, r);
+      }
+      if (r.solicitacao) bySol.set(r.solicitacao.trim(), r);
+      if (r.mapa) byMap.set(r.mapa.trim(), r);
+      if (r.codigoCliente) {
+        const cd = r.codigoCliente.trim();
+        byClientNb.set(cd, r);
+        const cdNum = parseInt(cd, 10);
+        if (!isNaN(cdNum)) byClientNb.set(String(cdNum), r);
+      }
+    }
+    return { byNf, bySol, byMap, byClientNb };
+  }, [promaxRecords]);
+
+  const pdvDatabase = useMemo(() => getPdvDatabase(), []);
+
+  const getResolvedClientDetails = useCallback((nb: string | undefined) => {
+    const cleanNb = (nb || "").trim();
+    if (!cleanNb) {
+      return {
+        razaoSocial: "CLIENTE PARCEIRO DE DISTRIBUIÇÃO",
+        nomeFantasia: "CLIENTE PARCEIRO DE DISTRIBUIÇÃO",
+        municipio: "",
+        uf: "PB",
+        documento: "",
+        endereco: "",
+        complemento: "",
+        bairro: "",
+        cep: ""
+      };
+    }
+
+    // 1. Direct match in local PDV database
+    let clientInfo = pdvDatabase[cleanNb];
+    if (!clientInfo) {
+      const nbAsNum = parseInt(cleanNb, 10);
+      if (!isNaN(nbAsNum)) {
+        clientInfo = pdvDatabase[String(nbAsNum)];
+      }
+    }
+    if (clientInfo) return clientInfo;
+
+    // 2. Lookup in promaxLookup
+    const hit = promaxLookup.byClientNb.get(cleanNb) || promaxLookup.byClientNb.get(String(parseInt(cleanNb, 10)));
+    if (hit) {
+      return {
+        razaoSocial: hit.nomeCliente || `CLIENTE PARCEIRO DE DISTRIBUIÇÃO (#${cleanNb})`,
+        nomeFantasia: hit.nomeCliente || `CLIENTE PARCEIRO DE DISTRIBUIÇÃO (#${cleanNb})`,
+        municipio: "",
+        uf: "PB",
+        documento: "",
+        endereco: "",
+        complemento: "",
+        bairro: "",
+        cep: ""
+      };
+    }
+
+    return {
+      razaoSocial: `CLIENTE PARCEIRO DE DISTRIBUIÇÃO (#${cleanNb})`,
+      nomeFantasia: `CLIENTE PARCEIRO DE DISTRIBUIÇÃO (#${cleanNb})`,
+      municipio: "",
+      uf: "PB",
+      documento: "",
+      endereco: "",
+      complemento: "",
+      bairro: "",
+      cep: ""
+    };
+  }, [pdvDatabase, promaxLookup]);
+
+  const getMatchedPromax = useCallback((req: PendingRequest): ExchangeRecord | undefined => {
+    if (req.nf) {
+      const cleanNf = req.nf.trim();
+      const hit = promaxLookup.byNf.get(cleanNf) || promaxLookup.byNf.get(cleanNf.replace(/^0+/, ""));
+      if (hit) return hit;
+    }
+    if ((req as any).solicitacao) {
+      const hit = promaxLookup.bySol.get(String((req as any).solicitacao).trim());
+      if (hit) return hit;
+    }
+    if (req.mapa) {
+      const hit = promaxLookup.byMap.get(req.mapa.trim());
+      if (hit) return hit;
+    }
+    if (req.nb) {
+      const cleanNb = req.nb.trim();
+      const hit = promaxLookup.byClientNb.get(cleanNb) || promaxLookup.byClientNb.get(String(parseInt(cleanNb, 10)));
+      if (hit) return hit;
+    }
+    return undefined;
+  }, [promaxLookup]);
+
   // Filter requests according to tabs
   const filteredRequests = useMemo(() => {
+    const text = (deferredSearchTerm || "").trim().toLowerCase();
+
     return requests.filter(req => {
-      // 1. Search filter
-      const text = searchTerm.trim().toLowerCase();
-      const matchSearch = !searchTerm ||
-        (req.nf && req.nf.toLowerCase().includes(text)) ||
-        (req.mapa && req.mapa.toLowerCase().includes(text)) ||
-        (req.nb && req.nb.toLowerCase().includes(text)) ||
-        (req.id && req.id.toLowerCase().includes(text)) ||
-        (req.observacao && req.observacao.toLowerCase().includes(text));
+      // 1. Search filter with comprehensive multi-field matching
+      let matchSearch = true;
+      if (text) {
+        const nf = (req.nf || "").toLowerCase();
+        const mapa = (req.mapa || "").toLowerCase();
+        const nb = (req.nb || "").toLowerCase();
+        const id = (req.id || "").toLowerCase();
+        const sol = ((req as any).solicitacao || "").toLowerCase();
+        const obs = (req.observacao || "").toLowerCase();
+        const mot = (req.motivo || "").toLowerCase();
+        const prod = (req.descricaoProduto || "").toLowerCase();
+        const itm = (req.item || "").toLowerCase();
+        const motr = (req.faltaMotorista || (req as any).motorista || "").toLowerCase();
+        const aj1 = (req.faltaAjudante1 || (req as any).ajudante1 || "").toLowerCase();
+        const aj2 = (req.faltaAjudante2 || (req as any).ajudante2 || "").toLowerCase();
+        const ajs = (req.faltaAjudantes || "").toLowerCase();
+        const set = (req.setor || "").toLowerCase();
+
+        const matchMain = nf.includes(text) ||
+          mapa.includes(text) ||
+          nb.includes(text) ||
+          id.includes(text) ||
+          sol.includes(text) ||
+          obs.includes(text) ||
+          mot.includes(text) ||
+          prod.includes(text) ||
+          itm.includes(text) ||
+          motr.includes(text) ||
+          aj1.includes(text) ||
+          aj2.includes(text) ||
+          ajs.includes(text) ||
+          set.includes(text);
+
+        const matchItems = !matchMain && req.items && req.items.some((i: any) => 
+          (i.item && i.item.toLowerCase().includes(text)) ||
+          (i.descricao && i.descricao.toLowerCase().includes(text)) ||
+          (i.itemDesc && i.itemDesc.toLowerCase().includes(text))
+        );
+
+        matchSearch = matchMain || !!matchItems;
+      }
+
+      if (!matchSearch) return false;
 
       // 2. Sector filter
       const matchSector = sectorFilter === "todos" || req.setor === sectorFilter;
+      if (!matchSector) return false;
 
       // 2.5 Creator / Origem role filter (Motoristas, RNs, Login Admin)
       if (createdRoleFilter !== "todos") {
@@ -2332,56 +2562,54 @@ export default function PendingRequestsTab() {
         if (creatorRole !== createdRoleFilter) return false;
       }
 
-      // 3. Date range filter
-      if (startDate) {
-        const reqDate = getReqDate(req);
-        if (reqDate) {
-          const start = new Date(startDate + "T00:00:00");
-          if (reqDate < start) return false;
-        } else {
-          return false;
-        }
-      }
-      if (endDate) {
-        const reqDate = getReqDate(req);
-        if (reqDate) {
-          const end = new Date(endDate + "T23:59:59");
-          if (reqDate > end) return false;
+      // 3. Date range filter (ultra-precise normalized string comparison YYYY-MM-DD)
+      if (startDate || endDate) {
+        const reqYmd = getReqNormalizedDate(req);
+        if (reqYmd) {
+          if (startDate && reqYmd < startDate) return false;
+          if (endDate && reqYmd > endDate) return false;
         } else {
           return false;
         }
       }
 
       // 3.5 Process Type filter (Reposição vs Troca vs Troca Exceto SKU Fechado)
-      const motiveLower = (req.motivo || "").toLowerCase();
-      
-      // Checking for individual sub-item motives as well to be completely foolproof
-      const hasFaltaItem = req.items && req.items.some((it: any) => (it.motivo || "").toLowerCase().includes("falta"));
-      const isFaltaSkuCompleto = motiveLower.includes("completo") || motiveLower.includes("fechado") ||
-        (req.items && req.items.some((it: any) => {
-          const m = (it.motivo || "").toLowerCase();
-          return m.includes("completo") || m.includes("fechado");
-        }));
+      // When in 'historico_baixas', process filter only applies if specifically chosen (not by default)
+      if (activeTab !== "historico_baixas" || processTypeFilter !== "todos") {
+        const motiveLower = (req.motivo || "").toLowerCase();
+        const hasFaltaItem = req.items && req.items.some((it: any) => (it.motivo || "").toLowerCase().includes("falta"));
+        const isFaltaSkuCompleto = motiveLower.includes("completo") || motiveLower.includes("fechado") ||
+          (req.items && req.items.some((it: any) => {
+            const m = (it.motivo || "").toLowerCase();
+            return m.includes("completo") || m.includes("fechado");
+          }));
 
-      // Reposição = Motivo has "falta"
-      const isReposicao = motiveLower.includes("falta") || hasFaltaItem;
-      const isTroca = !isReposicao;
+        const isReposicao = motiveLower.includes("falta") || hasFaltaItem;
+        const isTroca = !isReposicao;
 
-      if (processTypeFilter === "reposicao") {
-        if (!isReposicao) return false;
-      } else if (processTypeFilter === "troca") {
-        if (!isTroca) return false;
-      } else if (processTypeFilter === "troca_exceto_sku_fechado") {
-        if (isFaltaSkuCompleto) return false;
-      } else if (processTypeFilter === "alto_volume") {
-        if (getRequestHL(req) < 1.0) return false;
-      } else if (processTypeFilter === "alto_valor") {
-        if (getRequestValue(req, promaxRecords) < 500) return false;
+        if (processTypeFilter === "reposicao") {
+          if (!isReposicao) return false;
+        } else if (processTypeFilter === "troca") {
+          if (!isTroca) return false;
+        } else if (processTypeFilter === "troca_exceto_sku_fechado") {
+          if (isFaltaSkuCompleto) return false;
+        } else if (processTypeFilter === "alto_volume") {
+          if (getRequestHL(req) < 1.0) return false;
+        } else if (processTypeFilter === "alto_valor") {
+          if (getRequestValue(req, promaxRecords) < 500) return false;
+        }
       }
 
-      // 3.6 Contingency Alert Filter (Requirement 4)
-      if (onlyContingenciaFilter) {
+      // 3.6 Contingency Alert Filter
+      if (onlyContingenciaFilter && activeTab !== "historico_baixas") {
         if (!isContingenciaAlertReq(req)) return false;
+      }
+
+      // 3.7 Vale filter
+      if (valeFilter !== "todos") {
+        const hasVale = isRequestWithVale(req, valesHistorico);
+        if (valeFilter === "sem_vale" && hasVale) return false;
+        if (valeFilter === "com_vale" && !hasVale) return false;
       }
 
       // 4. Tab filters
@@ -2405,11 +2633,11 @@ export default function PendingRequestsTab() {
         } else if (historicoBaixasStatusFilter === "duplicatas") {
           matchesStatus = duplicateAnalysis.duplicateMap.has(req.id);
         } else {
-          // "todos": Consolidate all occurrences regardless of origin flow
+          // "todos": Show all historical records in this date/sector filter
           matchesStatus = true;
         }
 
-        return matchesStatus && matchSearch && matchSector;
+        return matchesStatus;
       }
 
       if (activeTab === "faltas_inversoes") {
@@ -2428,7 +2656,7 @@ export default function PendingRequestsTab() {
         if (lackFilterErrorType === "entrega" && errType !== "entrega") return false;
         if (lackFilterErrorType === "indefinido" && errType) return false;
 
-        return matchSearch && matchSector;
+        return true;
       } else {
         let matchStatus = req.statusPromax === activeTab;
         if (activeTab === "pendente") {
@@ -2440,7 +2668,7 @@ export default function PendingRequestsTab() {
         } else if (activeTab === "reprovado") {
           matchStatus = req.statusPromax === "reprovado" || req.statusPromax === "corrigir";
         }
-        return matchSearch && matchStatus && matchSector;
+        return matchStatus;
       }
     }).sort((a, b) => {
       // Custom process sorting by Volume (HL) or Financial Value (R$)
@@ -2451,28 +2679,41 @@ export default function PendingRequestsTab() {
         return getRequestHL(a) - getRequestHL(b);
       }
       if (processTypeFilter === "maior_reais") {
-        return getRequestValue(b, promaxRecords) - getRequestValue(a, promaxRecords);
+        return (b.valorTotal || 0) - (a.valorTotal || 0);
       }
       if (processTypeFilter === "menor_reais") {
-        return getRequestValue(a, promaxRecords) - getRequestValue(b, promaxRecords);
+        return (a.valorTotal || 0) - (b.valorTotal || 0);
       }
 
-      // Default sorting: Subtle Date sort order
-      const dateA = getReqDate(a)?.getTime() || a.timestamp || 0;
-      const dateB = getReqDate(b)?.getTime() || b.timestamp || 0;
-      const dateDiff = dateSortOrder === "desc" ? (dateB - dateA) : (dateA - dateB);
+      // Default sorting: Ultra-fast Normalized Date sort order
+      const ymdA = getReqNormalizedDate(a) || "1970-01-01";
+      const ymdB = getReqNormalizedDate(b) || "1970-01-01";
+      const dateDiff = dateSortOrder === "desc" 
+        ? ymdB.localeCompare(ymdA) 
+        : ymdA.localeCompare(ymdB);
       if (dateDiff !== 0) return dateDiff;
 
-      const db = getPdvDatabase();
-      const pdvA = getClientDetails(a.nb, db, promaxRecords);
-      const pdvB = getClientDetails(b.nb, db, promaxRecords);
-      const cityA = (a as any).municipioRecibo || pdvA.municipio || "";
-      const cityB = (b as any).municipioRecibo || pdvB.municipio || "";
+      const cityA = (a as any).municipioRecibo || "";
+      const cityB = (b as any).municipioRecibo || "";
       return cityA.localeCompare(cityB, "pt-BR", { sensitivity: "base" });
     });
-  }, [requests, searchTerm, activeTab, sectorFilter, createdRoleFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType, processTypeFilter, dateSortOrder, historicoBaixasStatusFilter, onlyContingenciaFilter, promaxRecords, duplicateAnalysis]);
+  }, [requests, deferredSearchTerm, activeTab, sectorFilter, createdRoleFilter, startDate, endDate, lackFilterStatus, lackFilterErrorType, processTypeFilter, dateSortOrder, historicoBaixasStatusFilter, onlyContingenciaFilter, valeFilter, valesHistorico, promaxRecords, duplicateAnalysis]);
+
+  // Paginated window for instant rendering without browser freeze
+  const totalFilteredCount = filteredRequests.length;
+  const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(totalFilteredCount / pageSize)) : 1;
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const displayedRequests = useMemo(() => {
+    if (pageSize <= 0) return filteredRequests;
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filteredRequests.slice(start, start + pageSize);
+  }, [filteredRequests, safeCurrentPage, pageSize]);
 
   // Process type summary breakdown for dashboard cards (Reposição vs. Troca vs. Contingências)
+  // Strictly respects active date period, sector, creator, and vale filters as requested:
+  // "identificar o valor correto dos recibos em contingência apenas do periodo filtrado"
+  // "filtro com vale ou sem vale, pois se houver alguma reposição que já tenha sido gerado vale não entre nos dados e na soma, identifique pelo mapa e o sku cadastrado"
   const processSummary = useMemo(() => {
     let reposicaoCount = 0;
     let reposicaoVal = 0;
@@ -2482,7 +2723,69 @@ export default function PendingRequestsTab() {
     let excetoSkuFechadoVal = 0;
     let cadastradosContingenciaCount = 0;
 
-    requests.forEach(r => {
+    // Filter requests matching the active date period and active operational filters
+    const filteredForSummary = requests.filter(r => {
+      // 1. Date period filter (MANDATORY for "apenas do periodo filtrado")
+      if (startDate) {
+        const reqDate = getReqDate(r);
+        if (reqDate) {
+          const start = new Date(startDate + "T00:00:00");
+          if (reqDate < start) return false;
+        } else {
+          return false;
+        }
+      }
+      if (endDate) {
+        const reqDate = getReqDate(r);
+        if (reqDate) {
+          const end = new Date(endDate + "T23:59:59");
+          if (reqDate > end) return false;
+        } else {
+          return false;
+        }
+      }
+
+      // 2. Sector filter if applied
+      if (sectorFilter !== "todos") {
+        const sec = (r.setor || "").trim().toLowerCase();
+        const sf = sectorFilter.trim().toLowerCase();
+        if (sec !== sf && !sec.includes(sf) && !sf.includes(sec)) return false;
+      }
+
+      // 3. Search term filter if applied
+      if (searchTerm.trim()) {
+        const term = searchTerm.toLowerCase().trim();
+        const nfMatch = (r.nf || "").toLowerCase().includes(term);
+        const nbMatch = (r.nb || "").toLowerCase().includes(term);
+        const mapMatch = (r.mapa || "").toLowerCase().includes(term);
+        const obsMatch = (r.observacao || "").toLowerCase().includes(term);
+        const idMatch = (r.id || "").toLowerCase().includes(term);
+        const prodMatch = (r.produto || r.item || r.descricaoProduto || "").toLowerCase().includes(term);
+        if (!nfMatch && !nbMatch && !mapMatch && !obsMatch && !idMatch && !prodMatch) return false;
+      }
+
+      // 4. Role filter if applied
+      if (createdRoleFilter !== "todos") {
+        const role = (r.cadastroRole || r.origem || "").toLowerCase();
+        if (createdRoleFilter === "motorista" && !role.includes("motorista") && !role.includes("rota")) return false;
+        if (createdRoleFilter === "rn" && !role.includes("rn") && !role.includes("vendedor")) return false;
+        if (createdRoleFilter === "admin" && !role.includes("admin") && !role.includes("gest")) return false;
+      }
+
+      // 5. Vale Filter: "pois se houver alguma reposição que já tenha sido gerado vale não entre nos dados e na soma, identifique pelo mapa e o sku cadastrado"
+      if (valeFilter !== "todos") {
+        const hasVale = isRequestWithVale(r, valesHistorico);
+        if (valeFilter === "sem_vale" && hasVale) return false;
+        if (valeFilter === "com_vale" && !hasVale) return false;
+      }
+
+      // 6. Contingency alert filter if applied
+      if (onlyContingenciaFilter && !isContingenciaAlertReq(r)) return false;
+
+      return true;
+    });
+
+    filteredForSummary.forEach(r => {
       const val = getRequestValue(r, promaxRecords);
       const isRep = isReposicaoReq(r);
       const isFechado = isFaltaSkuCompletoReq(r);
@@ -2518,9 +2821,11 @@ export default function PendingRequestsTab() {
       trocaVal,
       excetoSkuFechadoCount,
       excetoSkuFechadoVal,
-      cadastradosContingenciaCount
+      cadastradosContingenciaCount,
+      isPeriodFiltered: !!(startDate || endDate),
+      filteredCount: filteredForSummary.length
     };
-  }, [requests, promaxRecords]);
+  }, [requests, promaxRecords, repsList, motoristasList, startDate, endDate, sectorFilter, searchTerm, createdRoleFilter, valeFilter, onlyContingenciaFilter, valesHistorico]);
 
   // Trigger handlers to open custom interactive modals
   const triggerRegister = (id: string) => {
@@ -2893,11 +3198,11 @@ export default function PendingRequestsTab() {
   }, [requests]);
 
   const lackActiveCount = useMemo(() => {
-    return requests.filter(r => isFaltaOrInversao(r) && !(r as any).faltaBaixa).length;
+    return requests.filter(r => isFaltaOrInversao(r) && !isRequestBaixada(r)).length;
   }, [requests]);
 
   const lackHistoryCount = useMemo(() => {
-    return requests.filter(r => isFaltaOrInversao(r) && !!(r as any).faltaBaixa).length;
+    return requests.filter(r => isFaltaOrInversao(r) && isRequestBaixada(r)).length;
   }, [requests]);
 
   // Monthly limit metric calculation (R$ 12.000 limit)
@@ -2995,8 +3300,8 @@ export default function PendingRequestsTab() {
   // Substats count for Faltas tab overview
   const lackSubstats = useMemo(() => {
     const list = requests.filter(isFaltaOrInversao);
-    const abertos = list.filter(r => !(r as any).faltaBaixa).length;
-    const baixados = list.filter(r => (r as any).faltaBaixa).length;
+    const abertos = list.filter(r => !isRequestBaixada(r)).length;
+    const baixados = list.filter(r => isRequestBaixada(r)).length;
     
     const carregamento = list.filter(r => (r as any).faltaTipoErro === "carregamento").length;
     const entrega = list.filter(r => (r as any).faltaTipoErro === "entrega").length;
@@ -3412,6 +3717,21 @@ export default function PendingRequestsTab() {
                   ({processSummary.cadastradosContingenciaCount} cadastrados/histórico incluídos)
                 </span>
               )}
+              {processSummary.isPeriodFiltered && (
+                <span className="inline-block mt-1 mr-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono text-[9px] font-bold">
+                  📅 Período: {startDate ? startDate.split("-").reverse().join("/") : "Início"} até {endDate ? endDate.split("-").reverse().join("/") : "Fim"}
+                </span>
+              )}
+              {valeFilter === "sem_vale" && (
+                <span className="inline-block mt-1 px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[9px] font-bold">
+                  🛡️ Apenas Sem Vale
+                </span>
+              )}
+              {valeFilter === "com_vale" && (
+                <span className="inline-block mt-1 px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono text-[9px] font-bold">
+                  🎫 Apenas Com Vale
+                </span>
+              )}
             </span>
           </button>
         </div>
@@ -3748,11 +4068,82 @@ export default function PendingRequestsTab() {
                   <span>🖥️</span>
                   <span>Login Admin / Gestão</span>
                 </button>
+
+                {/* DIVIDER */}
+                <div className="h-6 w-px bg-slate-800 mx-1 hidden lg:block" />
+
+                {/* FILTRO DE VALE (User requirement: "crie um filtro com vale ou sem vale, pois se houver alguma reposição que já tenha sido gerado vale não entre nos dados e na soma, identifique pelo mapa e o sku cadastrado") */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[10px] font-bold text-amber-400 font-mono uppercase tracking-wider mr-1 flex items-center gap-1">
+                    <span>Filtro de Vale:</span>
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => setValeFilter("todos")}
+                    className={`h-9 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
+                      valeFilter === "todos"
+                        ? "bg-amber-600 border-amber-400 text-white shadow-md shadow-amber-950/60 ring-1 ring-amber-300/40"
+                        : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900"
+                    }`}
+                    title="Exibir todos os registros (com ou sem vale emitido)"
+                  >
+                    <span>📋</span>
+                    <span>Todos</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setValeFilter("sem_vale")}
+                    className={`h-9 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
+                      valeFilter === "sem_vale"
+                        ? "bg-emerald-600 border-emerald-400 text-white shadow-md shadow-emerald-950/60 ring-1 ring-emerald-300/40"
+                        : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900"
+                    }`}
+                    title="Oculta reposições que já geraram vale (identificadas pelo Mapa e SKU cadastrado) - removidas dos dados e das somas"
+                  >
+                    <span>🛡️</span>
+                    <span>Sem Vale (Ocultar Vales)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setValeFilter("com_vale")}
+                    className={`h-9 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
+                      valeFilter === "com_vale"
+                        ? "bg-purple-600 border-purple-400 text-white shadow-md shadow-purple-950/60 ring-1 ring-purple-300/40"
+                        : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900"
+                    }`}
+                    title="Exibir apenas ocorrências que já geraram vale (identificadas pelo Mapa e SKU cadastrado)"
+                  >
+                    <span>🎫</span>
+                    <span>Com Vale</span>
+                  </button>
+                </div>
               </div>
 
-              {/* Clear filters button */}
-              <div className="flex items-center">
-                {(searchTerm || startDate || endDate || sectorFilter !== "todos" || processTypeFilter !== "todos" || createdRoleFilter !== "todos" || onlyContingenciaFilter) ? (
+              {/* ACTION BUTTONS: Export Filtered Database + Clear filters */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* BOTÃO EXPORTAR BASE FILTRADA (.XLSX) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    exportFilteredRequestsExcel(filteredRequests, valesHistorico, promaxRecords, {
+                      startDate,
+                      endDate,
+                      sectorFilter,
+                      processTypeFilter,
+                      valeFilter
+                    });
+                  }}
+                  className="h-9 px-3.5 bg-emerald-600 hover:bg-emerald-500 active:scale-95 border border-emerald-400 text-white text-xs font-mono font-bold rounded-xl cursor-pointer flex items-center gap-1.5 shadow-md shadow-emerald-950/60 transition-all hover:scale-[1.02]"
+                  title={`Exportar planilha Excel com as ${filteredRequests.length} ocorrências do período filtrado`}
+                >
+                  <Download className="w-3.5 h-3.5 shrink-0 text-emerald-100" />
+                  <span>Exportar Base ({filteredRequests.length})</span>
+                </button>
+
+                {(searchTerm || startDate || endDate || sectorFilter !== "todos" || processTypeFilter !== "todos" || createdRoleFilter !== "todos" || onlyContingenciaFilter || valeFilter !== "todos") ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -3763,8 +4154,10 @@ export default function PendingRequestsTab() {
                       setProcessTypeFilter("todos");
                       setCreatedRoleFilter("todos");
                       setOnlyContingenciaFilter(false);
+                      setValeFilter("todos");
+                      setHistoricoBaixasStatusFilter("todos");
                     }}
-                    className="h-9 px-4 bg-rose-955/60 hover:bg-rose-900 border border-rose-800/40 text-rose-300 text-xs font-mono font-bold rounded-xl cursor-pointer flex items-center justify-center transition-all hover:scale-[1.02]"
+                    className="h-9 px-3 bg-rose-955/60 hover:bg-rose-900 border border-rose-800/40 text-rose-300 text-xs font-mono font-bold rounded-xl cursor-pointer flex items-center justify-center transition-all hover:scale-[1.02]"
                   >
                     Limpar Filtros
                   </button>
@@ -4868,8 +5261,21 @@ export default function PendingRequestsTab() {
                           : "text-slate-400 hover:text-white"
                       }`}
                     >
-                      ✅ Carregados ({espelhoCounts.carregados})
+                      🚛 Carregados ({espelhoCounts.carregados})
                     </button>
+                    {espelhoCounts.baixados > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setEspelhoStatusFilter("baixados")}
+                        className={`px-2.5 py-1 rounded-md font-bold transition-all cursor-pointer btn-3d ${
+                          espelhoStatusFilter === "baixados"
+                            ? "bg-emerald-600 text-white"
+                            : "text-slate-400 hover:text-white"
+                        }`}
+                      >
+                        ✅ Baixadas ({espelhoCounts.baixados})
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -4905,11 +5311,12 @@ export default function PendingRequestsTab() {
                         const currentPlate = espelhoPlates[itemKey] !== undefined ? espelhoPlates[itemKey] : (item.placaVeiculo || item.placa || "");
                         const isCarregado = Boolean(currentPlate && currentPlate.trim());
                         const itemReq = requests.find(r => r.id === item.requestId);
+                        const isBaixado = isRequestBaixada(itemReq);
                         const ageInDays = getItemAgeInDays(item, itemReq);
-                        const isDelayedCarregado = isCarregado && !(itemReq as any)?.faltaBaixa && ageInDays >= 7;
+                        const isDelayedCarregado = isCarregado && !isBaixado && ageInDays >= 7;
 
                         return (
-                          <tr key={idx} className={`text-slate-350 transition-colors ${isDelayedCarregado ? "bg-rose-950/20 hover:bg-rose-950/30" : "hover:bg-slate-850/30"}`}>
+                          <tr key={idx} className={`text-slate-350 transition-colors ${isDelayedCarregado ? "bg-rose-950/20 hover:bg-rose-950/30" : isBaixado ? "bg-emerald-950/10 hover:bg-emerald-950/20" : "hover:bg-slate-850/30"}`}>
                             <td className="p-3 font-mono font-bold text-white text-xs align-middle">{item.nb}</td>
                             <td className="p-3 space-y-1 uppercase align-middle">
                               <p className="font-bold text-slate-200 text-xs">{item.razaoSocial}</p>
@@ -4935,7 +5342,12 @@ export default function PendingRequestsTab() {
                             {/* STATUS ENCAMINHAMENTO */}
                             <td className="p-3 font-mono align-middle">
                               <div className="space-y-1">
-                                {isCarregado ? (
+                                {isBaixado ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-950/90 border border-emerald-500/60 text-emerald-300 rounded font-bold text-[10px] badge-3d">
+                                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                    BAIXADA / ENTREGUE
+                                  </span>
+                                ) : isCarregado ? (
                                   <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-950/90 border border-blue-500/60 text-blue-300 rounded font-bold text-[10px] badge-3d">
                                     <CheckCircle2 className="w-3 h-3 text-blue-400" />
                                     CARREGADO
@@ -5013,23 +5425,103 @@ export default function PendingRequestsTab() {
             <p className="text-[10px] text-slate-655">Limpe os filtros de pesquisa ou mude de guia para atualizar.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 no-print">
-            {filteredRequests.map((req) => {
-              const repInfo = repsList[req.setor.trim()];
-              const rotInfo = motoristasList[req.setor.trim()];
-              const isShortage = isFaltaOrInversao(req);
-              const cast = req as any;
-              const pdvDb = getPdvDatabase();
-              const clientDetails = getClientDetails(req.nb, pdvDb, promaxRecords);
-              
-              const matchedPromax = promaxRecords.find(r => 
-                (req.nf && r.nf && (r.nf === req.nf || r.nf.endsWith(req.nf))) || 
-                (req.solicitacao && r.solicitacao && r.solicitacao === req.solicitacao) ||
-                (req.mapa && r.mapa && r.mapa === req.mapa) ||
-                (req.nb && r.codigoCliente && r.codigoCliente === req.nb)
-              );
-              const promaxUser = req.usuarioAcao || matchedPromax?.usuarioAcao;
-              const dupInfo = duplicateAnalysis.duplicateMap.get(req.id);
+          <div className="space-y-4 no-print">
+            {/* Top Sleek Pagination & Performance Bar */}
+            {totalFilteredCount > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-950/80 rounded-xl border border-slate-800/80 text-xs font-mono">
+                <div className="flex items-center gap-2 text-slate-400">
+                  <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>
+                    Exibindo <strong className="text-white">{pageSize > 0 ? `${(safeCurrentPage - 1) * pageSize + 1}–${Math.min(totalFilteredCount, safeCurrentPage * pageSize)}` : `1–${totalFilteredCount}`}</strong> de <strong className="text-white">{totalFilteredCount}</strong> ocorrências
+                  </span>
+                  {pageSize > 0 && totalPages > 1 && (
+                    <span className="text-[10px] text-indigo-400 font-bold bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-900/40">
+                      Pág. {safeCurrentPage} de {totalPages}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Page Size Selector */}
+                  <div className="flex items-center gap-1 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-400 uppercase">Exibir:</span>
+                    {[30, 60, 100, 0].map((sz) => (
+                      <button
+                        key={sz}
+                        type="button"
+                        onClick={() => {
+                          setPageSize(sz);
+                          setCurrentPage(1);
+                        }}
+                        className={`px-1.5 py-0.5 text-[10.5px] rounded font-bold cursor-pointer transition-all ${
+                          pageSize === sz
+                            ? "bg-indigo-600 text-white shadow-xs"
+                            : "text-slate-400 hover:text-white hover:bg-slate-800"
+                        }`}
+                      >
+                        {sz === 0 ? "Todos" : sz}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Pagination Navigation */}
+                  {pageSize > 0 && totalPages > 1 && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        disabled={safeCurrentPage <= 1}
+                        onClick={() => setCurrentPage(1)}
+                        className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 text-[11px] font-bold border border-slate-800 transition-all cursor-pointer"
+                        title="Primeira Página"
+                      >
+                        «
+                      </button>
+                      <button
+                        type="button"
+                        disabled={safeCurrentPage <= 1}
+                        onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                        className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 text-[11px] font-bold border border-slate-800 transition-all cursor-pointer"
+                        title="Página Anterior"
+                      >
+                        ‹
+                      </button>
+                      <span className="px-2 text-slate-300 font-bold text-xs">
+                        {safeCurrentPage} / {totalPages}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={safeCurrentPage >= totalPages}
+                        onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                        className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 text-[11px] font-bold border border-slate-800 transition-all cursor-pointer"
+                        title="Próxima Página"
+                      >
+                        ›
+                      </button>
+                      <button
+                        type="button"
+                        disabled={safeCurrentPage >= totalPages}
+                        onClick={() => setCurrentPage(totalPages)}
+                        className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 text-[11px] font-bold border border-slate-800 transition-all cursor-pointer"
+                        title="Última Página"
+                      >
+                        »
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {displayedRequests.map((req) => {
+                const repInfo = repsList[req.setor.trim()];
+                const rotInfo = motoristasList[req.setor.trim()];
+                const isShortage = isFaltaOrInversao(req);
+                const cast = req as any;
+                const clientDetails = getResolvedClientDetails(req.nb);
+                const matchedPromax = getMatchedPromax(req);
+                const promaxUser = req.usuarioAcao || matchedPromax?.usuarioAcao;
+                const dupInfo = duplicateAnalysis.duplicateMap.get(req.id);
               
               const isBaixadoCard = !!cast.faltaBaixa || !!(req as any).faltaBaixa || req.status === "baixado" || req.statusPromax === "cadastrado";
               const hasReceiptFile = !!(cast.faltaBaixaReciboUrl || (req as any).faltaBaixaReciboUrl || (req as any).pdfFilePath || (req as any).receiptFile || (req as any).faltaBaixaReciboName);
@@ -5173,6 +5665,17 @@ export default function PendingRequestsTab() {
                       {!isFaltaSkuCompletoReq(req) && (
                         <span className="text-[8px] uppercase font-bold font-mono text-amber-300 bg-amber-955/50 px-2 py-0.5 rounded-lg border border-amber-800/40 shrink-0" title="Elegível para Recibo PDV de Contingência">
                           ⚠️ Contingência
+                        </span>
+                      )}
+
+                      {/* Vale Status Badge (Identificado por Mapa e SKU) */}
+                      {isRequestWithVale(req, valesHistorico) ? (
+                        <span className="text-[8px] uppercase font-bold font-mono text-purple-300 bg-purple-955/60 px-2 py-0.5 rounded-lg border border-purple-800/40 shrink-0 flex items-center gap-1" title="Esta ocorrência gerou um Vale / Rateio de Prejuízo (identificado pelo Mapa e SKU cadastrado)">
+                          <span>🎫 Vale Gerado</span>
+                        </span>
+                      ) : (
+                        <span className="text-[8px] uppercase font-bold font-mono text-slate-400 bg-slate-900/60 px-2 py-0.5 rounded-lg border border-slate-800 shrink-0" title="Sem vale emitido">
+                          <span>🛡️ Sem Vale</span>
                         </span>
                       )}
                     </div>
@@ -5792,6 +6295,95 @@ export default function PendingRequestsTab() {
                 </div>
               );
             })}
+            </div>
+
+            {/* Bottom Comprehensive Pagination Bar */}
+            {totalFilteredCount > 0 && pageSize > 0 && totalPages > 1 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-950/90 rounded-xl border border-slate-800/90 text-xs font-mono">
+                <span className="text-slate-400">
+                  Mostrando <strong className="text-white">{(safeCurrentPage - 1) * pageSize + 1}–{Math.min(totalFilteredCount, safeCurrentPage * pageSize)}</strong> de <strong className="text-white">{totalFilteredCount}</strong> solicitações filtradas
+                </span>
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={safeCurrentPage <= 1}
+                    onClick={() => {
+                      setCurrentPage(1);
+                      window.scrollTo({ top: 300, behavior: "smooth" });
+                    }}
+                    className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 text-xs font-bold border border-slate-800 transition-all cursor-pointer"
+                    title="Primeira Página"
+                  >
+                    « Primeira
+                  </button>
+                  <button
+                    type="button"
+                    disabled={safeCurrentPage <= 1}
+                    onClick={() => {
+                      setCurrentPage(prev => Math.max(1, prev - 1));
+                      window.scrollTo({ top: 300, behavior: "smooth" });
+                    }}
+                    className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 text-xs font-bold border border-slate-800 transition-all cursor-pointer"
+                    title="Página Anterior"
+                  >
+                    ‹ Anterior
+                  </button>
+
+                  {/* Numbered Page Buttons */}
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter(p => p === 1 || p === totalPages || Math.abs(p - safeCurrentPage) <= 2)
+                    .map((p, idx, arr) => {
+                      const prev = arr[idx - 1];
+                      const showEllipsis = prev && p - prev > 1;
+                      return (
+                        <React.Fragment key={p}>
+                          {showEllipsis && <span className="text-slate-500 px-1">...</span>}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCurrentPage(p);
+                              window.scrollTo({ top: 300, behavior: "smooth" });
+                            }}
+                            className={`w-7 h-7 rounded text-xs font-bold transition-all cursor-pointer flex items-center justify-center ${
+                              safeCurrentPage === p
+                                ? "bg-indigo-600 text-white shadow-md shadow-indigo-950 font-black border border-indigo-400"
+                                : "bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800"
+                            }`}
+                          >
+                            {p}
+                          </button>
+                        </React.Fragment>
+                      );
+                    })}
+
+                  <button
+                    type="button"
+                    disabled={safeCurrentPage >= totalPages}
+                    onClick={() => {
+                      setCurrentPage(prev => Math.min(totalPages, prev + 1));
+                      window.scrollTo({ top: 300, behavior: "smooth" });
+                    }}
+                    className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 text-xs font-bold border border-slate-800 transition-all cursor-pointer"
+                    title="Próxima Página"
+                  >
+                    Próxima ›
+                  </button>
+                  <button
+                    type="button"
+                    disabled={safeCurrentPage >= totalPages}
+                    onClick={() => {
+                      setCurrentPage(totalPages);
+                      window.scrollTo({ top: 300, behavior: "smooth" });
+                    }}
+                    className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 text-xs font-bold border border-slate-800 transition-all cursor-pointer"
+                    title="Última Página"
+                  >
+                    Última »
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -7087,7 +7679,7 @@ export default function PendingRequestsTab() {
                                 </div>
                               </td>
                               <td className="p-2.5 border-r border-gray-300 text-center font-mono font-bold text-indigo-950">
-                                {(Number(sub.hectolitros) || 0).toFixed(4)} HL
+                                {(Number(sub.hectolitros) || 0).toFixed(2)} HL
                               </td>
                               {isVale && (
                                 <td className="p-2.5 text-right font-mono">
@@ -7159,7 +7751,7 @@ export default function PendingRequestsTab() {
                           <td className="p-2.5 text-center font-mono">
                             {totalQty} {umLabel}
                           </td>
-                          <td className="p-2.5 text-center font-mono text-indigo-950 font-black">{totalHl.toFixed(4)} HL</td>
+                          <td className="p-2.5 text-center font-mono text-indigo-950 font-black">{totalHl.toFixed(2)} HL</td>
                           {isVale && <td colSpan={2} className="p-2.5 text-right font-mono text-rose-700">{formatCurrency(totalVal)}</td>}
                         </tr>
                       );

@@ -32,8 +32,10 @@ import {
   calculateItemValue,
   calculateItemHL,
   getProductCatalogInfo,
+  getProductByCodeOrName,
   getProductDescription,
-  getProductBoxPrice 
+  getProductBoxPrice,
+  classifyShortageErrorType
 } from "../data/products";
 import { isRecordReposicao } from "../utils/processTypes";
 import ShortageTreeBreakdown from "./ShortageTreeBreakdown";
@@ -159,34 +161,24 @@ export default function FaltasInversoesDashboard({
       }
 
       const rawCode = String(r.item || cast.itemCode || cast.produto || "").trim();
-      const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
-      const prod = getProductCatalogInfo(rawCode);
-
-      const isUnd = ["und", "un", "unidade", "unidades"].includes(String(r.unidadeMedida || r.um || "").toLowerCase().trim());
+      const cleanCode = rawCode.replace(/^(?:SKU|#|\s)+/i, "").trim().replace(/^0+/, "");
+      const prod = getProductCatalogInfo(rawCode) || getProductByCodeOrName(r.descricaoProduto || "");
       const qty = Number(r.quantidade) || 1;
       
-      const boxPrice = prod?.valor && prod.valor > 0 ? prod.valor : (r.customUnitPrice || cast.valorUnitario || 0);
-      const embalagem = prod?.fator || r.fatorEmbalagem || (isUnd ? 12 : 1);
-      const unitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
-      
-      // Calculate real item financial value based on SKU price and unit of measure (avoiding full NF invoice totals)
-      let calculatedVal = calculateItemValue({
-        item: rawCode,
-        quantidade: qty,
-        unidadeMedida: r.unidadeMedida || r.um,
-        fatorEmbalagem: embalagem,
-        customUnitPrice: r.customUnitPrice,
-        precoCalculated: cast.precoCalculated,
-        descricao: r.descricaoProduto,
-        motivo: r.motivo
-      });
+      // Calculate real item financial value based strictly on closed SKU package price * qty
+      const { valorTotal: calcReqVal, hectolitros: calcReqHl } = calculateRequestValueAndHL(r);
+      let calculatedVal = calcReqVal > 0 ? calcReqVal : 0;
+      let calculatedHl = calcReqHl > 0 ? calcReqHl : 0;
 
       if (!calculatedVal || calculatedVal <= 0) {
-        if (r.valorTotal && r.valorTotal > 0 && r.valorTotal < 2000) {
-          calculatedVal = Number(r.valorTotal.toFixed(2));
-        } else if (unitPrice > 0) {
-          calculatedVal = Number((unitPrice * qty).toFixed(2));
-        }
+        calculatedVal = calculateItemValue({
+          item: rawCode,
+          quantidade: qty,
+          customUnitPrice: r.customUnitPrice,
+          precoCalculated: cast.precoCalculated,
+          descricao: r.descricaoProduto,
+          motivo: r.motivo
+        });
       }
 
       // Discard items with zero financial value
@@ -194,57 +186,35 @@ export default function FaltasInversoesDashboard({
         return;
       }
 
-      // Calculate accurate HL
-      let calculatedHl = calculateItemHL({
-        item: rawCode,
-        quantidade: qty,
-        unidadeMedida: r.unidadeMedida || r.um,
-        fatorEmbalagem: embalagem,
-        fatorHecto: prod?.fatorHecto || r.fatorHecto,
-        descricao: r.descricaoProduto
-      });
+      // Calculate accurate HL based on closed SKU package factor * qty
       if (!calculatedHl || calculatedHl <= 0) {
-        const factorHl = prod?.fatorHecto || r.fatorHecto || 0.042;
-        calculatedHl = isUnd ? Number(((factorHl / embalagem) * qty).toFixed(4)) : Number((factorHl * qty).toFixed(4));
+        calculatedHl = calculateItemHL({
+          item: rawCode,
+          quantidade: qty,
+          fatorHecto: prod?.fatorHecto || r.fatorHecto,
+          descricao: r.descricaoProduto
+        });
       }
 
       // Classify error: Carregamento (Armazém CD) vs Descarregamento (Rota / Entrega / Vales)
-      let errorType = cast.faltaTipoErro ? cast.faltaTipoErro.toLowerCase() : "";
-      if (!errorType) {
-        const isCarregamento = 
-          m.includes("carregamento") || 
-          m.includes("armazém") || 
-          m.includes("armazem") || 
-          m.includes("doca") || 
-          m.includes("separação") || 
-          m.includes("separacao") ||
-          subM.includes("carregamento") ||
-          subM.includes("palete") ||
-          subM.includes("doca") ||
-          obs.includes("carregamento") ||
-          obs.includes("armazém") ||
-          obs.includes("armazem") ||
-          just.includes("carregamento") ||
-          just.includes("armazém");
-
-        errorType = isCarregamento ? "carregamento" : "entrega";
-      }
+      const errorType = classifyShortageErrorType(r);
+      const isCarreg = errorType === "carregamento";
 
       const driverName = (r.faltaMotorista || cast.motorista || cast.nomeMotorista || "NÃO DECLARADO").trim().toUpperCase();
       const isX = isDriverX(driverName);
-      const isCarreg = errorType === "carregamento";
 
       const key = r.id || `shortage_${r.nf}_${r.item}_${r.data}_${idx}`;
       if (!map.has(key)) {
         map.set(key, {
           ...r,
           id: key,
+          unidadeMedida: "cx",
           descricaoProduto: getProductDescription(rawCode, r.descricaoProduto),
           valorTotal: calculatedVal,
           hectolitros: calculatedHl,
           motivo: isCarreg ? (r.motivo || "Falta de SKU no Carregamento (Armazém)") : (r.motivo || "Falta no Descarregamento (Rota / Entrega)"),
           subMotivo: r.subMotivo || (isCarreg ? "Separação Incompleta no Palete da Doca" : "Divergência na Conferência do PDV"),
-          faltaTipoErro: errorType as "carregamento" | "entrega",
+          faltaTipoErro: errorType,
           gerouVale: !isCarreg && !isX,
           faltaMotorista: driverName,
           tipoRegistroFalta: true
@@ -265,9 +235,9 @@ export default function FaltasInversoesDashboard({
     let totalDescarregamentoHl = 0;
     let totalDescarregamentoVal = 0;
 
-    let totalIndefinidoCount = 0;
-    let totalIndefinidoHl = 0;
-    let totalIndefinidoVal = 0;
+    const totalIndefinidoCount = 0;
+    const totalIndefinidoHl = 0;
+    const totalIndefinidoVal = 0;
 
     // Monthly aggregation array (12 months)
     const monthlyData = Array.from({ length: 12 }, (_, i) => ({
@@ -294,12 +264,8 @@ export default function FaltasInversoesDashboard({
       const cast = req as any;
       const valorTotal = req.valorTotal || 0;
       const hectolitros = req.hectolitros || 0;
-      const isSwap = isInversaoOrSwapReq(req);
-      const errorType = (cast.faltaTipoErro || "").toLowerCase();
-      
-      // Determine error category
-      const isCarregamento = errorType === "carregamento" || (!errorType && isSwap);
-      const isDescarregamento = errorType === "entrega" || errorType === "descarregamento" || (!errorType && !isSwap);
+      const errorType = classifyShortageErrorType(req);
+      const isCarregamento = errorType === "carregamento";
 
       // Parse date for monthly breakdown
       const dateStr = req.data || (req as any).createdAt || "";
@@ -334,7 +300,7 @@ export default function FaltasInversoesDashboard({
           monthlyData[monthIndex].totalHl += hectolitros;
           monthlyData[monthIndex].totalVal += valorTotal;
         }
-      } else if (isDescarregamento) {
+      } else {
         totalDescarregamentoCount++;
         totalDescarregamentoHl += hectolitros;
         totalDescarregamentoVal += valorTotal;
@@ -358,10 +324,6 @@ export default function FaltasInversoesDashboard({
         driverLossMap[driverName].count += 1;
         driverLossMap[driverName].val += valorTotal;
         driverLossMap[driverName].hl += hectolitros;
-      } else {
-        totalIndefinidoCount++;
-        totalIndefinidoHl += hectolitros;
-        totalIndefinidoVal += valorTotal;
       }
     });
 
@@ -370,9 +332,9 @@ export default function FaltasInversoesDashboard({
     const monthsDivisor = Math.max(1, activeMonths.length);
     const avgMonthlyValesVal = totalDescarregamentoVal / monthsDivisor;
 
-    const totalGeneralCount = totalCarregamentoCount + totalDescarregamentoCount + totalIndefinidoCount;
-    const totalGeneralHl = totalCarregamentoHl + totalDescarregamentoHl + totalIndefinidoHl;
-    const totalGeneralVal = totalCarregamentoVal + totalDescarregamentoVal + totalIndefinidoVal;
+    const totalGeneralCount = totalCarregamentoCount + totalDescarregamentoCount;
+    const totalGeneralHl = totalCarregamentoHl + totalDescarregamentoHl;
+    const totalGeneralVal = totalCarregamentoVal + totalDescarregamentoVal;
 
     // Percentages
     const pctCarregamentoCount = totalGeneralCount > 0 ? (totalCarregamentoCount / totalGeneralCount) * 100 : 0;
@@ -918,7 +880,7 @@ export default function FaltasInversoesDashboard({
           <div className="my-2">
             <div className="text-3xl font-black text-white font-sans">{analytics.totalGeneralCount}</div>
             <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-              Volume: <strong className="text-amber-400">{analytics.totalGeneralHl.toFixed(4)} HL</strong> | <strong className="text-emerald-400">{formatCurrency(analytics.totalGeneralVal)}</strong>
+              Volume: <strong className="text-amber-400">{analytics.totalGeneralHl.toFixed(2)} HL</strong> | <strong className="text-emerald-400">{formatCurrency(analytics.totalGeneralVal)}</strong>
             </p>
           </div>
           <div className="text-[9.5px] text-slate-500 border-t border-slate-850 pt-1.5 flex justify-between">
@@ -943,7 +905,7 @@ export default function FaltasInversoesDashboard({
               <span className="text-xs font-mono font-bold text-blue-300">({analytics.pctCarregamentoCount.toFixed(1)}%)</span>
             </div>
             <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-              Volume: <strong className="text-blue-300">{analytics.totalCarregamentoHl.toFixed(4)} HL</strong> | <strong className="text-slate-300">{formatCurrency(analytics.totalCarregamentoVal)}</strong>
+              Volume: <strong className="text-blue-300">{analytics.totalCarregamentoHl.toFixed(2)} HL</strong> | <strong className="text-slate-300">{formatCurrency(analytics.totalCarregamentoVal)}</strong>
             </p>
           </div>
           <div className="text-[9.5px] text-blue-400/80 border-t border-slate-850 pt-1.5 flex justify-between">
@@ -968,7 +930,7 @@ export default function FaltasInversoesDashboard({
               <span className="text-xs font-mono font-bold text-amber-400">({analytics.pctDescarregamentoCount.toFixed(1)}%)</span>
             </div>
             <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-              Volume: <strong className="text-amber-400">{analytics.totalDescarregamentoHl.toFixed(4)} HL</strong> | <strong className="text-emerald-400">{formatCurrency(analytics.totalDescarregamentoVal)}</strong>
+              Volume: <strong className="text-amber-400">{analytics.totalDescarregamentoHl.toFixed(2)} HL</strong> | <strong className="text-emerald-400">{formatCurrency(analytics.totalDescarregamentoVal)}</strong>
             </p>
           </div>
           <div className="text-[9.5px] text-amber-400/80 border-t border-slate-850 pt-1.5 flex justify-between">
@@ -1090,7 +1052,7 @@ export default function FaltasInversoesDashboard({
                           <p className="font-bold text-white uppercase text-[10.5px]">{data.name}</p>
                           <div className="text-[10px] text-slate-300 font-mono space-y-0.5">
                             <p>Ocorrências: <strong className="text-white">{data.count}</strong> ({data.pct.toFixed(1)}%)</p>
-                            <p>Volume Físico: <strong className="text-amber-400">{data.hl.toFixed(4)} HL</strong></p>
+                            <p>Volume Físico: <strong className="text-amber-400">{data.hl.toFixed(2)} HL</strong></p>
                             <p>Impacto Financeiro: <strong className="text-emerald-400">{formatCurrency(data.val)}</strong></p>
                           </div>
                         </div>
@@ -1119,7 +1081,7 @@ export default function FaltasInversoesDashboard({
                 <span className="text-[9px] font-mono font-bold text-blue-400 uppercase">1. Carregamento</span>
                 <span className="text-[10px] font-mono font-bold text-blue-300">{analytics.pctCarregamentoCount.toFixed(1)}%</span>
               </div>
-              <div className="text-xs font-mono font-bold text-white">{analytics.totalCarregamentoHl.toFixed(4)} HL</div>
+              <div className="text-xs font-mono font-bold text-white">{analytics.totalCarregamentoHl.toFixed(2)} HL</div>
               <div className="text-[9.5px] font-mono text-slate-400">{formatCurrency(analytics.totalCarregamentoVal)} (Sem Vale)</div>
             </div>
 
@@ -1129,7 +1091,7 @@ export default function FaltasInversoesDashboard({
                 <span className="text-[9px] font-mono font-bold text-amber-400 uppercase">2. Descarregamento</span>
                 <span className="text-[10px] font-mono font-bold text-amber-300">{analytics.pctDescarregamentoCount.toFixed(1)}%</span>
               </div>
-              <div className="text-xs font-mono font-bold text-white">{analytics.totalDescarregamentoHl.toFixed(4)} HL</div>
+              <div className="text-xs font-mono font-bold text-white">{analytics.totalDescarregamentoHl.toFixed(2)} HL</div>
               <div className="text-[9.5px] font-mono text-emerald-400 font-bold">{formatCurrency(analytics.totalDescarregamentoVal)} (Vales)</div>
             </div>
           </div>
@@ -1258,19 +1220,19 @@ export default function FaltasInversoesDashboard({
                             <div className="flex justify-between items-center gap-4 text-blue-400">
                               <span>📦 Carregamento:</span>
                               <strong>
-                                {barMetric === "hl" ? `${data.carregamentoHl.toFixed(4)} HL` : barMetric === "val" ? formatCurrency(data.carregamentoVal) : `${data.carregamentoCount} casos`}
+                                {barMetric === "hl" ? `${data.carregamentoHl.toFixed(2)} HL` : barMetric === "val" ? formatCurrency(data.carregamentoVal) : `${data.carregamentoCount} casos`}
                               </strong>
                             </div>
                             <div className="flex justify-between items-center gap-4 text-amber-400">
                               <span>🚚 Descarregamento / Vales:</span>
                               <strong>
-                                {barMetric === "hl" ? `${data.descarregamentoHl.toFixed(4)} HL` : barMetric === "val" ? formatCurrency(data.descarregamentoVal) : `${data.descarregamentoCount} casos`}
+                                {barMetric === "hl" ? `${data.descarregamentoHl.toFixed(2)} HL` : barMetric === "val" ? formatCurrency(data.descarregamentoVal) : `${data.descarregamentoCount} casos`}
                               </strong>
                             </div>
                             <div className="border-t border-slate-850 pt-1 flex justify-between items-center gap-4 text-slate-300 font-bold">
                               <span>Total Consolidado:</span>
                               <strong className="text-emerald-400">
-                                {barMetric === "hl" ? `${data.totalHl.toFixed(4)} HL` : barMetric === "val" ? formatCurrency(data.totalVal) : `${data.totalCount} casos`}
+                                {barMetric === "hl" ? `${data.totalHl.toFixed(2)} HL` : barMetric === "val" ? formatCurrency(data.totalVal) : `${data.totalCount} casos`}
                               </strong>
                             </div>
                           </div>
@@ -1379,7 +1341,7 @@ export default function FaltasInversoesDashboard({
                       {formatCurrency(driver.val)}
                     </span>
                     <span className="text-[9px] font-mono text-slate-400">
-                      {driver.hl.toFixed(4)} HL
+                      {driver.hl.toFixed(2)} HL
                     </span>
                   </div>
                 </div>

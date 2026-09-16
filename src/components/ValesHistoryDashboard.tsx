@@ -24,13 +24,11 @@ import {
   BarChart3,
   ArrowRight,
   Filter,
-  Zap,
-  Info,
   Award
 } from "lucide-react";
 import { exportValesPacotePrejuizoExcel } from "../utils/excelExport";
 import { useSstrData } from "../context/SstrDataContext";
-import { calculateRequestValueAndHL, getProductsDatabase, PRODUCT_DATABASE } from "../data/products";
+import { calculateRequestValueAndHL, getProductsDatabase } from "../data/products";
 import { 
   isInversaoOrSwapReq, 
   calculateValeRateio, 
@@ -99,6 +97,89 @@ const MONTH_NAMES = [
   { num: 12, short: "Dez", full: "Dezembro", label: "12 - Dezembro" },
 ];
 
+/**
+ * Robust date parser for Vales supporting DD/MM/YYYY, YYYY-MM-DD, and fallbacks
+ */
+export const parseValeDate = (dateStr?: string, fallbackReq?: any): Date | null => {
+  const tryParse = (str?: string): Date | null => {
+    if (!str || typeof str !== "string") return null;
+    const clean = str.trim();
+    if (!clean) return null;
+
+    if (clean.includes("/")) {
+      const parts = clean.split("/");
+      if (parts.length === 3) {
+        const d = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        let y = parseInt(parts[2], 10);
+        if (y < 100) y += 2000;
+        if (!isNaN(d) && !isNaN(m) && !isNaN(y)) {
+          return new Date(y, m, d, 12, 0, 0);
+        }
+      }
+    } else if (clean.includes("-")) {
+      const dateOnly = clean.split("T")[0];
+      const parts = dateOnly.split("-");
+      if (parts.length === 3) {
+        if (parts[0].length === 4) {
+          const y = parseInt(parts[0], 10);
+          const m = parseInt(parts[1], 10) - 1;
+          const d = parseInt(parts[2], 10);
+          if (!isNaN(d) && !isNaN(m) && !isNaN(y)) {
+            return new Date(y, m, d, 12, 0, 0);
+          }
+        } else {
+          const d = parseInt(parts[0], 10);
+          const m = parseInt(parts[1], 10) - 1;
+          const y = parseInt(parts[2], 10);
+          if (!isNaN(d) && !isNaN(m) && !isNaN(y)) {
+            return new Date(y, m, d, 12, 0, 0);
+          }
+        }
+      }
+    }
+    const parsed = new Date(clean);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const parsed = tryParse(dateStr);
+  if (parsed) return parsed;
+  if (fallbackReq) {
+    return tryParse(fallbackReq.data) || tryParse(fallbackReq.cadastroDate);
+  }
+  return null;
+};
+
+export const formatDisplayDate = (dStr: string): string => {
+  if (!dStr) return "";
+  if (dStr.includes("-")) {
+    const parts = dStr.split("T")[0].split("-");
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+  }
+  return dStr;
+};
+
+export const getSelectedMonthsLabel = (months: number[], format: "short" | "full" | "label" = "short"): string => {
+  if (months.length === 0) return "Nenhum";
+  if (months.length === 12) return "Todos os Meses";
+  const sorted = [...months].sort((a, b) => a - b);
+  if (format === "label") {
+    return sorted.map(num => MONTH_NAMES.find(m => m.num === num)?.label).filter(Boolean).join(", ");
+  }
+  if (format === "full") {
+    if (sorted.length === 1) return MONTH_NAMES.find(m => m.num === sorted[0])?.full || "";
+    if (sorted.length === 2) {
+      const m1 = MONTH_NAMES.find(m => m.num === sorted[0])?.full;
+      const m2 = MONTH_NAMES.find(m => m.num === sorted[1])?.full;
+      return `${m1} e ${m2}`;
+    }
+    return sorted.map(num => MONTH_NAMES.find(m => m.num === num)?.full).filter(Boolean).join(", ");
+  }
+  return sorted.map(num => MONTH_NAMES.find(m => m.num === num)?.short).filter(Boolean).join(", ");
+};
+
 export default function ValesHistoryDashboard({ 
   vales, 
   onReimprimir, 
@@ -109,7 +190,14 @@ export default function ValesHistoryDashboard({
 }: ValesHistoryDashboardProps) {
   // Navigation: "acumulado" (guia principal) vs "mensal" (guia mês a mês)
   const [activeTabMode, setActiveTabMode] = useState<"acumulado" | "mensal">("acumulado");
-  const [selectedMonth, setSelectedMonth] = useState<number>(7); // Default Julho
+  
+  // Selected months array (supports multiple selection when holding Ctrl key or toggling multi-select)
+  const [selectedMonths, setSelectedMonths] = useState<number[]>([8]); // Default Agosto (Mês 8, 2026)
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState<boolean>(false);
+
+  // Custom Day Range Filter for searching and exporting vales
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
 
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedRoute, setSelectedRoute] = useState("todas");
@@ -255,19 +343,14 @@ export default function ValesHistoryDashboard({
   }, [vales]);
 
   // Helper to extract month number (1 to 12) from date string (YYYY-MM-DD or DD/MM/YYYY)
-  const getValeMonth = (dateStr?: string): number => {
-    if (!dateStr) return 8; // default to August if missing
-    try {
-      if (dateStr.includes("-")) {
-        const parts = dateStr.split("-");
-        return parseInt(parts[1], 10) || 8;
-      }
-      if (dateStr.includes("/")) {
-        const parts = dateStr.split("/");
-        return parseInt(parts[1], 10) || 8;
-      }
-    } catch (e) {}
-    return 8;
+  const getValeMonth = (v: ValeEntry | string): number => {
+    const dateStr = typeof v === "string" ? v : v.dataEmissao;
+    const fallback = typeof v === "string" ? undefined : v.originalRequest;
+    const d = parseValeDate(dateStr, fallback);
+    if (d) {
+      return d.getMonth() + 1;
+    }
+    return 8; // default to August if missing
   };
 
   // Monthly breakdown map for all 12 months
@@ -278,7 +361,7 @@ export default function ValesHistoryDashboard({
     }
 
     validVales.forEach(v => {
-      const m = getValeMonth(v.dataEmissao);
+      const m = getValeMonth(v);
       if (map[m]) {
         map[m].count += 1;
         map[m].val += v.valorTotal || 0;
@@ -290,14 +373,26 @@ export default function ValesHistoryDashboard({
     return map;
   }, [validVales]);
 
-  // Vales for the selected mode & month
+  // Vales for the selected mode & month(s)
   const activeDatasetVales = useMemo(() => {
     if (activeTabMode === "acumulado") {
       return validVales;
     } else {
-      return monthlyStats[selectedMonth]?.vales || [];
+      // Support single or multiple selected months
+      const result: ValeEntry[] = [];
+      const seen = new Set<string>();
+      selectedMonths.forEach(mNum => {
+        const list = monthlyStats[mNum]?.vales || [];
+        list.forEach(v => {
+          if (!seen.has(v.id)) {
+            seen.add(v.id);
+            result.push(v);
+          }
+        });
+      });
+      return result;
     }
-  }, [activeTabMode, selectedMonth, validVales, monthlyStats]);
+  }, [activeTabMode, selectedMonths, validVales, monthlyStats]);
 
   // Format currency helper
   const formatCurrency = (val: number) => {
@@ -316,9 +411,32 @@ export default function ValesHistoryDashboard({
     return Array.from(rSet).sort();
   }, [activeDatasetVales]);
 
-  // Filtered Vales List
+  // Filtered Vales List (applying custom day range, search, route, and status)
   const filteredVales = useMemo(() => {
     return activeDatasetVales.filter(v => {
+      // 1. Custom Day Filter (Data Inicial & Data Final)
+      if (startDate) {
+        const d = parseValeDate(v.dataEmissao, v.originalRequest);
+        if (d) {
+          const [sY, sM, sD] = startDate.split("-").map(Number);
+          const sDate = new Date(sY, sM - 1, sD, 0, 0, 0);
+          if (d < sDate) return false;
+        } else {
+          return false;
+        }
+      }
+      if (endDate) {
+        const d = parseValeDate(v.dataEmissao, v.originalRequest);
+        if (d) {
+          const [eY, eM, eD] = endDate.split("-").map(Number);
+          const eDate = new Date(eY, eM - 1, eD, 23, 59, 59);
+          if (d > eDate) return false;
+        } else {
+          return false;
+        }
+      }
+
+      // 2. Search Term
       const matchSearch = !searchTerm ||
         v.nf.toLowerCase().includes(searchTerm.toLowerCase()) ||
         v.motorista.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -327,13 +445,99 @@ export default function ValesHistoryDashboard({
         (v.ajudante1 && v.ajudante1.toLowerCase().includes(searchTerm.toLowerCase())) ||
         (v.ajudante2 && v.ajudante2.toLowerCase().includes(searchTerm.toLowerCase()));
 
+      // 3. Route Filter
       const matchRoute = selectedRoute === "todas" || v.rota.trim() === selectedRoute.trim();
+      
+      // 4. Status Filter
       const st = v.status || "pendente";
       const matchStatus = selectedStatusFilter === "todos" || st === selectedStatusFilter;
 
       return matchSearch && matchRoute && matchStatus;
     });
-  }, [activeDatasetVales, searchTerm, selectedRoute, selectedStatusFilter]);
+  }, [activeDatasetVales, searchTerm, selectedRoute, selectedStatusFilter, startDate, endDate]);
+
+  // Quick range preset helper
+  const setQuickRange = (preset: "hoje" | "ontem" | "7dias" | "15dias" | "este_mes" | "limpar") => {
+    const now = new Date();
+    const formatYMD = (d: Date) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    };
+
+    if (preset === "limpar") {
+      setStartDate("");
+      setEndDate("");
+      return;
+    }
+    if (preset === "hoje") {
+      const todayStr = formatYMD(now);
+      setStartDate(todayStr);
+      setEndDate(todayStr);
+      return;
+    }
+    if (preset === "ontem") {
+      const yest = new Date(now);
+      yest.setDate(yest.getDate() - 1);
+      const yestStr = formatYMD(yest);
+      setStartDate(yestStr);
+      setEndDate(yestStr);
+      return;
+    }
+    if (preset === "7dias") {
+      const past = new Date(now);
+      past.setDate(past.getDate() - 7);
+      setStartDate(formatYMD(past));
+      setEndDate(formatYMD(now));
+      return;
+    }
+    if (preset === "15dias") {
+      const past = new Date(now);
+      past.setDate(past.getDate() - 15);
+      setStartDate(formatYMD(past));
+      setEndDate(formatYMD(now));
+      return;
+    }
+    if (preset === "este_mes") {
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      setStartDate(formatYMD(firstDay));
+      setEndDate(formatYMD(lastDay));
+      return;
+    }
+  };
+
+  // Dynamic filename and button label for export
+  const getExportFilename = () => {
+    if (startDate || endDate) {
+      const s = startDate ? startDate.replace(/-/g, "") : "inicio";
+      const e = endDate ? endDate.replace(/-/g, "") : "fim";
+      return `vales_periodo_${s}_a_${e}`;
+    }
+    if (activeTabMode === "mensal") {
+      if (selectedMonths.length === 1) {
+        const m = MONTH_NAMES.find(x => x.num === selectedMonths[0]);
+        return `vales_${m?.short.toLowerCase() || "mes"}_2026`;
+      }
+      const names = selectedMonths.map(num => MONTH_NAMES.find(x => x.num === num)?.short.toLowerCase()).join("_");
+      return `vales_meses_${names}_2026`;
+    }
+    return `vales_acumulado_2026`;
+  };
+
+  const getExportButtonLabel = () => {
+    if (startDate || endDate) {
+      return `Exportar Período (${filteredVales.length})`;
+    }
+    if (activeTabMode === "mensal") {
+      if (selectedMonths.length === 1) {
+        return `Exportar ${MONTH_NAMES.find(m => m.num === selectedMonths[0])?.short} (${filteredVales.length})`;
+      }
+      return `Exportar ${selectedMonths.length} Meses (${filteredVales.length})`;
+    }
+    return `Exportar Excel (${filteredVales.length})`;
+  };
 
   // Aggregate stats of active dataset
   const currentStats = useMemo(() => {
@@ -353,10 +557,10 @@ export default function ValesHistoryDashboard({
     return { totalCount, totalVal, totalHl, avgVal };
   }, [validVales]);
 
-  // Driver ranking analytics for active dataset (Top 5)
+  // Driver ranking analytics for filtered dataset (Top 5)
   const driverRanking = useMemo(() => {
     const rankMap: Record<string, { name: string; cpf: string; count: number; val: number; hl: number }> = {};
-    activeDatasetVales.forEach(v => {
+    filteredVales.forEach(v => {
       const name = v.motorista.trim().toUpperCase();
       if (!name || name === "NÃO DECLARADO") return;
       if (!rankMap[name]) {
@@ -370,13 +574,13 @@ export default function ValesHistoryDashboard({
     return Array.from(Object.values(rankMap))
       .sort((a, b) => b.hl - a.hl)
       .slice(0, 5);
-  }, [activeDatasetVales]);
+  }, [filteredVales]);
 
-  // Helper/Crew ranking analytics for active dataset (Top 5)
+  // Helper/Crew ranking analytics for filtered dataset (Top 5)
   const helperRanking = useMemo(() => {
     const rankMap: Record<string, { name: string; cpf: string; count: number; val: number; hl: number }> = {};
     
-    activeDatasetVales.forEach(v => {
+    filteredVales.forEach(v => {
       const helpersList = [];
       if (v.ajudante1 && v.ajudante1.trim()) {
         helpersList.push({ name: v.ajudante1.trim(), cpf: v.ajudante1Cpf });
@@ -405,183 +609,8 @@ export default function ValesHistoryDashboard({
     return Array.from(Object.values(rankMap))
       .sort((a, b) => b.hl - a.hl)
       .slice(0, 5);
-  }, [activeDatasetVales]);
+  }, [filteredVales]);
 
-  // GENERATOR FUNCTION: Fictitious Vales from January to July/August for ALL Drivers
-  const handleGenerateFictitiousVales = async () => {
-    setIsGenerating(true);
-
-    try {
-      const allDrivers = DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA"));
-      const allHelpers = DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE"));
-      const catalog = PRODUCT_DATABASE;
-
-      // Calculate July/August average number of vales if available, or target 4-6 vales per month
-      const julAugCount = (monthlyStats[7]?.count || 0) + (monthlyStats[8]?.count || 0);
-      const avgPerMonth = julAugCount > 0 ? Math.max(3, Math.min(8, Math.round(julAugCount / 2))) : 5;
-
-      let generatedCount = 0;
-      let generatedVal = 0;
-      let generatedHl = 0;
-      const byMonthSummary: Record<number, number> = {};
-
-      let driverIndex = 0;
-      let helperIndex = 0;
-      let sequenceId = 1000 + Math.floor(Math.random() * 500);
-
-      // Generate from month 1 (Janeiro) to month 7 (Julho) [and complement August if low]
-      const targetMonths = [1, 2, 3, 4, 5, 6, 7];
-
-      for (const m of targetMonths) {
-        byMonthSummary[m] = 0;
-        // Generate between 4 to 6 vales per month
-        const countForThisMonth = Math.floor(Math.random() * 2) + avgPerMonth;
-
-        for (let i = 0; i < countForThisMonth; i++) {
-          sequenceId++;
-          driverIndex = (driverIndex + 1) % allDrivers.length;
-          const driver = allDrivers[driverIndex];
-          
-          helperIndex = (helperIndex + 1) % allHelpers.length;
-          const h1 = allHelpers[helperIndex];
-          helperIndex = (helperIndex + 1) % allHelpers.length;
-          const h2 = allHelpers[helperIndex];
-
-          const isX = isDriverX(driver.nome);
-          const rotaNum = 100 + (driverIndex + 1);
-          const rota = String(rotaNum);
-
-          // Day of the month (between 2 and 27)
-          const day = Math.min(27, Math.max(2, (i * 5 + 3) % 27));
-          const dateStr = `2026-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-
-          // Pick authentic Ambev product
-          const prod = catalog[sequenceId % catalog.length];
-          const qty = (sequenceId % 3) + 1; // 1 to 3 boxes
-          const factorEmbalagem = prod.fator && prod.fator > 0 ? prod.fator : 24;
-          const factorHl = prod.fatorHecto && prod.fatorHecto > 0 ? prod.fatorHecto : 0.084;
-          const unitPrice = prod.valor && prod.valor > 0 ? prod.valor : 82.50;
-
-          const totalVal = unitPrice * qty;
-          const totalHl = factorHl * qty;
-
-          const reqId = `req-vale-fict-${m}-${sequenceId}`;
-          const valeId = `VALE-2026-${m}-${sequenceId}`;
-          const mapaStr = `M${3000 + sequenceId}`;
-          const nfStr = `94${sequenceId}`;
-          const codCliente = `CLI${4000 + (sequenceId % 60)}`;
-
-          const reqItem: RequestItem = {
-            id: `item-${reqId}-1`,
-            item: prod.codigo,
-            descricao: prod.descricao,
-            quantidade: qty,
-            unidadeMedida: "cx",
-            fatorEmbalagem: factorEmbalagem,
-            fatorHecto: factorHl,
-            customUnitPrice: unitPrice,
-            precoCalculated: totalVal,
-            hectolitros: totalHl,
-            motivo: "Falta na Descarga / Entrega (Vale Gerado)"
-          };
-
-          const newReq: PendingRequest = {
-            id: reqId,
-            timestamp: new Date(2026, m - 1, day, 11, 30).getTime(),
-            nb: codCliente,
-            fotoUrl: "",
-            nf: nfStr,
-            mapa: mapaStr,
-            setor: rota,
-            data: dateStr,
-            statusPromax: "cadastrado",
-            motivo: "Falta no Descarregamento (Rota / Entrega)",
-            observacao: `Falta de SKU na conferência do PDV. Termo de compromisso e vale faturado para acerto da rota ${rota}.`,
-            item: prod.codigo,
-            descricaoProduto: prod.descricao,
-            quantidade: qty,
-            unidadeMedida: "cx",
-            hectolitros: totalHl,
-            items: [reqItem],
-            faltaTipoErro: "entrega",
-            tipoRegistroFalta: true,
-            gerouVale: true,
-            valeId: valeId,
-            faltaMotorista: driver.nome,
-            faltaMotoristaCpf: driver.cpf,
-            faltaAjudante1: h1.nome,
-            faltaAjudante1Cpf: h1.cpf,
-            faltaAjudante2: isX ? h2.nome : undefined,
-            faltaAjudante2Cpf: isX ? h2.cpf : undefined
-          };
-
-          const newVale: ValeEntry = {
-            id: valeId,
-            requestId: reqId,
-            nf: nfStr,
-            rota: rota,
-            dataEmissao: dateStr,
-            motorista: driver.nome,
-            motoristaCpf: driver.cpf,
-            ajudantes: isX ? `${h1.nome}, ${h2.nome}` : h1.nome,
-            ajudante1: h1.nome,
-            ajudante1Cpf: h1.cpf,
-            ajudante2: isX ? h2.nome : "",
-            ajudante2Cpf: isX ? h2.cpf : "",
-            hectolitros: totalHl,
-            valorTotal: totalVal,
-            itemsCount: 1,
-            status: "assinado",
-            originalRequest: newReq
-          };
-
-          await savePendingRequest(newReq);
-          await saveValeEntry(newVale);
-
-          generatedCount++;
-          generatedVal += totalVal;
-          generatedHl += totalHl;
-          byMonthSummary[m]++;
-        }
-      }
-
-      setGeneratorResult({
-        count: generatedCount,
-        totalVal: generatedVal,
-        totalHl: generatedHl,
-        byMonth: byMonthSummary
-      });
-
-    } catch (err: any) {
-      console.error("Generator error:", err);
-      alert("Erro ao gerar dados fictícios: " + err.message);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  // Clear simulated fictitious vales helper
-  const handleClearFictitiousVales = async () => {
-    if (!window.confirm("Deseja realmente remover todos os vales fictícios gerados?")) return;
-
-    setIsGenerating(true);
-    try {
-      const fictVales = vales.filter(v => v.id.startsWith("VALE-2026-") || v.requestId.startsWith("req-vale-fict-"));
-      for (const v of fictVales) {
-        await deleteValeEntry(v.id);
-        if (v.requestId) {
-          await deletePendingRequest(v.requestId);
-        }
-      }
-      alert(`Removidos ${fictVales.length} vales fictícios com sucesso.`);
-      setIsGeneratorModalOpen(false);
-      setGeneratorResult(null);
-    } catch (e: any) {
-      alert("Erro ao limpar vales fictícios: " + e.message);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
 
   const handleRecalculateAllVales = async () => {
     setIsRecalculating(true);
@@ -698,42 +727,98 @@ export default function ValesHistoryDashboard({
 
       {/* 2. MONTH TABS (Shown when activeTabMode === 'mensal') */}
       {activeTabMode === "mensal" && (
-        <div className="bg-slate-900 border border-slate-800 p-3 rounded-2xl shadow-xl overflow-x-auto">
-          <div className="flex items-center gap-1.5 min-w-max">
-            <div className="text-[10px] font-mono font-bold text-slate-400 uppercase px-2 flex items-center gap-1">
-              <Calendar className="w-3.5 h-3.5 text-amber-500" />
-              <span>Selecione o Mês:</span>
+        <div className="bg-slate-900 border border-slate-800 p-4 rounded-3xl shadow-xl space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+            <div className="flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-amber-500" />
+              <span className="text-xs font-mono font-black text-white uppercase tracking-wider">
+                Navegação Mês a Mês
+              </span>
+              <span className="text-[11px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 rounded-full font-bold">
+                {selectedMonths.length === 1 
+                  ? MONTH_NAMES.find(m => m.num === selectedMonths[0])?.full 
+                  : `${selectedMonths.length} meses selecionados (${getSelectedMonthsLabel(selectedMonths, "short")})`}
+              </span>
             </div>
-            {MONTH_NAMES.map(m => {
-              const count = monthlyStats[m.num]?.count || 0;
-              const val = monthlyStats[m.num]?.val || 0;
-              const isSelected = selectedMonth === m.num;
 
-              return (
+            {/* Multi-selection toggle and quick reset */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setIsMultiSelectMode(!isMultiSelectMode)}
+                className={`px-3 py-1 rounded-xl text-[11px] font-mono font-bold transition-all border flex items-center gap-1.5 cursor-pointer ${
+                  isMultiSelectMode
+                    ? "bg-amber-500 text-slate-950 border-amber-400 shadow-md font-black scale-[1.02]"
+                    : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200"
+                }`}
+                title="Ative para selecionar múltiplos meses clicando diretamente ou segure Ctrl"
+              >
+                <span>{isMultiSelectMode ? "✓ Multi-Seleção Ativa (Ctrl)" : "Fixar Multi-Seleção (Ctrl)"}</span>
+              </button>
+
+              {selectedMonths.length > 1 && (
                 <button
-                  key={m.num}
                   type="button"
-                  onClick={() => setSelectedMonth(m.num)}
-                  className={`px-3 py-2 rounded-xl text-xs font-mono transition-all flex items-center gap-2 cursor-pointer border ${
-                    isSelected
-                      ? "bg-amber-500 border-amber-400 text-slate-950 font-black shadow-lg scale-[1.02]"
-                      : "bg-slate-950/70 hover:bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700"
-                  }`}
+                  onClick={() => setSelectedMonths([8])}
+                  className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 rounded-xl text-[10px] font-mono transition-colors cursor-pointer"
                 >
-                  <span>{m.short}</span>
-                  <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded-full ${
-                    isSelected
-                      ? "bg-slate-950 text-amber-400"
-                      : count > 0 
-                        ? "bg-slate-800 text-emerald-400" 
-                        : "bg-slate-900 text-slate-500"
-                  }`}>
-                    {count}
-                  </span>
+                  Resetar (Apenas Agosto)
                 </button>
-              );
-            })}
+              )}
+            </div>
           </div>
+
+          {/* Month buttons row */}
+          <div className="overflow-x-auto pb-1">
+            <div className="flex items-center gap-1.5 min-w-max">
+              {MONTH_NAMES.map(m => {
+                const count = monthlyStats[m.num]?.count || 0;
+                const isSelected = selectedMonths.includes(m.num);
+
+                return (
+                  <button
+                    key={m.num}
+                    type="button"
+                    onClick={(e) => {
+                      const isCtrl = e.ctrlKey || e.metaKey || isMultiSelectMode;
+                      if (isCtrl) {
+                        if (selectedMonths.includes(m.num)) {
+                          if (selectedMonths.length > 1) {
+                            setSelectedMonths(selectedMonths.filter(x => x !== m.num));
+                          }
+                        } else {
+                          setSelectedMonths([...selectedMonths, m.num].sort((a, b) => a - b));
+                        }
+                      } else {
+                        setSelectedMonths([m.num]);
+                      }
+                    }}
+                    className={`px-3 py-2 rounded-xl text-xs font-mono transition-all flex items-center gap-2 cursor-pointer border ${
+                      isSelected
+                        ? "bg-amber-500 border-amber-400 text-slate-950 font-black shadow-lg scale-[1.02]"
+                        : "bg-slate-950/70 hover:bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700"
+                    }`}
+                    title={isMultiSelectMode ? `Alternar mês de ${m.full}` : `Ver vales de ${m.full} (Pressione e segure Ctrl para selecionar mais de um mês)`}
+                  >
+                    <span>{m.short}</span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded-full ${
+                      isSelected
+                        ? "bg-slate-950 text-amber-400"
+                        : count > 0 
+                          ? "bg-slate-800 text-emerald-400" 
+                          : "bg-slate-900 text-slate-500"
+                    }`}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <p className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+            <span>💡 <strong>Dica:</strong> Pressione e segure a tecla <strong>Control (Ctrl)</strong> ao clicar para selecionar vários meses de uma vez, ou ative o botão &quot;Fixar Multi-Seleção&quot;.</span>
+          </p>
         </div>
       )}
 
@@ -743,14 +828,22 @@ export default function ValesHistoryDashboard({
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between shadow-xl relative overflow-hidden group">
           <div className="space-y-1.5 z-10">
             <span className="text-[10px] font-extrabold text-blue-400 font-mono uppercase tracking-wider block">
-              {activeTabMode === "acumulado" ? "Vales Acumulados no Ano" : `Vales em ${MONTH_NAMES.find(m => m.num === selectedMonth)?.full}`}
+              {startDate || endDate
+                ? `Vales no Período (${formatDisplayDate(startDate) || "Início"} a ${formatDisplayDate(endDate) || "Hoje"})`
+                : activeTabMode === "acumulado" 
+                  ? "Vales Acumulados no Ano" 
+                  : `Vales em ${getSelectedMonthsLabel(selectedMonths, "short")}`}
             </span>
             <div className="flex items-baseline space-x-1.5">
               <strong className="text-3xl font-black text-white font-sans">{currentStats.totalCount}</strong>
               <span className="text-xs text-slate-450 font-medium">unidades</span>
             </div>
             <p className="text-[9.5px] text-slate-500 leading-none">
-              {activeTabMode === "acumulado" ? "Consolidado geral de todas as emissões" : `Mês de referência: ${MONTH_NAMES.find(m => m.num === selectedMonth)?.label}`}
+              {startDate || endDate 
+                ? "Filtro personalizado de dias ativo"
+                : activeTabMode === "acumulado" 
+                  ? "Consolidado geral de todas as emissões" 
+                  : `Meses: ${getSelectedMonthsLabel(selectedMonths, "label")}`}
             </p>
           </div>
           <div className="w-12 h-12 rounded-xl bg-blue-950/40 border border-blue-900/30 flex items-center justify-center shrink-0 z-10">
@@ -763,10 +856,10 @@ export default function ValesHistoryDashboard({
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between shadow-xl relative overflow-hidden group">
           <div className="space-y-1.5 z-10">
             <span className="text-[10px] font-extrabold text-amber-500 font-mono uppercase tracking-wider block">
-              Volume Total ({activeTabMode === "acumulado" ? "Ano" : MONTH_NAMES.find(m => m.num === selectedMonth)?.short})
+              Volume Total ({startDate || endDate ? "Período" : activeTabMode === "acumulado" ? "Ano" : getSelectedMonthsLabel(selectedMonths, "short")})
             </span>
             <div className="flex items-baseline space-x-1.5">
-              <strong className="text-3xl font-black text-amber-500 font-sans">{currentStats.totalHl.toFixed(4)}</strong>
+              <strong className="text-3xl font-black text-amber-500 font-sans">{currentStats.totalHl.toFixed(2)}</strong>
               <span className="text-xs text-slate-450 font-mono">HL</span>
             </div>
             <p className="text-[9.5px] text-slate-500 leading-none">Hectolitros totais para acerto com condutores</p>
@@ -781,7 +874,7 @@ export default function ValesHistoryDashboard({
         <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between shadow-xl relative overflow-hidden group">
           <div className="space-y-1.5 z-10">
             <span className="text-[10px] font-extrabold text-emerald-400 font-mono uppercase tracking-wider block">
-              Montante de Cobranças ({activeTabMode === "acumulado" ? "Acumulado" : MONTH_NAMES.find(m => m.num === selectedMonth)?.short})
+              Montante de Cobranças ({startDate || endDate ? "Período" : activeTabMode === "acumulado" ? "Acumulado" : getSelectedMonthsLabel(selectedMonths, "short")})
             </span>
             <div className="flex items-baseline space-x-1 hover:scale-[1.01] transition-transform">
               <strong className="text-2xl sm:text-3xl font-black text-emerald-400 font-sans">{formatCurrency(currentStats.totalVal)}</strong>
@@ -841,8 +934,15 @@ export default function ValesHistoryDashboard({
               return (
                 <div
                   key={m.num}
-                  onClick={() => {
-                    setSelectedMonth(m.num);
+                  onClick={(e) => {
+                    const isCtrl = e.ctrlKey || e.metaKey || isMultiSelectMode;
+                    if (isCtrl) {
+                      if (!selectedMonths.includes(m.num)) {
+                        setSelectedMonths([...selectedMonths, m.num].sort((a, b) => a - b));
+                      }
+                    } else {
+                      setSelectedMonths([m.num]);
+                    }
                     setActiveTabMode("mensal");
                   }}
                   className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-2.5 ${
@@ -867,7 +967,7 @@ export default function ValesHistoryDashboard({
                       {formatCurrency(val)}
                     </span>
                     <span className="text-[10px] font-mono text-slate-400 block">
-                      {hl.toFixed(3)} HL
+                      {hl.toFixed(2)} HL
                     </span>
                   </div>
 
@@ -889,7 +989,7 @@ export default function ValesHistoryDashboard({
           <div className="space-y-1">
             <h3 className="font-extrabold text-white text-xs uppercase tracking-widest font-mono flex items-center gap-2">
               <UserCheck className="w-4 h-4 text-amber-500" />
-              Ranking de Condutores {activeTabMode === "acumulado" ? "(Geral do Ano)" : `(${MONTH_NAMES.find(m => m.num === selectedMonth)?.full})`}
+              Ranking de Condutores {startDate || endDate ? "(Período Filtrado)" : activeTabMode === "acumulado" ? "(Geral do Ano)" : `(${getSelectedMonthsLabel(selectedMonths, "short")})`}
             </h3>
             <p className="text-[10px] text-slate-450 leading-snug">
               Ordenado pelo impacto em volume (Hectolitros) de vales emitidos
@@ -922,7 +1022,7 @@ export default function ValesHistoryDashboard({
                       </div>
                     </div>
                     <div className="text-right shrink-0">
-                      <span className="text-xs font-black text-white font-mono block">{driver.hl.toFixed(4)} HL</span>
+                      <span className="text-xs font-black text-white font-mono block">{driver.hl.toFixed(2)} HL</span>
                       <span className="text-[9.5px] text-emerald-400 font-bold block">{formatCurrency(driver.val)} ({driver.count} v.)</span>
                     </div>
                   </div>
@@ -937,7 +1037,7 @@ export default function ValesHistoryDashboard({
           <div className="space-y-1">
             <h3 className="font-extrabold text-white text-xs uppercase tracking-widest font-mono flex items-center gap-2">
               <Users className="w-4 h-4 text-indigo-400" />
-              Ranking de Ajudantes {activeTabMode === "acumulado" ? "(Geral do Ano)" : `(${MONTH_NAMES.find(m => m.num === selectedMonth)?.full})`}
+              Ranking de Ajudantes {startDate || endDate ? "(Período Filtrado)" : activeTabMode === "acumulado" ? "(Geral do Ano)" : `(${getSelectedMonthsLabel(selectedMonths, "short")})`}
             </h3>
             <p className="text-[10px] text-slate-450 leading-snug">
               Rateio individual de responsabilidade proporcional por rota
@@ -970,7 +1070,7 @@ export default function ValesHistoryDashboard({
                       </div>
                     </div>
                     <div className="text-right shrink-0">
-                      <span className="text-xs font-black text-white font-mono block">{helper.hl.toFixed(4)} HL</span>
+                      <span className="text-xs font-black text-white font-mono block">{helper.hl.toFixed(2)} HL</span>
                       <span className="text-[9.5px] text-emerald-450 font-bold block">{formatCurrency(helper.val)} ({helper.count} v.)</span>
                     </div>
                   </div>
@@ -981,19 +1081,104 @@ export default function ValesHistoryDashboard({
         </div>
       </div>
 
-      {/* 6. LOG LISTING TABLE */}
+      {/* 6. LOG LISTING TABLE & CUSTOM DATE EXPORT BAR */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-2xl space-y-4">
+        
+        {/* FILTRO PERSONALIZADO DE DIAS PARA EXPORTAÇÃO DOS VALES */}
+        <div className="bg-slate-950/90 border border-slate-800 p-3.5 rounded-2xl flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3 shadow-inner">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-amber-400 shrink-0">
+              <Calendar className="w-4 h-4 text-amber-400" />
+              <span>Filtro de Dias (Exportação):</span>
+            </div>
+
+            {/* Data Inicial */}
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono">
+              <span className="text-slate-500 font-medium">De:</span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="bg-transparent text-slate-200 focus:outline-none cursor-pointer"
+                title="Data inicial para exportar ou consultar vales"
+              />
+            </div>
+
+            {/* Data Final */}
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono">
+              <span className="text-slate-500 font-medium">Até:</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="bg-transparent text-slate-200 focus:outline-none cursor-pointer"
+                title="Data final para exportar ou consultar vales"
+              />
+            </div>
+
+            {/* Quick Presets */}
+            <div className="flex items-center gap-1 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setQuickRange("hoje")}
+                className="px-2 py-1 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-lg text-[10px] font-mono text-slate-300 hover:text-white transition-colors cursor-pointer"
+              >
+                Hoje
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickRange("7dias")}
+                className="px-2 py-1 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-lg text-[10px] font-mono text-slate-300 hover:text-white transition-colors cursor-pointer"
+              >
+                Últimos 7 dias
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickRange("15dias")}
+                className="px-2 py-1 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-lg text-[10px] font-mono text-slate-300 hover:text-white transition-colors cursor-pointer"
+              >
+                Últimos 15 dias
+              </button>
+              {(startDate || endDate) && (
+                <button
+                  type="button"
+                  onClick={() => setQuickRange("limpar")}
+                  className="px-2.5 py-1 bg-rose-950/60 hover:bg-rose-900 border border-rose-800/50 text-rose-300 rounded-lg text-[10px] font-mono font-bold transition-colors cursor-pointer flex items-center gap-1"
+                >
+                  <X className="w-3 h-3" />
+                  <span>Limpar Dias</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Dedicated Export Button for Date Filter */}
+          <div className="flex items-center gap-2 w-full lg:w-auto justify-end">
+            <button
+              type="button"
+              onClick={() => exportValesPacotePrejuizoExcel(filteredVales, getExportFilename())}
+              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs font-mono rounded-xl shadow-md flex items-center gap-1.5 cursor-pointer hover:scale-[1.02] active:scale-95 transition-all border border-emerald-400 shrink-0"
+              title="Exportar planilha Excel (.xlsx) com todos os vales e rateio correspondentes ao filtro atual"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-100" />
+              <span>{getExportButtonLabel()}</span>
+            </button>
+          </div>
+        </div>
+
         {/* Table Filters header */}
         <div className="flex flex-col xl:flex-row gap-3 items-start xl:items-center justify-between border-b border-slate-800 pb-4">
           <div className="text-left space-y-1 w-full xl:w-auto">
             <h3 className="font-extrabold text-white text-xs uppercase tracking-widest font-mono flex items-center gap-2">
               <Layers className="w-4 h-4 text-blue-400" />
-              {activeTabMode === "acumulado" 
-                ? "Registros Detalhados de Todos os Vales do Ano" 
-                : `Registros de Vales de ${MONTH_NAMES.find(m => m.num === selectedMonth)?.full} de 2026`}
+              {startDate || endDate
+                ? `Registros Filtrados por Período (${formatDisplayDate(startDate) || "Início"} até ${formatDisplayDate(endDate) || "Hoje"})`
+                : activeTabMode === "acumulado" 
+                  ? "Registros Detalhados de Todos os Vales do Ano" 
+                  : `Registros de Vales de ${getSelectedMonthsLabel(selectedMonths, "full")} de 2026`}
             </h3>
             <p className="text-[10px] text-slate-400">
-              Total listado: <strong>{filteredVales.length} itens</strong> • Volume: <strong>{currentStats.totalHl.toFixed(3)} HL</strong> • Montante: <strong>{formatCurrency(currentStats.totalVal)}</strong>
+              Total listado: <strong>{filteredVales.length} itens</strong> • Volume: <strong>{currentStats.totalHl.toFixed(2)} HL</strong> • Montante: <strong>{formatCurrency(currentStats.totalVal)}</strong>
             </p>
           </div>
 
@@ -1050,17 +1235,12 @@ export default function ValesHistoryDashboard({
             {/* Exportar Excel Button */}
             <button
               type="button"
-              onClick={() => exportValesPacotePrejuizoExcel(
-                filteredVales, 
-                activeTabMode === "mensal" 
-                  ? `vales_${MONTH_NAMES.find(m => m.num === selectedMonth)?.short.toLowerCase()}_2026` 
-                  : `vales_acumulado_2026`
-              )}
+              onClick={() => exportValesPacotePrejuizoExcel(filteredVales, getExportFilename())}
               className="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold px-3.5 py-1.5 rounded-xl text-xs font-mono transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer hover:scale-[1.02] active:scale-95 shrink-0 border border-emerald-500/40"
               title="Baixar planilha Excel com detalhamento completo dos vales e rateio"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
-              <span>{activeTabMode === "mensal" ? `Exportar ${MONTH_NAMES.find(m => m.num === selectedMonth)?.short}` : "Exportar Excel"}</span>
+              <span>{getExportButtonLabel()}</span>
             </button>
 
             {/* Gerar Vale Avulso Button */}
@@ -1178,7 +1358,7 @@ export default function ValesHistoryDashboard({
 
                     {/* Hectoliters */}
                     <td className="p-3 font-mono font-bold text-amber-400 text-center whitespace-nowrap">
-                      {(vale.hectolitros || 0).toFixed(4)} HL
+                      {(vale.hectolitros || 0).toFixed(2)} HL
                     </td>
 
                     {/* Total Value */}

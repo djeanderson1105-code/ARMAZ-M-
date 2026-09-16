@@ -273,6 +273,7 @@ export interface PendingRequest {
   fotoUrl: string; // Base64 encoding or image link (Required)
   observacao: string;
   statusPromax: "pendente" | "cadastrado" | "reprovado" | "corrigir";
+  status?: string; // e.g. "baixado", "concluido", etc.
   cadastroUser?: string;
   cadastroDate?: string;
   cadastroRole?: "motorista" | "rn" | "admin";

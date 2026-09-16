@@ -1,6 +1,13 @@
 import { PendingRequest, RequestItem } from "../types";
 import { ValeEntry } from "../components/ValesHistoryDashboard";
-import { getProductDescription, getProductCatalogInfo, getProductBoxPrice } from "./products";
+import { 
+  getProductDescription, 
+  getProductCatalogInfo, 
+  getProductBoxPrice,
+  calculateRequestValueAndHL,
+  calculateItemValue,
+  calculateItemHL 
+} from "./products";
 
 export interface ShortageHistoricalItem {
   month: number; // 1 to 12
@@ -401,8 +408,11 @@ export function generateHistoricalShortagesAndVales2026(): {
       gerouVale: !isCarregamento,
       valeId: valeId,
       faltaBaixa: true,
+      faltaBaixaDate: dateFormatted,
       faltaDataBaixa: dateFormatted,
+      faltaBaixaUser: isCarregamento ? "Controle Operacional Armazém CD" : "Gestor Logística Distribuição",
       faltaUsuarioBaixa: isCarregamento ? "Controle Operacional Armazém CD" : "Gestor Logística Distribuição",
+      status: "baixado",
       reviewedByControle: true
     };
 
@@ -448,18 +458,30 @@ export function sanitizeRequestProductDescription(req: PendingRequest): PendingR
     req.descricaoProduto
   );
 
+  const { valorTotal: calcVal, hectolitros: calcHl } = calculateRequestValueAndHL(req);
+
   let updatedItems = req.items;
   if (req.items && req.items.length > 0) {
-    updatedItems = req.items.map(item => ({
-      ...item,
-      descricao: getProductDescription(item.item || item.itemCode, item.descricao || item.itemDesc),
-      itemDesc: getProductDescription(item.item || item.itemCode, item.descricao || item.itemDesc)
-    }));
+    updatedItems = req.items.map(item => {
+      const itCode = item.item || item.itemCode;
+      const desc = getProductDescription(itCode, item.descricao || item.itemDesc);
+      const itVal = calculateItemValue(item);
+      const itHl = calculateItemHL(item);
+      return {
+        ...item,
+        descricao: desc,
+        itemDesc: desc,
+        precoCalculated: itVal > 0 ? itVal : item.precoCalculated,
+        hectolitros: itHl > 0 ? itHl : item.hectolitros
+      };
+    });
   }
 
   return {
     ...req,
     descricaoProduto: resolvedDesc,
+    valorTotal: calcVal > 0 ? calcVal : req.valorTotal,
+    hectolitros: calcHl > 0 ? calcHl : req.hectolitros,
     items: updatedItems
   };
 }

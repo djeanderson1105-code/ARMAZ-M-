@@ -26,6 +26,7 @@ import {
   FileSpreadsheet
 } from "lucide-react";
 import { getRecordHL, isRecordApproved } from "../utils/hectoFactors";
+import { isRecordReposicao } from "../utils/processTypes";
 import { exportHectoliterAuditReport } from "../utils/hectoAuditExport";
 
 interface ConsolidatedViewProps {
@@ -427,11 +428,11 @@ export default function ConsolidatedView({
     return today.getFullYear();
   }, [selectedMonthYear, today]);
 
-  // Semester 1 (1º H Semestral) Approved Accumulated
+  // Semester 1 (1º H Semestral) Approved Accumulated (Official Promax Reposição + Baixadas Plataforma)
   const semester1ApprovedAccumulated = useMemo(() => {
     return records.reduce((acc, r) => {
-      const s = (r.status || "").toLowerCase().trim();
-      const isApproved = (s.includes("aprov") || s === "atendido" || s === "concluido") && !s.includes("reprov") && !s.includes("cancela") && !s.includes("pendent");
+      if (!isRecordReposicao(r)) return acc;
+      const isApproved = isRecordApproved(r);
       if (isApproved && r.dataSolicitacao) {
         const parts = r.dataSolicitacao.split("/");
         if (parts.length === 3) {
@@ -446,11 +447,11 @@ export default function ConsolidatedView({
     }, 0);
   }, [records, dashboardMetricView, targetYear]);
 
-  // Semester 2 (2º H Semestral) Approved Accumulated
+  // Semester 2 (2º H Semestral) Approved Accumulated (Official Promax Reposição + Baixadas Plataforma)
   const semester2ApprovedAccumulated = useMemo(() => {
     return records.reduce((acc, r) => {
-      const s = (r.status || "").toLowerCase().trim();
-      const isApproved = (s.includes("aprov") || s === "atendido" || s === "concluido") && !s.includes("reprov") && !s.includes("cancela") && !s.includes("pendent");
+      if (!isRecordReposicao(r)) return acc;
+      const isApproved = isRecordApproved(r);
       if (isApproved && r.dataSolicitacao) {
         const parts = r.dataSolicitacao.split("/");
         if (parts.length === 3) {
@@ -465,11 +466,11 @@ export default function ConsolidatedView({
     }, 0);
   }, [records, dashboardMetricView, targetYear]);
 
-  // Annual Approved Accumulated
+  // Annual Approved Accumulated (Official Promax Reposição + Baixadas Plataforma)
   const annualApprovedAccumulatedVal = useMemo(() => {
     return records.reduce((acc, r) => {
-      const s = (r.status || "").toLowerCase().trim();
-      const isApproved = (s.includes("aprov") || s === "atendido" || s === "concluido") && !s.includes("reprov") && !s.includes("cancela") && !s.includes("pendent");
+      if (!isRecordReposicao(r)) return acc;
+      const isApproved = isRecordApproved(r);
       if (isApproved && r.dataSolicitacao) {
         const parts = r.dataSolicitacao.split("/");
         if (parts.length === 3) {
@@ -549,8 +550,8 @@ export default function ConsolidatedView({
 
   // Prepare database context payload for LLM assistance
   const chatContextSummary = useMemo(() => {
-    const topProds = generalTopProducts.slice(0, 5).map(p => `${p.descricao} (Cód: ${p.code}, Qtd: ${p.quantity}, Vol: ${p.hl.toFixed(3)} HL, Custo: ${formatCurrency(p.totalSpent)})`);
-    const topClis = generalTopClients.slice(0, 5).map(c => `${c.nome} (NB: ${c.code}, Pedidos: ${c.requestCount}, Vol: ${c.hl.toFixed(3)} HL, Custo: ${formatCurrency(c.totalSpent)})`);
+    const topProds = generalTopProducts.slice(0, 5).map(p => `${p.descricao} (Cód: ${p.code}, Qtd: ${p.quantity}, Vol: ${p.hl.toFixed(2)} HL, Custo: ${formatCurrency(p.totalSpent)})`);
+    const topClis = generalTopClients.slice(0, 5).map(c => `${c.nome} (NB: ${c.code}, Pedidos: ${c.requestCount}, Vol: ${c.hl.toFixed(2)} HL, Custo: ${formatCurrency(c.totalSpent)})`);
     const sectorCon = sectorMetaConsumption.slice(0, 6).map(s => `Setor ${s.sector} (Aprovado: ${formatCurrency(s.approvedSum)}, Atingimento: ${s.percentOfMeta.toFixed(1)}%)`);
     
     return {
@@ -559,8 +560,8 @@ export default function ConsolidatedView({
       totalPendentesDeAcao: formatCurrency(stats.pendingValue),
       quantidadeDeRegistrosFiltrados: stats.totalCount,
       quantidadeDeRegistrosTotalNoBanco: records.length,
-      volumeTotalHectolitrosNoFiltro: `${totalHLFiltered.toFixed(3)} HL`,
-      volumeTotalHectolitrosGeral: `${totalHLAll.toFixed(3)} HL`,
+      volumeTotalHectolitrosNoFiltro: `${totalHLFiltered.toFixed(2)} HL`,
+      volumeTotalHectolitrosGeral: `${totalHLAll.toFixed(2)} HL`,
       limiteMetaAtivoNoPeriodo: formatCurrency(activeGoal),
       metaAnualTotalSSTR: formatCurrency(META_ANUAL),
       percentualAtingimentoNoPeriodo: `${monthlyAtingimento.toFixed(1)}%`,
@@ -703,13 +704,14 @@ export default function ConsolidatedView({
     const y = parseInt(yStr, 10);
 
     const mRecords = records.filter(r => {
+      if (!isRecordReposicao(r)) return false;
       if (!r.dataSolicitacao) return false;
       const parts = r.dataSolicitacao.split("/");
       return parts.length === 3 && parseInt(parts[1], 10) === m && parseInt(parts[2], 10) === y;
     });
 
     const approvedValue = mRecords
-      .filter(r => r.status.toLowerCase().trim().includes("aprov"))
+      .filter(isRecordApproved)
       .reduce((sum, r) => sum + getRecordVal(r), 0);
 
     const isCurrentMonth = today.getFullYear() === y && (today.getMonth() + 1) === m;
@@ -725,17 +727,18 @@ export default function ConsolidatedView({
     };
   }, [records, selectedMonthYear, today, dashboardMetricView]);
 
-  // Calculate annual average based on everything registered in the year so far
+  // Calculate annual average based on everything registered in the year so far (Official Promax Reposição + Baixadas Plataforma)
   const yearAverages = useMemo(() => {
     const activeYearLocal = today.getFullYear();
     const yearRecords = records.filter(r => {
+      if (!isRecordReposicao(r)) return false;
       if (!r.dataSolicitacao) return false;
       const parts = r.dataSolicitacao.split("/");
       return parts.length === 3 && parts[2] === String(activeYearLocal);
     });
 
     const approvedValue = yearRecords
-      .filter(r => r.status.toLowerCase().trim().includes("aprov"))
+      .filter(isRecordApproved)
       .reduce((sum, r) => sum + getRecordVal(r), 0);
 
     const startOfYear = new Date(activeYearLocal, 0, 1);
@@ -749,7 +752,7 @@ export default function ConsolidatedView({
     };
   }, [records, today, dashboardMetricView]);
 
-  // Calculate semester average based on the active semester window
+  // Calculate semester average based on the active semester window (Official Promax Reposição + Baixadas Plataforma)
   const semesterAverages = useMemo(() => {
     let activeSemester: 1 | 2 = 2; // Default to 2nd Semester since today is July 2026
     let activeYearLocal = today.getFullYear();
@@ -774,6 +777,7 @@ export default function ConsolidatedView({
     }
 
     const semesterRecords = records.filter(r => {
+      if (!isRecordReposicao(r)) return false;
       if (!r.dataSolicitacao) return false;
       const parts = r.dataSolicitacao.split("/");
       if (parts.length !== 3) return false;
@@ -790,7 +794,7 @@ export default function ConsolidatedView({
     });
 
     const approvedValue = semesterRecords
-      .filter(r => r.status.toLowerCase().trim().includes("aprov"))
+      .filter(isRecordApproved)
       .reduce((sum, r) => sum + getRecordVal(r), 0);
 
     let elapsedDays = 180;
@@ -929,6 +933,7 @@ export default function ConsolidatedView({
     }
 
     const mRecords = records.filter(r => {
+      if (!isRecordReposicao(r)) return false;
       if (!r.dataSolicitacao) return false;
       const parts = r.dataSolicitacao.split("/");
       return parts.length === 3 && parseInt(parts[1], 10) === targetMonth && parseInt(parts[2], 10) === targetYear;
@@ -936,7 +941,7 @@ export default function ConsolidatedView({
 
     const mStr = String(targetMonth).padStart(2, "0");
     const approvedValue = mRecords
-      .filter(r => r.status.toLowerCase().trim().includes("aprov"))
+      .filter(isRecordApproved)
       .reduce((sum, r) => sum + getRecordVal(r), 0);
 
     const limit = dashboardMetricView === "hl" ? (META_HL_BY_MONTH[mStr] || 10.0) : 12000;
@@ -1130,7 +1135,7 @@ export default function ConsolidatedView({
                         <span className="text-blue-400 font-bold font-mono">{formatCurrency(generalTopClients[0].totalSpent)}</span>
                       </div>
                       <p className="text-[9px] text-indigo-400 font-mono mt-0.5 text-right font-semibold">
-                        {generalTopClients[0].hl.toFixed(3)} HL solicitados
+                        {generalTopClients[0].hl.toFixed(2)} HL solicitados
                       </p>
                     </div>
                   ) : (
@@ -1156,7 +1161,7 @@ export default function ConsolidatedView({
                         <span className="text-blue-400 font-bold font-mono">{formatCurrency(topProductBySpent.totalSpent)}</span>
                       </div>
                       <p className="text-[9px] text-indigo-400 font-mono mt-0.5 text-right font-semibold">
-                        {topProductBySpent.quantity} un. • {topProductBySpent.hl.toFixed(3)} HL
+                        {topProductBySpent.quantity} un. • {topProductBySpent.hl.toFixed(2)} HL
                       </p>
                     </div>
                   ) : (
@@ -1182,7 +1187,7 @@ export default function ConsolidatedView({
                         <span className="text-rose-400 font-bold font-mono">{formatCurrency(peakDayAllTime.totalSpent)}</span>
                       </div>
                       <p className="text-[9px] text-indigo-400 font-mono mt-0.5 text-right font-semibold">
-                        {peakDayAllTime.totalHL.toFixed(3)} HL movimentados
+                        {peakDayAllTime.totalHL.toFixed(2)} HL movimentados
                       </p>
                     </div>
                   ) : (
@@ -1232,12 +1237,11 @@ export default function ConsolidatedView({
             </div>
 
             {/* Média Hecto */}
-            {/* Média Hecto */}
             <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-850 flex flex-col justify-between">
               <span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider font-mono block">Hecto / Dia</span>
               <div className="mt-2">
                 <span className="text-lg font-bold font-mono text-indigo-400 block">
-                  {averages.dailyHecto.toFixed(3)}
+                  {averages.dailyHecto.toFixed(2)}
                 </span>
                 <span className="text-[8px] text-slate-400 font-mono">HL/dia</span>
               </div>
@@ -1470,7 +1474,7 @@ export default function ConsolidatedView({
           <div className="min-w-0">
             <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest font-mono truncate">Volume Reposicionamento</p>
             <h3 className="text-base font-black font-mono text-blue-200 truncate mt-0.5">
-              {totalHLFiltered.toFixed(3)} HL
+              {totalHLFiltered.toFixed(2)} HL
             </h3>
             <p className="text-[9px] text-slate-400 mt-0.5 flex items-center font-mono truncate">
               <span className="w-1 h-1 rounded-full bg-blue-500 mr-1 shrink-0"></span>
@@ -1759,7 +1763,7 @@ export default function ConsolidatedView({
                       Real ({chartMetric === "cost" ? "R$" : "HL"}):
                     </span>
                     <span className="text-white font-bold">
-                      {chartMetric === "cost" ? formatCurrency(hoveredNode.totalSpent) : `${hoveredNode.totalHL.toFixed(3)} HL`}
+                      {chartMetric === "cost" ? formatCurrency(hoveredNode.totalSpent) : `${hoveredNode.totalHL.toFixed(2)} HL`}
                     </span>
                   </div>
 
@@ -1769,7 +1773,7 @@ export default function ConsolidatedView({
                       Meta ({chartMetric === "cost" ? "R$" : "HL"}):
                     </span>
                     <span className="text-emerald-300 font-semibold">
-                      {chartMetric === "cost" ? formatCurrency(hoveredNode.metaSpent) : `${hoveredNode.metaHL.toFixed(3)} HL`}
+                      {chartMetric === "cost" ? formatCurrency(hoveredNode.metaSpent) : `${hoveredNode.metaHL.toFixed(2)} HL`}
                     </span>
                   </div>
 
@@ -1788,7 +1792,7 @@ export default function ConsolidatedView({
                     ) : (
                       hoveredNode.totalHL > hoveredNode.metaHL ? (
                         <span className="text-rose-400 font-extrabold">
-                          ⚠️ +{(hoveredNode.totalHL - hoveredNode.metaHL).toFixed(3)} HL (Acima)
+                          ⚠️ +{(hoveredNode.totalHL - hoveredNode.metaHL).toFixed(2)} HL (Acima)
                         </span>
                       ) : (
                         <span className="text-emerald-400 font-bold">
@@ -2035,7 +2039,7 @@ export default function ConsolidatedView({
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Volume:</span>
-                      <span className="text-indigo-400 font-semibold">{d.totalHL.toFixed(3)} HL</span>
+                      <span className="text-indigo-400 font-semibold">{d.totalHL.toFixed(2)} HL</span>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-[8px] text-slate-500">Clientes:</span>
@@ -2091,7 +2095,7 @@ export default function ConsolidatedView({
                     
                     <div className="text-right shrink-0">
                       <p className="text-xs font-mono font-bold text-blue-400">{formatCurrency(p.totalSpent)}</p>
-                      <p className="text-[9px] text-indigo-400 font-semibold font-mono">{p.hl.toFixed(3)} HL</p>
+                      <p className="text-[9px] text-indigo-400 font-semibold font-mono">{p.hl.toFixed(2)} HL</p>
                     </div>
                   </div>
                 );
@@ -2135,7 +2139,7 @@ export default function ConsolidatedView({
                     
                     <div className="text-right shrink-0">
                       <p className="text-xs font-mono font-bold text-blue-400">{formatCurrency(c.totalSpent)}</p>
-                      <p className="text-[9px] text-indigo-400 font-semibold font-mono">{c.hl.toFixed(3)} HL</p>
+                      <p className="text-[9px] text-indigo-400 font-semibold font-mono">{c.hl.toFixed(2)} HL</p>
                     </div>
                   </div>
                 );

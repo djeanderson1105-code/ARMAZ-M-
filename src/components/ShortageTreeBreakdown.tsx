@@ -1,7 +1,16 @@
 import React, { useState, useMemo } from "react";
 import { PendingRequest, calculateValeRateio, isDriverX } from "../types";
 import { ValeEntry } from "./ValesHistoryDashboard";
-import { getProductDescription, getProductCatalogInfo, getProductBoxPrice } from "../data/products";
+import { 
+  getProductDescription, 
+  getProductCatalogInfo, 
+  getProductByCodeOrName,
+  getProductBoxPrice,
+  calculateRequestValueAndHL,
+  calculateItemValue,
+  calculateItemHL,
+  classifyShortageErrorType
+} from "../data/products";
 import { 
   ChevronDown, 
   ChevronRight, 
@@ -141,12 +150,9 @@ export default function ShortageTreeBreakdown({
       }
 
       // Category filter
-      const errorType = (cast.faltaTipoErro || "").toLowerCase();
-      const isCarregamento = errorType === "carregamento" || m.includes("carregamento") || m.includes("armazém") || m.includes("armazem");
-      const isDescarregamento = errorType === "entrega" || errorType === "descarregamento" || (!isCarregamento && (cast.faltaMotorista || cast.gerouVale || m.includes("entrega") || m.includes("pdv")));
-
-      if (filterCategory === "carregamento" && !isCarregamento) return false;
-      if (filterCategory === "entrega" && !isDescarregamento) return false;
+      const errorType = classifyShortageErrorType(req);
+      if (filterCategory === "carregamento" && errorType !== "carregamento") return false;
+      if (filterCategory === "entrega" && errorType !== "entrega") return false;
 
       // Search term filter
       if (searchTerm.trim()) {
@@ -215,26 +221,29 @@ export default function ShortageTreeBreakdown({
     const descarregamentoItems: PendingRequest[] = [];
 
     filteredRequests.forEach(req => {
-      const cast = req as any;
-      const m = (req.motivo || "").toLowerCase();
-      const errorType = (cast.faltaTipoErro || "").toLowerCase();
-      
-      const isCarregamento = errorType === "carregamento" || m.includes("carregamento") || m.includes("armazém") || m.includes("armazem");
-      const isDescarregamento = errorType === "entrega" || errorType === "descarregamento" || (!isCarregamento && (cast.faltaMotorista || cast.gerouVale || m.includes("entrega") || m.includes("pdv")));
+      const errorType = classifyShortageErrorType(req);
+      const isCarregamento = errorType === "carregamento";
+      const { valorTotal: calcVal, hectolitros: calcHl } = calculateRequestValueAndHL(req);
+      const val = calcVal > 0 ? calcVal : (req.valorTotal || 0);
+      const hl = calcHl > 0 ? calcHl : (req.hectolitros || 0);
 
-      const val = req.valorTotal || 0;
-      const hl = req.hectolitros || 0;
+      const normalizedReq: PendingRequest = {
+        ...req,
+        faltaTipoErro: errorType,
+        valorTotal: val,
+        hectolitros: hl
+      };
 
       if (isCarregamento) {
         totalCarregamentoCount++;
         totalCarregamentoHl += hl;
         totalCarregamentoVal += val;
-        carregamentoItems.push(req);
+        carregamentoItems.push(normalizedReq);
       } else {
         totalDescarregamentoCount++;
         totalDescarregamentoHl += hl;
         totalDescarregamentoVal += val;
-        descarregamentoItems.push(req);
+        descarregamentoItems.push(normalizedReq);
       }
     });
 
@@ -296,9 +305,8 @@ export default function ShortageTreeBreakdown({
 
     filteredRequests.forEach(req => {
       const cast = req as any;
-      const m = (req.motivo || "").toLowerCase();
-      const errorType = (cast.faltaTipoErro || "").toLowerCase();
-      const isCarregamento = errorType === "carregamento" || m.includes("carregamento") || m.includes("armazém");
+      const errorType = classifyShortageErrorType(req);
+      const isCarregamento = errorType === "carregamento";
       
       const monthIdx = getRequestMonthIndex(req);
       const monthName = MONTH_NAMES[monthIdx] || "";
@@ -318,7 +326,7 @@ export default function ShortageTreeBreakdown({
         "Descrição Oficial Ambev": resolvedDesc,
         "Quantidade": req.quantidade || 1,
         "Unidade": req.unidadeMedida || "cx",
-        "Volume (HL)": Number((req.hectolitros || 0).toFixed(4)),
+        "Volume (HL)": Number((req.hectolitros || 0).toFixed(2)),
         "Impacto Financeiro (R$)": Number((req.valorTotal || 0).toFixed(2)),
         "Motorista": driverName,
         "CPF Motorista": cast.faltaMotoristaCpf || "",
@@ -413,7 +421,7 @@ export default function ShortageTreeBreakdown({
                 Filtro Ativo: {MONTH_NAMES[selectedMonth]} de 2026
               </span>
               <span className="text-[11px] text-emerald-300/80">
-                Mostrando {filteredRequests.length} ocorrência(s) • Total: {formatCurrency(treeData.grandTotalVal)} ({treeData.grandTotalHl.toFixed(4)} HL)
+                Mostrando {filteredRequests.length} ocorrência(s) • Total: {formatCurrency(treeData.grandTotalVal)} ({treeData.grandTotalHl.toFixed(2)} HL)
               </span>
             </div>
           </div>
@@ -475,7 +483,7 @@ export default function ShortageTreeBreakdown({
               {formatCurrency(treeData.totalCarregamentoVal)}
             </span>
             <span className="text-xs font-mono text-blue-400 font-bold">
-              {treeData.totalCarregamentoCount} caso(s) • {treeData.totalCarregamentoHl.toFixed(4)} HL
+              {treeData.totalCarregamentoCount} caso(s) • {treeData.totalCarregamentoHl.toFixed(2)} HL
             </span>
           </div>
           <p className="text-[9.5px] text-slate-400">Regularizado na expedição • Sem geração de vale aos condutores</p>
@@ -497,7 +505,7 @@ export default function ShortageTreeBreakdown({
               {formatCurrency(treeData.totalDescarregamentoVal)}
             </span>
             <span className="text-xs font-mono text-amber-400 font-bold">
-              {treeData.totalDescarregamentoCount} caso(s) • {treeData.totalDescarregamentoHl.toFixed(4)} HL
+              {treeData.totalDescarregamentoCount} caso(s) • {treeData.totalDescarregamentoHl.toFixed(2)} HL
             </span>
           </div>
           <p className="text-[9.5px] text-slate-400">Vales emitidos com rateio entre motorista e ajudantes</p>
@@ -519,7 +527,7 @@ export default function ShortageTreeBreakdown({
               {formatCurrency(treeData.grandTotalVal)}
             </span>
             <span className="text-xs font-mono text-slate-300 font-bold">
-              {treeData.grandTotalCount} caso(s) • {treeData.grandTotalHl.toFixed(4)} HL
+              {treeData.grandTotalCount} caso(s) • {treeData.grandTotalHl.toFixed(2)} HL
             </span>
           </div>
           <p className="text-[9.5px] text-slate-400">Volume total e impacto financeiro somados no período</p>
@@ -669,7 +677,7 @@ export default function ShortageTreeBreakdown({
                   <div className="flex items-center gap-4 text-right shrink-0">
                     <div className="hidden sm:block">
                       <span className="text-[10px] font-mono text-slate-400 block">
-                        {cat.count} ocorrência(s) • {cat.hl.toFixed(4)} HL
+                        {cat.count} ocorrência(s) • {cat.hl.toFixed(2)} HL
                       </span>
                     </div>
                     <div className="text-right">
@@ -788,10 +796,10 @@ export default function ShortageTreeBreakdown({
                                   {/* Quantidade / Volume */}
                                   <td className="py-2.5 px-3 text-right whitespace-nowrap">
                                     <span className="text-slate-200 font-bold block">
-                                      {item.quantidade || 1} {item.unidadeMedida || "cx"}
+                                      {item.quantidade || 1} cx
                                     </span>
                                     <span className="text-[9.5px] text-slate-400">
-                                      {itemHl.toFixed(4)} HL
+                                      {itemHl.toFixed(2)} HL
                                     </span>
                                   </td>
 
@@ -799,16 +807,9 @@ export default function ShortageTreeBreakdown({
                                   <td className="py-2.5 px-3 text-right whitespace-nowrap">
                                     {(() => {
                                       const rawCode = item.item || cast.itemCode || cast.produto;
-                                      const prod = getProductCatalogInfo(rawCode);
-                                      const umStr = String(item.unidadeMedida || cast.um || "cx").toLowerCase().trim();
-                                      const isUnd = ["und", "un", "unidade", "unidades"].includes(umStr);
-                                      const isDz = ["dz", "duzia"].includes(umStr);
-                                      const unitSuffix = isUnd ? "un" : isDz ? "dz" : "cx";
-
-                                      const boxPrice = prod && prod.valor > 0 ? prod.valor : (item.customUnitPrice || cast.valorUnitario || (itemVal / Math.max(1, item.quantidade || 1)));
-                                      const unitPrice = isUnd && prod && prod.fator > 0 
-                                        ? (boxPrice / prod.fator) 
-                                        : (isUnd ? (itemVal / Math.max(1, item.quantidade || 1)) : boxPrice);
+                                      const prod = getProductCatalogInfo(rawCode) || getProductByCodeOrName(item.descricaoProduto || item.descricao);
+                                      const qty = Math.max(1, item.quantidade || 1);
+                                      const boxPrice = prod && prod.valor > 0 ? prod.valor : (itemVal / qty);
 
                                       return (
                                         <>
@@ -816,7 +817,7 @@ export default function ShortageTreeBreakdown({
                                             {formatCurrency(itemVal)}
                                           </span>
                                           <span className="text-[9px] text-slate-400 font-mono">
-                                            {formatCurrency(unitPrice)}/{unitSuffix}
+                                            {formatCurrency(boxPrice)}/cx
                                           </span>
                                         </>
                                       );

@@ -24,6 +24,7 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "34608", descricao: "SKOL LATA 350ML SH C/12 NPAL MULTIPACK", fator: 12, valor: 39.00, fatorHecto: 0.042 },
   { codigo: "33820", descricao: "BRAHMA CHOPP LT 350ML SH C/12 NP MULTIPK", fator: 12, valor: 34.90, fatorHecto: 0.042 },
   { codigo: "28164", descricao: "BRAHMA DUPLO MALTE LT 350ML SH C/12 NPAL", fator: 12, valor: 37.40, fatorHecto: 0.042 },
+  { codigo: "1804", descricao: "BRAHMA DUPLO MALTE 350ML C24", fator: 24, valor: 37.48, fatorHecto: 0.042 },
   { codigo: "9883", descricao: "SKOL LT 473ML SH C/12 NPAL", fator: 12, valor: 37.84, fatorHecto: 0.05676 },
   { codigo: "13205", descricao: "SKOL GFA VD 300ML CX C/23", fator: 23, valor: 39.14, fatorHecto: 0.069 },
   { codigo: "19164", descricao: "GUARANA CHP ANTARCTICA PET 1L PACK C/2 MULTPACK", fator: 2, valor: 3.90, fatorHecto: 0.02 },
@@ -524,10 +525,18 @@ export function getProductByCodeOrName(term: string): ProductInfo | undefined {
 export function getProductCatalogInfo(skuOrItem?: string | null): ProductInfo | undefined {
   if (!skuOrItem) return undefined;
   const rawCode = String(skuOrItem).trim();
-  const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
+  const cleanCode = rawCode.replace(/^(?:SKU|#|\s)+/i, "").trim().replace(/^0+/, "");
+  const numericCode = rawCode.replace(/[^0-9]/g, "");
+
   const db = getProductsDatabase();
-  const found = db.find(
-    (p) => p.codigo === rawCode || p.codigo === cleanCode || p.codigo.replace(/^0+/, "") === cleanCode
+  let found = db.find(
+    (p) => p.codigo === rawCode || p.codigo === cleanCode || (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
+  );
+  if (found) return found;
+
+  // Check DEFAULT_PRODUCT_DATABASE directly in case localStorage had a partial cache
+  found = DEFAULT_PRODUCT_DATABASE.find(
+    (p) => p.codigo === rawCode || p.codigo === cleanCode || (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
   );
   if (found) return found;
 
@@ -543,62 +552,41 @@ export function getProductBoxPrice(skuOrItem?: string | null, fallbackPrice: num
   return fallbackPrice;
 }
 
-// Calculate accurate HL for single item accounting for UND vs CX unit of measure
+export function extractUnitHlFromDescription(desc?: string): number | null {
+  if (!desc) return null;
+  const d = desc.toUpperCase();
+  if (d.includes("50L") || d.includes("50 L")) return 0.5;
+  if (d.includes("3,3L") || d.includes("3.3L") || d.includes("3,3 L") || d.includes("3.3 L")) return 0.033;
+  if (d.includes("2,5L") || d.includes("2.5L") || d.includes("2,5 L") || d.includes("2.5 L")) return 0.025;
+  if (d.includes("2L") || d.includes("2 L") || d.includes("2000ML")) return 0.02;
+  if (d.includes("1,5L") || d.includes("1.5L") || d.includes("1,5 L") || d.includes("1.5 L") || d.includes("1500ML")) return 0.015;
+  if (d.includes("1L") || d.includes("1 L") || d.includes("1000ML")) return 0.01;
+  if (d.includes("900ML") || d.includes("900 ML")) return 0.009;
+  if (d.includes("750ML") || d.includes("750 ML")) return 0.0075;
+  if (d.includes("600ML") || d.includes("600 ML")) return 0.006;
+  if (d.includes("510ML") || d.includes("510 ML")) return 0.0051;
+  if (d.includes("500ML") || d.includes("500 ML")) return 0.005;
+  if (d.includes("473ML") || d.includes("473 ML")) return 0.00473;
+  if (d.includes("355ML") || d.includes("355 ML")) return 0.00355;
+  if (d.includes("350ML") || d.includes("350 ML")) return 0.0035;
+  if (d.includes("330ML") || d.includes("330 ML")) return 0.0033;
+  if (d.includes("300ML") || d.includes("300 ML")) return 0.003;
+  if (d.includes("269ML") || d.includes("269 ML")) return 0.00269;
+  if (d.includes("250ML") || d.includes("250 ML")) return 0.0025;
+  if (d.includes("200ML") || d.includes("200 ML")) return 0.002;
+  return null;
+}
+
+// Calculate accurate HL for single item accounting for closed SKU packages vs loose units
 export function getUnitLabel(
   item?: { unidadeMedida?: string; um?: string; unit?: string; motivo?: string },
   req?: { unidadeMedida?: string; um?: string; unit?: string; motivo?: string }
 ): "SKU" | "CX" | "UN" {
-  const rawUm = String(
-    item?.unidadeMedida ||
-    item?.um ||
-    item?.unit ||
-    req?.unidadeMedida ||
-    req?.um ||
-    req?.unit ||
-    ""
-  ).toLowerCase().trim();
-
-  const motivoStr = String(item?.motivo || req?.motivo || "").toLowerCase().trim();
-
-  if (motivoStr.includes("completo") || motivoStr.includes("fechado") || motivoStr.includes("falta de sku completo")) {
-    return "SKU";
-  }
-
-  if (rawUm === "sku") {
-    return "SKU";
-  }
-
-  if (
-    rawUm === "cx" ||
-    rawUm === "caixa" ||
-    rawUm === "cxs" ||
-    rawUm === "caixas" ||
-    rawUm === "cx." ||
-    rawUm === "pack" ||
-    rawUm === "fardo" ||
-    rawUm === "fd" ||
-    rawUm === "sh" ||
-    rawUm === "shrink" ||
-    rawUm === "cx6"
-  ) {
-    return "CX";
-  }
-
-  if (
-    rawUm === "und" ||
-    rawUm === "un" ||
-    rawUm === "unidade" ||
-    rawUm === "unidades" ||
-    rawUm === "unds"
-  ) {
+  const rawUm = (item?.unidadeMedida || item?.um || item?.unit || req?.unidadeMedida || req?.um || req?.unit || "").trim().toLowerCase();
+  if (rawUm === "un" || rawUm === "und" || rawUm === "unidade" || rawUm === "unidades" || rawUm === "gfa" || rawUm === "lata" || rawUm === "pet" || rawUm === "u.m.") {
     return "UN";
   }
-
-  if (motivoStr.includes("sku")) {
-    return "SKU";
-  }
-
-  return "SKU";
+  return "CX";
 }
 
 export function calculateItemHL(item: {
@@ -607,6 +595,7 @@ export function calculateItemHL(item: {
   codigo?: string;
   quantidade?: number;
   unidadeMedida?: string;
+  um?: string;
   fatorEmbalagem?: number;
   fatorHecto?: number;
   hectolitros?: number;
@@ -614,65 +603,52 @@ export function calculateItemHL(item: {
   motivo?: string;
 }): number {
   const rawCode = String(item.item || item.itemCode || item.codigo || "").trim();
-  const list = getProductsDatabase();
-  const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
-  const numericCode = rawCode.replace(/[^0-9]/g, "");
-
-  let dbProduct = rawCode ? list.find(p => 
-    p.codigo === rawCode || 
-    p.codigo === cleanCode || 
-    (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
-  ) : undefined;
-
-  if (!dbProduct && item.descricao) {
-    dbProduct = getProductByCodeOrName(item.descricao);
-  }
+  const desc = item.descricao || "";
+  const prod = getProductCatalogInfo(rawCode) || getProductByCodeOrName(desc);
   
-  const boxFactorHecto = dbProduct?.fatorHecto ?? (item.fatorHecto && item.fatorHecto > 0 ? item.fatorHecto : 0.04);
-  
-  let embalagem = dbProduct?.fator;
-  if (!embalagem || embalagem < 1) {
-    if (item.fatorEmbalagem && item.fatorEmbalagem >= 1) {
-      embalagem = item.fatorEmbalagem;
-    } else {
-      embalagem = 12;
-    }
-  }
-
-  const umStr = (item.unidadeMedida || (item as any).um || "").toLowerCase().trim();
-  const motivoStr = String(item.motivo || "").toLowerCase();
-  const isSkuMotive = motivoStr.includes("completo") || motivoStr.includes("fechado");
+  const boxFactorHecto = prod?.fatorHecto ?? (item.fatorHecto && item.fatorHecto > 0 ? item.fatorHecto : 0.042);
   const qty = Number(item.quantidade) || 0;
   if (qty <= 0) return 0;
 
-  const isUnd = !isSkuMotive && (umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades");
-  const isExplicitBoxCount = isSkuMotive || !isUnd || (umStr === "cx" || umStr === "caixa" || umStr === "cxs" || umStr === "caixas" || umStr === "cx." || umStr === "pack" || umStr === "fardo" || umStr === "fd" || umStr === "sh" || umStr === "shrink" || umStr === "sku" || umStr === "");
+  const um = (item.unidadeMedida || item.um || "").trim().toLowerCase();
+  const itemsPerBox = prod?.fator || prod?.embalagem || item.fatorEmbalagem || 12;
 
-  if (isExplicitBoxCount) {
-    return Number((qty * boxFactorHecto).toFixed(5));
+  const isIndividualUnit = 
+    um === "un" || 
+    um === "und" || 
+    um === "unidade" || 
+    um === "unidades" || 
+    um === "gfa" || 
+    um === "lata" || 
+    um === "pet" ||
+    um === "u.m.";
+
+  const isDozen = um === "dz" || um === "duzia" || um === "dúzia";
+
+  if (isIndividualUnit) {
+    // Check if we can get unit volume directly from product description (e.g. 350ML -> 0.0035 HL)
+    const unitFromDesc = extractUnitHlFromDescription(desc || prod?.descricao);
+    const unitHl = unitFromDesc !== null && unitFromDesc > 0
+      ? unitFromDesc
+      : boxFactorHecto / Math.max(1, itemsPerBox);
+    return Number((qty * unitHl).toFixed(4));
+  } else if (isDozen) {
+    const unitHl = (boxFactorHecto / Math.max(1, itemsPerBox)) * 12;
+    return Number((qty * unitHl).toFixed(4));
   }
 
-  // Hectolitro Unitário (por UNIDADE física)
-  const unitHl = boxFactorHecto / embalagem;
-
-  let qtyInUnits = qty;
-  if (umStr === "dz" || umStr === "duzia" || umStr.startsWith("dz")) {
-    qtyInUnits = qty * 12;
-  } else {
-    qtyInUnits = qty;
-  }
-
-  const hl = qtyInUnits * unitHl;
-  return Number(hl.toFixed(5));
+  // Otherwise treat as full box / pack / shrink / fardo (CX, SH, FD, PCT)
+  return Number((qty * boxFactorHecto).toFixed(4));
 }
 
-// Calculate accurate Financial Value (R$) for single item accounting for UND vs CX unit of measure
+// Calculate accurate Financial Value (R$) for single item
 export function calculateItemValue(item: {
   item?: string;
   itemCode?: string;
   codigo?: string;
   quantidade?: number;
   unidadeMedida?: string;
+  um?: string;
   fatorEmbalagem?: number;
   customUnitPrice?: number;
   precoCalculated?: number;
@@ -681,60 +657,40 @@ export function calculateItemValue(item: {
   motivo?: string;
 }): number {
   const rawCode = String(item.item || item.itemCode || item.codigo || "").trim();
-  const list = getProductsDatabase();
-  const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
-  const numericCode = rawCode.replace(/[^0-9]/g, "");
+  const desc = item.descricao || "";
+  const prod = getProductCatalogInfo(rawCode) || getProductByCodeOrName(desc);
+  const qty = Number(item.quantidade) || 1;
+  const um = (item.unidadeMedida || item.um || "").trim().toLowerCase();
+  const itemsPerBox = prod?.fator || prod?.embalagem || item.fatorEmbalagem || 12;
+  const isIndividualUnit = um === "un" || um === "und" || um === "unidade" || um === "unidades" || um === "gfa" || um === "lata" || um === "pet" || um === "u.m.";
 
-  let dbProduct = rawCode ? list.find(p => 
-    p.codigo === rawCode || 
-    p.codigo === cleanCode || 
-    (numericCode && (p.codigo === numericCode || p.codigo.replace(/^0+/, "") === numericCode))
-  ) : undefined;
-
-  if (!dbProduct && item.descricao) {
-    dbProduct = getProductByCodeOrName(item.descricao);
-  }
-
-  const boxPrice = dbProduct?.valor || 0;
-  const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (item.fatorEmbalagem || 12);
-  const umStr = (item.unidadeMedida || (item as any).um || "").toLowerCase().trim();
-  const motivoStr = String(item.motivo || "").toLowerCase();
-  const isSkuMotive = motivoStr.includes("completo") || motivoStr.includes("fechado");
-  const isUnd = !isSkuMotive && (umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades");
-  const qty = item.quantidade || 1;
-
-  if (boxPrice > 0) {
-    const actualUnitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
-    return Number((actualUnitPrice * qty).toFixed(2));
-  }
-
-  const customP = item.customUnitPrice || item.precoSugerido;
-  if (customP && customP > 0 && customP !== 98.50) {
-    let unitP = customP;
-    if (unitP > 1000) unitP = unitP / 100;
-    const actualUnitPrice = !isUnd && unitP < 15 ? (unitP * embalagem) : (isUnd && unitP > 15 ? (unitP / embalagem) : unitP);
-    return Number((actualUnitPrice * qty).toFixed(2));
-  }
-
-  if (item.precoCalculated && item.precoCalculated > 0 && item.precoCalculated !== 98.50) {
-    let price = item.precoCalculated;
-    if (price > 10000) price = price / 100;
-    else if (price > 1000) price = price / 100;
-
-    if (isUnd && price > 20) {
-      const unitP = (price / qty) > 15 ? (price / qty / embalagem) : (price / qty);
-      return Number((unitP * qty).toFixed(2));
-    } else if (!isUnd && (price / qty) < 15) {
-      const unitP = (price / qty) * embalagem;
-      return Number((unitP * qty).toFixed(2));
+  // 1. PRIMARY AUTHORITY: Official registered price in product catalog (Guia de Cadastros de Produto)
+  if (prod && prod.valor && prod.valor > 0) {
+    if (isIndividualUnit) {
+      const unitPrice = prod.valor / Math.max(1, itemsPerBox);
+      return Number((unitPrice * qty).toFixed(2));
     }
-    return Number(price.toFixed(2));
+    return Number((prod.valor * qty).toFixed(2));
   }
 
-  return 0;
+  // 2. Fallbacks if product is NOT in catalog
+  const customP = item.customUnitPrice || item.precoSugerido;
+  if (customP && customP > 0) {
+    if (customP <= 350) {
+      return Number((customP * qty).toFixed(2));
+    }
+  }
+
+  if (item.precoCalculated && item.precoCalculated > 0) {
+    if (item.precoCalculated <= 350 * Math.max(1, qty)) {
+      return Number(item.precoCalculated.toFixed(2));
+    }
+  }
+
+  return Number((52.00 * qty).toFixed(2));
 }
 
-export function calculateHectolitros(codigo: string, quantidade: number, um: string = "un"): number {
+export function calculateHectolitros(codigo: string, quantidade: number, um: string = "cx"): number {
   return calculateItemHL({ codigo, quantidade, unidadeMedida: um });
 }
 
@@ -753,7 +709,7 @@ export function calculateRequestValueAndHL(
       fatorEmbalagem: req.fatorEmbalagem,
       customUnitPrice: req.customUnitPrice || req.precoSugerido,
       precoCalculated: req.precoCalculated,
-      descricao: req.descricao || req.itemDesc
+      descricao: req.descricao || req.itemDesc || req.descricaoProduto
     }
   ];
 
@@ -761,54 +717,29 @@ export function calculateRequestValueAndHL(
   let totalHl = 0;
 
   for (const item of items) {
-    const rawCode = String(item.item || item.itemCode || item.codigo || item.produto || "").trim();
-    const cleanCode = rawCode.replace(/^#/, "").trim().replace(/^0+/, "");
-    const umStr = String(item.unidadeMedida || item.um || "").toLowerCase().trim();
+    const rawCode = String(item.item || item.itemCode || item.codigo || item.produto || req.item || req.produto || "").trim();
+    const qty = Number(item.quantidade) || Number(req.quantidade) || 1;
+    const desc = item.descricao || item.itemDesc || req.descricaoProduto || req.descricao || "";
+    const um = item.unidadeMedida || item.um || req.unidadeMedida || req.um || "cx";
 
-    // 1. Calculate HL
+    // 1. Calculate HL (Closed SKU box factor * quantity)
     const hl = calculateItemHL({
       item: rawCode,
-      quantidade: item.quantidade || 1,
-      unidadeMedida: umStr,
-      fatorEmbalagem: item.fatorEmbalagem,
-      fatorHecto: item.fatorHecto,
-      descricao: item.descricao
+      quantidade: qty,
+      unidadeMedida: um,
+      descricao: desc
     });
     totalHl += hl;
 
-    // 2. Calculate Value
-    let val = calculateItemValue({
+    // 2. Calculate Value (Closed SKU box price * quantity)
+    const val = calculateItemValue({
       item: rawCode,
-      quantidade: item.quantidade || 1,
-      unidadeMedida: umStr,
-      fatorEmbalagem: item.fatorEmbalagem,
-      customUnitPrice: item.customUnitPrice || item.precoSugerido,
-      precoCalculated: item.precoCalculated,
-      descricao: item.descricao
+      quantidade: qty,
+      unidadeMedida: um,
+      customUnitPrice: item.customUnitPrice || req.customUnitPrice,
+      precoCalculated: item.precoCalculated || req.precoCalculated,
+      descricao: desc
     });
-
-    // Fallback if calculateItemValue returned 0
-    if (!val || val <= 0) {
-      const promaxMatch = promaxRecords.find((r: any) => r.produto === rawCode || r.produto === cleanCode);
-      const dbProduct = getProductsDatabase().find(p => p.codigo === rawCode || p.codigo === cleanCode || p.codigo.replace(/^0+/, "") === cleanCode);
-      const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (item.fatorEmbalagem || (promaxMatch as any)?.fator || 12);
-      const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades";
-      const qty = Number(item.quantidade) || 1;
-
-      let boxPrice = dbProduct?.valor || 0;
-      if (!boxPrice || boxPrice <= 0) {
-        if (promaxMatch?.valorUnitario && promaxMatch.valorUnitario > 0) {
-          boxPrice = promaxMatch.valorUnitario < 15 ? (promaxMatch.valorUnitario * embalagem) : promaxMatch.valorUnitario;
-        } else if (item.customUnitPrice && item.customUnitPrice > 0) {
-          boxPrice = item.customUnitPrice < 15 ? (item.customUnitPrice * embalagem) : item.customUnitPrice;
-        }
-      }
-
-      if (boxPrice > 0) {
-        const actualUnitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
-        val = actualUnitPrice * qty;
-      }
-    }
 
     totalVal += val;
   }
@@ -848,12 +779,14 @@ export function getProductDescription(skuOrItem?: string | null, fallbackDesc?: 
   if (cleanCode === "2349") return "GUARANA CHP ANTARCTICA PET 2L CAIXA C/6";
   if (cleanCode === "33820") return "BRAHMA CHOPP LT 350ML SH C/12 NP MULTIPK";
   if (cleanCode === "988") return "BRAHMA CHOPP 600ML";
+  if (cleanCode === "1804") return "BRAHMA DUPLO MALTE 350ML C24";
   if (cleanCode === "28164") return "BRAHMA DUPLO MALTE LT 350ML SH C/12 NPAL";
   if (cleanCode === "9083" || cleanCode === "9883") return "SKOL LT 473ML SH C/12 NPAL";
   if (cleanCode === "9067") return "ANTARCTICA PILSEN LATA 350ML SH C/12 NPAL";
   if (cleanCode === "9068") return "SKOL LATA 350ML SH C/12 NPAL";
   if (cleanCode === "2350") return "SODA LIMONADA ANTARCTICA PET 2L CAIXA C/6";
   if (cleanCode === "17808") return "BUDWEISER OW 330ML CX C/24";
+  if (cleanCode === "2538") return "ANTARCTICA PILSEN 600ML";
   if (cleanCode === "2546") return "ORIGINAL 600ML";
   if (cleanCode === "2548") return "BUDWEISER 600ML";
   if (cleanCode === "23186") return "SPATEN N 600ML";
@@ -863,5 +796,38 @@ export function getProductDescription(skuOrItem?: string | null, fallbackDesc?: 
     ? fallbackDesc
     : `SKU ${rawCode}`;
 }
+
+export function classifyShortageErrorType(req: any): "carregamento" | "entrega" {
+  if (!req) return "carregamento";
+  const rawType = String(req.faltaTipoErro || req.tipo || "").toLowerCase().trim();
+  if (rawType === "carregamento") return "carregamento";
+  if (rawType === "entrega" || rawType === "descarregamento" || rawType === "rota") return "entrega";
+
+  const m = String(req.motivo || "").toLowerCase();
+  const subM = String(req.subMotivo || "").toLowerCase();
+  const obs = String(req.observacao || "").toLowerCase();
+  const just = String(req.justificativa || "").toLowerCase();
+
+  const isCarregamento = 
+    m.includes("carregamento") || 
+    m.includes("armazém") || 
+    m.includes("armazem") || 
+    m.includes("doca") || 
+    m.includes("separação") || 
+    m.includes("separacao") ||
+    subM.includes("carregamento") ||
+    subM.includes("palete") ||
+    subM.includes("doca") ||
+    obs.includes("carregamento") ||
+    obs.includes("armazém") ||
+    obs.includes("armazem") ||
+    just.includes("carregamento") ||
+    just.includes("armazém");
+
+  if (isCarregamento) return "carregamento";
+
+  return "entrega";
+}
+
 
 

@@ -531,7 +531,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     const totalVolume = finalRecordsToSubmit.reduce((acc, curr) => acc + curr.hectolitros, 0);
     const totalFinanceValue = finalRecordsToSubmit.reduce((acc, curr) => acc + curr.valorTotal, 0);
     
-    alert(`✨ Lançamento Concluído!\n\nA NF-e ${req.nf} com ${finalRecordsToSubmit.length} SKU(s) foi lançada com sucesso no banco consolidado geral.\n\nMétricas totais de faturamento e volume:\n- Valor Total: ${formatCurrency(totalFinanceValue)}\n- Volume Líquido: ${totalVolume.toFixed(4)} HL\n\nA visualização ativa deste setor continua limpa!`);
+    alert(`✨ Lançamento Concluído!\n\nA NF-e ${req.nf} com ${finalRecordsToSubmit.length} SKU(s) foi lançada com sucesso no banco consolidado geral.\n\nMétricas totais de faturamento e volume:\n- Valor Total: ${formatCurrency(totalFinanceValue)}\n- Volume Líquido: ${totalVolume.toFixed(2)} HL\n\nA visualização ativa deste setor continua limpa!`);
   };
 
   // New Request Form states

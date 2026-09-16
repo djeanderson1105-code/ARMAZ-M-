@@ -297,7 +297,7 @@ export default function AvariasPackagingChart({ requests = [], records = [], pro
                 <Droplet className="w-3 h-3 text-emerald-400" /> Volume HL
               </span>
               <p className="text-sm md:text-base font-extrabold font-mono text-emerald-300 mt-1">
-                {stats.rgb.hl.toFixed(4)} <span className="text-[10px] text-emerald-500">HL</span>
+                {stats.rgb.hl.toFixed(2)} <span className="text-[10px] text-emerald-500">HL</span>
               </p>
               <span className="text-[9.5px] text-slate-400 font-mono block mt-0.5">
                 {stats.rgbHlPct.toFixed(1)}% do total
@@ -482,28 +482,28 @@ export default function AvariasPackagingChart({ requests = [], records = [], pro
                 <Droplet className="w-3.5 h-3.5 text-blue-400" /> Volume Hectolitros (HL)
               </span>
               <span className="text-slate-400 font-bold">
-                Total: <strong className="text-white">{stats.totalHl.toFixed(4)} HL</strong>
+                Total: <strong className="text-white">{stats.totalHl.toFixed(2)} HL</strong>
               </span>
             </div>
             <div className="w-full bg-slate-950 h-4 rounded-full overflow-hidden p-0.5 flex border border-slate-800">
               <div 
                 style={{ width: `${stats.rgbHlPct}%` }}
                 className="bg-emerald-500 h-full rounded-l-full transition-all duration-700 flex items-center justify-center text-[9px] font-extrabold text-slate-950 overflow-hidden"
-                title={`RGB: ${stats.rgb.hl.toFixed(4)} HL (${stats.rgbHlPct.toFixed(1)}%)`}
+                title={`RGB: ${stats.rgb.hl.toFixed(2)} HL (${stats.rgbHlPct.toFixed(1)}%)`}
               >
                 {stats.rgbHlPct > 15 && `${stats.rgbHlPct.toFixed(1)}% RGB`}
               </div>
               <div 
                 style={{ width: `${stats.oneWayHlPct}%` }}
                 className="bg-amber-500 h-full rounded-r-full transition-all duration-700 flex items-center justify-center text-[9px] font-extrabold text-slate-950 overflow-hidden"
-                title={`One Way: ${stats.oneWay.hl.toFixed(4)} HL (${stats.oneWayHlPct.toFixed(1)}%)`}
+                title={`One Way: ${stats.oneWay.hl.toFixed(2)} HL (${stats.oneWayHlPct.toFixed(1)}%)`}
               >
                 {stats.oneWayHlPct > 15 && `${stats.oneWayHlPct.toFixed(1)}% OW`}
               </div>
             </div>
             <div className="flex justify-between text-[10px] font-mono text-slate-400 pt-0.5">
-              <span className="text-emerald-400 font-semibold">🔄 RGB: {stats.rgb.hl.toFixed(4)} HL ({stats.rgbHlPct.toFixed(1)}%)</span>
-              <span className="text-amber-400 font-semibold">📦 One Way: {stats.oneWay.hl.toFixed(4)} HL ({stats.oneWayHlPct.toFixed(1)}%)</span>
+              <span className="text-emerald-400 font-semibold">🔄 RGB: {stats.rgb.hl.toFixed(2)} HL ({stats.rgbHlPct.toFixed(1)}%)</span>
+              <span className="text-amber-400 font-semibold">📦 One Way: {stats.oneWay.hl.toFixed(2)} HL ({stats.oneWayHlPct.toFixed(1)}%)</span>
             </div>
           </div>
 
@@ -610,7 +610,7 @@ export default function AvariasPackagingChart({ requests = [], records = [], pro
                         </span>
                       </div>
                       <span className="px-2 py-0.5 bg-emerald-950 border border-emerald-800 text-emerald-300 text-[10px] font-bold rounded-md shrink-0">
-                        {p.hl.toFixed(4)} HL
+                        {p.hl.toFixed(2)} HL
                       </span>
                     </div>
                   ))}
@@ -639,7 +639,7 @@ export default function AvariasPackagingChart({ requests = [], records = [], pro
                         </span>
                       </div>
                       <span className="px-2 py-0.5 bg-amber-955 border border-amber-800 text-amber-300 text-[10px] font-bold rounded-md shrink-0">
-                        {p.hl.toFixed(4)} HL
+                        {p.hl.toFixed(2)} HL
                       </span>
                     </div>
                   ))}

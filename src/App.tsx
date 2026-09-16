@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { ExchangeRecord, ImportBatch } from "./types";
 import { parseCSVToRecords } from "./utils/csvParser";
 import { RAW_SAMPLE_DATA } from "./sampleData";
 import { initializeSync, startPolling } from "./utils/apiSync";
+import { getUnifiedOfficialRecords } from "./utils/processTypes";
 
 // Components
 import DashboardView from "./components/DashboardView";
@@ -62,6 +63,11 @@ function MainApp() {
     shiftMode,
     setShiftMode
   } = useSstrData();
+
+  // Official unified dataset combining 03.18.05 Promax records with all platform-sent reposições that were BAIXADAS
+  const unifiedOfficialRecords = useMemo(() => {
+    return getUnifiedOfficialRecords(records, pendingRequests);
+  }, [records, pendingRequests]);
 
   const [activePortal, setActivePortal] = useState<"gestor" | "representante">("representante");
   const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "import" | "export" | "pending" | "faltas" | "managers" | "rankings" | "dados">("dashboard");
@@ -501,7 +507,7 @@ function MainApp() {
             <div>
               {activeTab === "dashboard" && (
                 <DashboardView 
-                  records={records} 
+                  records={unifiedOfficialRecords} 
                   onSelectSector={handleSelectSectorFromDashboard} 
                 />
               )}
@@ -529,7 +535,7 @@ function MainApp() {
               )}
 
               {activeTab === "export" && (
-                <ReportView records={records} />
+                <ReportView records={unifiedOfficialRecords} />
               )}
 
               {activeTab === "pending" && (
@@ -541,7 +547,7 @@ function MainApp() {
               )}
 
               {activeTab === "rankings" && (
-                <RankingsView records={records} />
+                <RankingsView records={unifiedOfficialRecords} />
               )}
 
               {activeTab === "managers" && (
@@ -569,7 +575,7 @@ function MainApp() {
       </footer>
 
       {/* Floating Operational Standard Manual and AI Assistant */}
-      <SstrOperationalAssistant records={records} />
+      <SstrOperationalAssistant records={unifiedOfficialRecords} />
 
     </div>
   );
