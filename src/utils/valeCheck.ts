@@ -28,6 +28,21 @@ export function isRequestWithVale(req: PendingRequest, vales: ValeEntry[] = []):
     if (directMatch) return true;
   }
 
+  // 2.5 Nota Fiscal (NF) match
+  const rawReqNf = String(req.nf || "").trim().toLowerCase();
+  const cleanReqNf = rawReqNf.replace(/^0+/, "");
+  const isValidReqNf = cleanReqNf && cleanReqNf !== "0" && cleanReqNf !== "no-nf" && cleanReqNf !== "n0-nf" && cleanReqNf !== "-" && cleanReqNf.length >= 3;
+
+  if (isValidReqNf && vales && vales.length > 0) {
+    for (const v of vales) {
+      const rawVNf = String(v.nf || v.originalRequest?.nf || "").trim().toLowerCase();
+      const cleanVNf = rawVNf.replace(/^0+/, "");
+      if (cleanVNf && (rawReqNf === rawVNf || cleanReqNf === cleanVNf)) {
+        return true;
+      }
+    }
+  }
+
   // 3. Match by MAPA and SKU CADASTRADO
   const rawMapa = String(req.mapa || "").trim().toLowerCase();
   if (!rawMapa || rawMapa === "0" || rawMapa === "-") {

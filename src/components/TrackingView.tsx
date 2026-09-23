@@ -1,8 +1,10 @@
 import React, { useState, useMemo } from "react";
 import { ExchangeRecord, PendingRequest, REPRESENTATIVOS_SETOR } from "../types";
-import { Search, Eye, Filter, CheckCircle2, AlertCircle, HelpCircle, X, ExternalLink, RefreshCw, UserCheck, Calendar, AlertTriangle, Layers, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, DollarSign, ClipboardList, Percent, TrendingUp, Package, Tag } from "lucide-react";
+import { Search, Eye, Filter, CheckCircle2, AlertCircle, HelpCircle, X, ExternalLink, RefreshCw, UserCheck, Calendar, AlertTriangle, Layers, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, DollarSign, ClipboardList, Percent, TrendingUp, Package, Tag, FileText, Download, Loader2 } from "lucide-react";
 import { getRecordHL } from "../utils/hectoFactors";
 import { isRecordReposicao, isRecordTroca } from "../utils/processTypes";
+import { exportAuditTrackingPdf } from "../utils/auditPdfGenerator";
+import { exportAuditTrackingExcel } from "../utils/auditExcelGenerator";
 
 interface TrackingViewProps {
   records: ExchangeRecord[];
@@ -54,15 +56,32 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
     setCurrentPage(1);
   }, [searchTerm, searchField, selectedStatus, selectedSector, selectedReason, selectedGv, processTypeFilter, startDate, endDate, viewMode, sortBy, sortOrder]);
 
-  // Helper to convert DD/MM/YYYY to YYYY-MM-DD for comparison
-  const convertToISODate = (ptDateStr: string): string | null => {
-    if (!ptDateStr) return null;
-    const parts = ptDateStr.split("/");
+  // Helper to convert DD/MM/YYYY or other formats to YYYY-MM-DD for comparison
+  const convertToISODate = (rawDateStr: string): string | null => {
+    if (!rawDateStr) return null;
+    const clean = rawDateStr.trim().split(" ")[0]; // remove time if any
+    if (clean.includes("-")) {
+      const p = clean.split("-");
+      if (p.length === 3) {
+        if (p[0].length === 4) return clean; // already YYYY-MM-DD
+        if (p[2].length === 4) return `${p[2]}-${p[1].padStart(2, "0")}-${p[0].padStart(2, "0")}`; // DD-MM-YYYY
+      }
+    }
+    const parts = clean.split("/");
     if (parts.length !== 3) return null;
     const day = parts[0].padStart(2, "0");
     const month = parts[1].padStart(2, "0");
-    const year = parts[2];
+    let year = parts[2];
+    if (year.length === 2) year = `20${year}`;
     return `${year}-${month}-${day}`;
+  };
+
+  // Helper to convert YYYY-MM-DD to DD/MM/YYYY for UI display
+  const convertToPtDate = (isoDateStr: string): string => {
+    if (!isoDateStr) return "";
+    const parts = isoDateStr.split("-");
+    if (parts.length !== 3) return isoDateStr;
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
   };
   
   // Custom manual action states
@@ -213,6 +232,18 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
 
     return recadastrarSet;
   }, [records]);
+
+  // PDF Export States
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportSourceMode, setExportSourceMode] = useState<"filtro_tela" | "custom">("filtro_tela");
+  const [exportDateType, setExportDateType] = useState<"unica" | "periodo" | "todas">("unica");
+  const [exportTargetDate, setExportTargetDate] = useState<string>("");
+  const [exportTargetEndDate, setExportTargetEndDate] = useState<string>("");
+  const [exportStatusScope, setExportStatusScope] = useState<"todos_status" | "filtro_ativo">("todos_status");
+  const [exportSectorScope, setExportSectorScope] = useState<string>("todos");
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isExportingExcel, setIsExportingExcel] = useState(false);
+  const [pdfNotification, setPdfNotification] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   // Filtered records
   const filteredRecords = useMemo(() => {
@@ -365,6 +396,14 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
         .sort()
         .join("|");
 
+      // Robust map resolution from Column X (mapaOrigem) or mapa across all recs in group
+      const resolvedMapa = recs
+        .map(r => r.mapaOrigem || r.mapa)
+        .map(m => (m || "").trim())
+        .find(m => m && m !== "0" && m.toLowerCase() !== "falta" && m !== "-")
+        || (first.mapaOrigem && first.mapaOrigem !== "0" ? first.mapaOrigem : "")
+        || (first.mapa && first.mapa !== "0" && first.mapa.toLowerCase() !== "falta" ? first.mapa : "");
+
       return {
         id: sol,
         solicitacao: sol,
@@ -373,7 +412,9 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
         setorVenda: first.setorVenda || "",
         dataSolicitacao: first.dataSolicitacao || "Sem Data",
         status: first.status || "Pendente",
-        mapa: first.mapa || "",
+        mapa: resolvedMapa,
+        mapaOrigem: first.mapaOrigem || "",
+        mapaReposicao: first.mapaReposicao || "",
         observacao: first.observacao || "",
         records: recs,
         productsKey,
@@ -406,6 +447,312 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
       return sortOrder === "desc" ? -comparison : comparison;
     });
   }, [filteredRecords, sortBy, sortOrder]);
+
+  // Helper to open the PDF export configuration modal
+  const handleOpenExportModal = () => {
+    // Default to active filtered screen view for zero divergence
+    setExportSourceMode("filtro_tela");
+    if (startDate) {
+      setExportTargetDate(startDate);
+      if (endDate && endDate !== startDate) {
+        setExportDateType("periodo");
+        setExportTargetEndDate(endDate);
+      } else {
+        setExportDateType("unica");
+        setExportTargetEndDate(startDate);
+      }
+    } else if (uniqueDates.length > 0) {
+      const latestPtDate = uniqueDates[0];
+      const iso = convertToISODate(latestPtDate);
+      if (iso) {
+        setExportTargetDate(iso);
+        setExportTargetEndDate(iso);
+      }
+      setExportDateType("unica");
+    } else {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      setExportTargetDate(todayIso);
+      setExportTargetEndDate(todayIso);
+      setExportDateType("todas");
+    }
+    setExportSectorScope(selectedSector || "todos");
+    setExportStatusScope("todos_status");
+    setIsExportModalOpen(true);
+  };
+
+  // Preview data dynamically computed for the PDF modal
+  const exportPreviewData = useMemo(() => {
+    let list: ExchangeRecord[] = [];
+
+    if (exportSourceMode === "filtro_tela") {
+      // 100% strictly aligned with active filtered view on screen (Zero Divergence: 62 solicitations)
+      list = filteredRecords;
+    } else {
+      list = records;
+
+      // Filter by date
+      if (exportDateType === "unica" && exportTargetDate) {
+        list = list.filter(r => {
+          const iso = convertToISODate(r.dataSolicitacao);
+          return iso === exportTargetDate;
+        });
+      } else if (exportDateType === "periodo") {
+        if (exportTargetDate || exportTargetEndDate) {
+          list = list.filter(r => {
+            const iso = convertToISODate(r.dataSolicitacao);
+            if (!iso) return false;
+            if (exportTargetDate && iso < exportTargetDate) return false;
+            if (exportTargetEndDate && iso > exportTargetEndDate) return false;
+            return true;
+          });
+        }
+      }
+
+      // Filter by sector
+      if (exportSectorScope !== "todos") {
+        list = list.filter(r => (r.setorVenda || "").trim() === exportSectorScope.trim());
+      }
+
+      // Filter by status if "filtro_ativo" is selected
+      if (exportStatusScope === "filtro_ativo" && selectedStatus !== "todos") {
+        list = list.filter(r => {
+          const s = (r.status || "").toLowerCase().trim();
+          if (selectedStatus === "aprovada") return s.includes("aprov");
+          if (selectedStatus === "pendente") return s.includes("pend") && !recadastrarSolIds.has(r.solicitacao);
+          if (selectedStatus === "reprovada") return s.includes("reprov");
+          if (selectedStatus === "recadastrar") return recadastrarSolIds.has(r.solicitacao);
+          return true;
+        });
+      }
+
+      // Process type
+      if (processTypeFilter !== "todos") {
+        list = list.filter(r => {
+          const isTroca = isRecordTroca(r);
+          return processTypeFilter === "troca" ? isTroca : !isTroca;
+        });
+      }
+
+      // Reason
+      if (selectedReason !== "todos") {
+        list = list.filter(r => (r.justificativa || "").trim() === selectedReason.trim());
+      }
+    }
+
+    const uniqueSols = new Set(list.map(r => r.solicitacao).filter(Boolean));
+    const uniqueSecs = new Set(list.map(r => r.setorVenda).filter(Boolean));
+    const totalVal = list.reduce((sum, r) => sum + (Number(r.valorTotal) || 0), 0);
+    const totalHl = list.reduce((sum, r) => sum + getRecordHL(r), 0);
+
+    const aprovSols = new Set(list.filter(r => (r.status || "").toLowerCase().includes("aprov")).map(r => r.solicitacao)).size;
+    const pendSols = new Set(list.filter(r => (r.status || "").toLowerCase().includes("pend") && !recadastrarSolIds.has(r.solicitacao)).map(r => r.solicitacao)).size;
+    const reprovSols = new Set(list.filter(r => (r.status || "").toLowerCase().includes("reprov")).map(r => r.solicitacao)).size;
+    const recadSols = new Set(list.filter(r => recadastrarSolIds.has(r.solicitacao)).map(r => r.solicitacao)).size;
+
+    return {
+      records: list,
+      solicitationsCount: uniqueSols.size,
+      sectorsCount: uniqueSecs.size,
+      totalValor: totalVal,
+      totalHl,
+      aprovSols,
+      pendSols,
+      reprovSols,
+      recadSols
+    };
+  }, [exportSourceMode, filteredRecords, records, exportDateType, exportTargetDate, exportTargetEndDate, exportSectorScope, exportStatusScope, selectedStatus, processTypeFilter, selectedReason, recadastrarSolIds]);
+
+  // Execute PDF generation from the modal
+  const handleExecutePdfExport = async () => {
+    if (!exportPreviewData.records.length) {
+      setPdfNotification({
+        message: "Nenhuma solicitação encontrada para os parâmetros informados.",
+        type: "error"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+      return;
+    }
+
+    setIsExportingPdf(true);
+    try {
+      const isRange = exportDateType === "periodo" && exportTargetDate && exportTargetEndDate && exportTargetEndDate !== exportTargetDate;
+      const effectiveDateStr = exportSourceMode === "filtro_tela"
+        ? (!endDate || endDate === startDate ? startDate : undefined)
+        : (exportDateType === "unica" ? exportTargetDate : undefined);
+      const effectiveStartDate = exportSourceMode === "filtro_tela"
+        ? (endDate && endDate !== startDate ? startDate : undefined)
+        : (exportDateType === "periodo" ? exportTargetDate : undefined);
+      const effectiveEndDate = exportSourceMode === "filtro_tela"
+        ? (endDate && endDate !== startDate ? endDate : undefined)
+        : (exportDateType === "periodo" ? exportTargetEndDate : undefined);
+
+      await exportAuditTrackingPdf(exportPreviewData.records, {
+        dateStr: effectiveDateStr,
+        startDate: effectiveStartDate,
+        endDate: effectiveEndDate,
+        sectorFilter: exportSourceMode === "filtro_tela" ? (selectedSector !== "todos" ? selectedSector : undefined) : (exportSectorScope !== "todos" ? exportSectorScope : undefined),
+        statusFilter: exportSourceMode === "filtro_tela" ? (selectedStatus !== "todos" ? selectedStatus : "todos") : (exportStatusScope === "filtro_ativo" ? selectedStatus : "todos"),
+        processTypeFilter: processTypeFilter !== "todos" ? processTypeFilter : undefined,
+        auditorName: "Auditoria Operacional SSTR",
+        filenamePrefix: `relatorio_auditoria_${exportPreviewData.solicitationsCount}_solicitacoes`
+      });
+
+      setPdfNotification({
+        message: `Relatório em PDF gerado com sucesso! (${exportPreviewData.solicitationsCount} solicitações em ${exportPreviewData.sectorsCount} setores)`,
+        type: "success"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+      setIsExportModalOpen(false);
+    } catch (err: any) {
+      setPdfNotification({
+        message: err?.message || "Erro ao gerar PDF do relatório.",
+        type: "error"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
+  // Execute Excel export from the modal
+  const handleExecuteExcelExport = async () => {
+    if (!exportPreviewData.records.length) {
+      setPdfNotification({
+        message: "Nenhuma solicitação encontrada para os parâmetros informados.",
+        type: "error"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+      return;
+    }
+
+    setIsExportingExcel(true);
+    try {
+      const effectiveDateStr = exportSourceMode === "filtro_tela"
+        ? (!endDate || endDate === startDate ? startDate : undefined)
+        : (exportDateType === "unica" ? exportTargetDate : undefined);
+      const effectiveStartDate = exportSourceMode === "filtro_tela"
+        ? (endDate && endDate !== startDate ? startDate : undefined)
+        : (exportDateType === "periodo" ? exportTargetDate : undefined);
+      const effectiveEndDate = exportSourceMode === "filtro_tela"
+        ? (endDate && endDate !== startDate ? endDate : undefined)
+        : (exportDateType === "periodo" ? exportTargetEndDate : undefined);
+
+      exportAuditTrackingExcel(exportPreviewData.records, {
+        dateStr: effectiveDateStr,
+        startDate: effectiveStartDate,
+        endDate: effectiveEndDate,
+        sectorFilter: exportSourceMode === "filtro_tela" ? (selectedSector !== "todos" ? selectedSector : undefined) : (exportSectorScope !== "todos" ? exportSectorScope : undefined),
+        statusFilter: exportSourceMode === "filtro_tela" ? (selectedStatus !== "todos" ? selectedStatus : "todos") : (exportStatusScope === "filtro_ativo" ? selectedStatus : "todos"),
+        processTypeFilter: processTypeFilter !== "todos" ? processTypeFilter : undefined,
+        auditorName: "Auditoria Operacional SSTR",
+        filenamePrefix: `auditoria_solicitacoes_por_rn_${exportPreviewData.solicitationsCount}_solicitacoes`
+      });
+
+      setPdfNotification({
+        message: `Planilha Excel exportada com sucesso! (${exportPreviewData.solicitationsCount} solicitações agrupadas por RN)`,
+        type: "success"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+      setIsExportModalOpen(false);
+    } catch (err: any) {
+      setPdfNotification({
+        message: err?.message || "Erro ao exportar planilha Excel.",
+        type: "error"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+    } finally {
+      setIsExportingExcel(false);
+    }
+  };
+
+  // Quick direct 1-click export for active date filter (PDF)
+  const handleQuickExportActiveDate = async () => {
+    // Analyst principle: Export EXACTLY the filtered solicitations shown on screen (Zero Divergence)
+    const targetRecords = filteredRecords.length > 0 ? filteredRecords : records;
+    if (targetRecords.length === 0) {
+      setPdfNotification({
+        message: `Nenhuma solicitação encontrada no filtro ativo para exportação.`,
+        type: "error"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+      return;
+    }
+
+    setIsExportingPdf(true);
+    try {
+      const isRange = !!(endDate && endDate !== startDate);
+      const uniqueSols = new Set(targetRecords.map(r => r.solicitacao).filter(Boolean)).size;
+
+      await exportAuditTrackingPdf(targetRecords, {
+        dateStr: (!isRange && startDate) ? startDate : undefined,
+        startDate: (isRange && startDate) ? startDate : undefined,
+        endDate: (isRange && endDate) ? endDate : undefined,
+        sectorFilter: selectedSector !== "todos" ? selectedSector : undefined,
+        statusFilter: selectedStatus !== "todos" ? selectedStatus : "todos",
+        processTypeFilter: processTypeFilter !== "todos" ? processTypeFilter : undefined,
+        auditorName: "Auditoria Operacional SSTR",
+        filenamePrefix: `auditoria_${uniqueSols}_solicitacoes`
+      });
+
+      setPdfNotification({
+        message: `Relatório em PDF exportado com sucesso! (${uniqueSols} solicitações agrupadas por RN)`,
+        type: "success"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+    } catch (err: any) {
+      setPdfNotification({
+        message: err?.message || "Erro ao exportar PDF.",
+        type: "error"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
+  // Quick direct 1-click export for active date filter (Excel)
+  const handleQuickExportActiveDateExcel = async () => {
+    const targetRecords = filteredRecords.length > 0 ? filteredRecords : records;
+    if (targetRecords.length === 0) {
+      setPdfNotification({
+        message: `Nenhuma solicitação encontrada no filtro ativo para exportação.`,
+        type: "error"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+      return;
+    }
+
+    setIsExportingExcel(true);
+    try {
+      const isRange = !!(endDate && endDate !== startDate);
+      const uniqueSols = new Set(targetRecords.map(r => r.solicitacao).filter(Boolean)).size;
+
+      exportAuditTrackingExcel(targetRecords, {
+        dateStr: (!isRange && startDate) ? startDate : undefined,
+        startDate: (isRange && startDate) ? startDate : undefined,
+        endDate: (isRange && endDate) ? endDate : undefined,
+        sectorFilter: selectedSector !== "todos" ? selectedSector : undefined,
+        statusFilter: selectedStatus !== "todos" ? selectedStatus : "todos",
+        processTypeFilter: processTypeFilter !== "todos" ? processTypeFilter : undefined,
+        auditorName: "Auditoria Operacional SSTR",
+        filenamePrefix: `auditoria_rns_${uniqueSols}_solicitacoes`
+      });
+
+      setPdfNotification({
+        message: `Planilha Excel exportada com sucesso! (${uniqueSols} solicitações agrupadas por RN)`,
+        type: "success"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+    } catch (err: any) {
+      setPdfNotification({
+        message: err?.message || "Erro ao exportar Excel.",
+        type: "error"
+      });
+      setTimeout(() => setPdfNotification(null), 4000);
+    } finally {
+      setIsExportingExcel(false);
+    }
+  };
 
   // Dynamic statistics for the Auditoria dashboard
   const dashStats = useMemo(() => {
@@ -1199,7 +1546,32 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
   }, [dashStats]);
 
   return (
-    <div className="space-y-6 text-slate-100">
+    <div className="space-y-6 text-slate-100 relative">
+      
+      {/* PDF Export Feedback Toast Notification */}
+      {pdfNotification && (
+        <div className={`fixed top-5 right-5 z-50 flex items-center space-x-3 px-4 py-3 rounded-xl border shadow-2xl transition-all duration-300 animate-slide-in ${
+          pdfNotification.type === "success" 
+            ? "bg-slate-900 border-emerald-500/60 text-emerald-300" 
+            : "bg-slate-900 border-rose-500/60 text-rose-300"
+        }`}>
+          {pdfNotification.type === "success" ? (
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+          )}
+          <div className="text-xs font-sans">
+            <p className="font-bold">{pdfNotification.type === "success" ? "Relatório PDF Gerado" : "Aviso de Auditoria"}</p>
+            <p className="text-slate-300 mt-0.5">{pdfNotification.message}</p>
+          </div>
+          <button 
+            onClick={() => setPdfNotification(null)}
+            className="text-slate-400 hover:text-white p-1 rounded transition-colors cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       
       {/* Search & Filter Header card */}
       <div className="bg-slate-900/95 p-6 rounded-2xl border border-slate-800 shadow-2xl space-y-5">
@@ -1320,6 +1692,17 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                 )}
               </button>
             </div>
+
+            {/* Primary PDF Export Button */}
+            <button
+              type="button"
+              onClick={handleOpenExportModal}
+              className="flex items-center space-x-1.5 px-3.5 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold font-mono transition-all cursor-pointer shadow-md shadow-blue-950/60 border border-blue-400/40 hover:scale-[1.02] shrink-0"
+              title="Exportar Relatório Analítico em PDF (organizado por setor, com todas as solicitações e status)"
+            >
+              <FileText className="w-3.5 h-3.5 text-blue-100" />
+              <span>Exportar PDF</span>
+            </button>
           </div>
         </div>
 
@@ -1365,6 +1748,34 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                 }`}
               >
                 🔁 Troca (Outros)
+              </button>
+            </div>
+
+            {/* Quick Export Buttons: PDF and Excel grouped by RN */}
+            <div className="flex items-center space-x-1.5">
+              <button
+                type="button"
+                onClick={handleOpenExportModal}
+                className="flex items-center space-x-1 px-2.5 py-1 bg-slate-900 hover:bg-slate-850 text-blue-300 hover:text-white border border-blue-800/60 hover:border-blue-600 rounded-lg text-[10px] font-bold font-mono transition-all cursor-pointer shadow-xs"
+                title="Abrir painel de exportação de relatório analítico em PDF (Agrupado por RN)"
+              >
+                <FileText className="w-3 h-3 text-blue-400" />
+                <span>Relatório PDF</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleQuickExportActiveDateExcel}
+                disabled={isExportingExcel}
+                className="flex items-center space-x-1 px-2.5 py-1 bg-slate-900 hover:bg-slate-850 text-emerald-300 hover:text-white border border-emerald-800/60 hover:border-emerald-600 rounded-lg text-[10px] font-bold font-mono transition-all cursor-pointer shadow-xs disabled:opacity-50"
+                title="Exportar planilha Excel (.xlsx) com todas as solicitações agrupadas por RN e Setor"
+              >
+                {isExportingExcel ? (
+                  <Loader2 className="w-3 h-3 animate-spin text-emerald-400" />
+                ) : (
+                  <Download className="w-3 h-3 text-emerald-400" />
+                )}
+                <span>Excel (RNs)</span>
               </button>
             </div>
           </div>
@@ -1460,6 +1871,40 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                 ))}
               </select>
             </div>
+
+            {/* Quick Date Export Banner when a date is selected */}
+            {(startDate || endDate) && (
+              <div className="col-span-1 sm:col-span-2 lg:col-span-6 flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-blue-950/40 border border-blue-800/60 p-2.5 rounded-xl text-xs font-mono shadow-sm animate-fade-in mt-1">
+                <div className="flex items-center space-x-2 text-blue-200">
+                  <Calendar className="w-4 h-4 text-blue-400 shrink-0" />
+                  <span>
+                    Filtro de Data Ativo: <strong>{convertToPtDate(startDate)}</strong> {endDate && endDate !== startDate ? `até ${convertToPtDate(endDate)}` : ""}
+                  </span>
+                  <span className="text-slate-400 text-[11px] hidden md:inline">
+                    • {filteredRecords.length} registros no filtro
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleQuickExportActiveDate}
+                    disabled={isExportingPdf}
+                    className="flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-md disabled:opacity-50"
+                    title="Exportar PDF desta data com todas as solicitações (aprovadas, reprovadas e pendentes) separadas por setor"
+                  >
+                    {isExportingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                    <span>Baixar PDF Desta Data</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenExportModal}
+                    className="text-[11px] text-blue-300 hover:text-white underline cursor-pointer px-1"
+                  >
+                    Opções
+                  </button>
+                </div>
+              </div>
+            )}
 
           </div>
         </div>
@@ -2585,11 +3030,48 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                       {isGroupedView ? activeGroupedSol?.records[0]?.nomeTransportadora || "Não Informada" : activeDetailRecord?.nomeTransportadora || "Não Informada"}
                     </span>
                   </div>
-                  <div className="mt-2 col-span-2">
-                    <span className="text-slate-400 block text-[9px]">MAPA / PEDIDO:</span>
-                    <span className="font-bold text-slate-200 block">
-                      Mapa {isGroupedView ? activeGroupedSol?.mapa || "Falta" : activeDetailRecord?.mapa || "Falta"}
+                  <div className="mt-2 col-span-2 bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-400 block text-[9px] font-mono uppercase tracking-wider font-semibold">
+                      MAPA DA CARGA / ENTREGA (COLUNA X 03.18.05):
                     </span>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      <span className="font-bold text-blue-400 text-sm font-mono">
+                        {(() => {
+                          const activeSol = isGroupedView ? activeGroupedSol : null;
+                          const activeRec = activeDetailRecord;
+                          const recs = activeSol?.records || (activeRec ? [activeRec] : []);
+                          
+                          const foundMapa = recs
+                            .map((r: any) => r.mapaOrigem || r.mapa)
+                            .map((m: any) => (m || "").toString().trim())
+                            .find((m: string) => m && m !== "0" && m.toLowerCase() !== "falta" && m !== "-")
+                            || activeSol?.mapa
+                            || activeRec?.mapaOrigem
+                            || activeRec?.mapa
+                            || "";
+
+                          const clean = (foundMapa || "").trim();
+                          if (!clean || clean === "0" || clean.toLowerCase() === "falta" || clean === "-") {
+                            return "Não Informado no Relatório";
+                          }
+                          return clean.toLowerCase().startsWith("mapa") ? clean : `Mapa ${clean}`;
+                        })()}
+                      </span>
+                      {(() => {
+                        const activeSol = isGroupedView ? activeGroupedSol : null;
+                        const activeRec = activeDetailRecord;
+                        const recs = activeSol?.records || (activeRec ? [activeRec] : []);
+                        const repoMapa = recs.map((r: any) => r.mapaReposicao).find((m: any) => m && m !== "0");
+                        if (repoMapa) {
+                          return (
+                            <span className="text-[10px] bg-indigo-950 text-indigo-300 border border-indigo-800/60 px-2 py-0.5 rounded font-mono">
+                              Mapa Reposição: {repoMapa}
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </div>
                   </div>
                   <div className="mt-2 font-sans text-[10px] col-span-2">
                     <div className="grid grid-cols-2 gap-2">
@@ -2666,6 +3148,412 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
           </div>
         )}
       </div>
+
+      {/* MODAL DE EXPORTAÇÃO DE AUDITORIA EM PDF */}
+      {isExportModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[92vh] animate-fade-in">
+            {/* Modal Header */}
+            <div className="bg-slate-950 p-5 border-b border-slate-800 flex items-center justify-between relative overflow-hidden">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-500" />
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-blue-950/80 text-blue-400 rounded-xl border border-blue-800/60">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-base font-sans">Exportar Relatório de Auditoria & Rastreamento</h3>
+                  <p className="text-slate-400 text-xs font-sans mt-0.5">
+                    Todas as solicitações agrupadas por RN e Setor com quadro consolidado e fichas organizadas
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsExportModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Fechar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Scrollable Body */}
+            <div className="p-6 space-y-5 overflow-y-auto font-sans text-sm">
+              
+              {/* Highlight Banner: RN Grouping */}
+              <div className="bg-blue-950/40 border border-blue-800/60 p-3.5 rounded-xl flex items-start gap-3">
+                <div className="p-2 bg-blue-900/60 rounded-lg text-blue-400 shrink-0 mt-0.5">
+                  <Layers className="w-4 h-4" />
+                </div>
+                <div className="text-xs text-blue-200 leading-snug">
+                  <span className="font-bold text-white block font-mono text-[11px] mb-0.5">
+                    AGRUPAMENTO INTEGRAL POR REPRESENTANTE (RN) & SETOR:
+                  </span>
+                  No relatório exportado, todas as solicitações de todos os RNs estão agrupadas em um local apenas por setor, com nome completo do RN, CPF, base/gerência, quadro consolidado no início e fichas alinhadas para dedução imediata de informações.
+                </div>
+              </div>
+
+              {/* Export Mode Toggle (Garante ZERO Divergência entre Tela e Relatório) */}
+              <div className="bg-slate-950/80 border border-slate-800 p-3.5 rounded-xl space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-200 font-mono flex items-center gap-1.5 uppercase tracking-wider">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    Modo de Exportação
+                  </span>
+                  <span className="text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800/60 px-2 py-0.5 rounded font-mono font-bold">
+                    Zero Divergência
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setExportSourceMode("filtro_tela")}
+                    className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
+                      exportSourceMode === "filtro_tela"
+                        ? "bg-blue-600 text-white border-blue-400 shadow-md ring-1 ring-blue-400"
+                        : "bg-slate-900/80 border-slate-800 text-slate-300 hover:border-slate-700"
+                    }`}
+                  >
+                    <div className="font-bold text-xs flex items-center justify-between">
+                      <span>Visão Filtrada da Tela</span>
+                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${exportSourceMode === "filtro_tela" ? "bg-white/20 text-white" : "bg-slate-800 text-blue-400"}`}>
+                        {groupedSolicitations.length} Sols
+                      </span>
+                    </div>
+                    <p className={`text-[11px] mt-1 leading-tight ${exportSourceMode === "filtro_tela" ? "text-blue-100" : "text-slate-400"}`}>
+                      Exporta exatamente as {groupedSolicitations.length} solicitações filtradas em tela com rigor analítico.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setExportSourceMode("custom")}
+                    className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
+                      exportSourceMode === "custom"
+                        ? "bg-blue-600 text-white border-blue-400 shadow-md ring-1 ring-blue-400"
+                        : "bg-slate-900/80 border-slate-800 text-slate-300 hover:border-slate-700"
+                    }`}
+                  >
+                    <div className="font-bold text-xs flex items-center justify-between">
+                      <span>Personalizar Parâmetros</span>
+                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${exportSourceMode === "custom" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-400"}`}>
+                        Filtros Livres
+                      </span>
+                    </div>
+                    <p className={`text-[11px] mt-1 leading-tight ${exportSourceMode === "custom" ? "text-blue-100" : "text-slate-400"}`}>
+                      Altere data, período, setores e status livremente para uma nova extração.
+                    </p>
+                  </button>
+                </div>
+
+                {exportSourceMode === "filtro_tela" && (
+                  <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800 text-[11px] text-slate-300 flex flex-wrap gap-x-4 gap-y-1 font-mono">
+                    <span>Data: <strong className="text-white">{startDate ? convertToPtDate(startDate) : "Todas"} {endDate && endDate !== startDate ? `até ${convertToPtDate(endDate)}` : ""}</strong></span>
+                    <span>Status: <strong className="text-white">{selectedStatus.toUpperCase()}</strong></span>
+                    <span>Setor: <strong className="text-white">{selectedSector === "todos" ? "Todos os Setores" : `Setor ${selectedSector}`}</strong></span>
+                    <span>Processo: <strong className="text-white">{processTypeFilter.toUpperCase()}</strong></span>
+                  </div>
+                )}
+              </div>
+
+              {/* 1. Date Selection Section */}
+              <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
+                <label className="text-xs font-bold text-slate-300 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-blue-400" />
+                  <span>1. Selecione a Data ou Período Auditado</span>
+                </label>
+
+                {/* Tabs */}
+                <div className="flex rounded-lg bg-slate-900 p-1 border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setExportDateType("unica")}
+                    className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${
+                      exportDateType === "unica"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    Data Específica
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExportDateType("periodo")}
+                    className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${
+                      exportDateType === "periodo"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    Intervalo de Datas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExportDateType("todas")}
+                    className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${
+                      exportDateType === "todas"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    Todas as Datas
+                  </button>
+                </div>
+
+                {/* Date Inputs */}
+                {exportDateType === "unica" && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                      <input
+                        type="date"
+                        value={exportTargetDate}
+                        onChange={(e) => setExportTargetDate(e.target.value)}
+                        className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500 cursor-pointer flex-1"
+                      />
+                      {/* Quick date chips */}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {uniqueDates.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const iso = convertToISODate(uniqueDates[0]);
+                              if (iso) setExportTargetDate(iso);
+                            }}
+                            className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-850 text-blue-400 hover:text-blue-300 border border-slate-800 rounded-lg text-[11px] font-mono transition-colors cursor-pointer"
+                          >
+                            Última ({uniqueDates[0]})
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setExportTargetDate(new Date().toISOString().slice(0, 10))}
+                          className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-850 text-slate-400 hover:text-slate-200 border border-slate-800 rounded-lg text-[11px] font-mono transition-colors cursor-pointer"
+                        >
+                          Hoje
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {exportDateType === "periodo" && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div className="space-y-1">
+                      <span className="text-[10px] text-slate-400 font-mono">Data Inicial:</span>
+                      <input
+                        type="date"
+                        value={exportTargetDate}
+                        onChange={(e) => setExportTargetDate(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-[10px] text-slate-400 font-mono">Data Final:</span>
+                      <input
+                        type="date"
+                        value={exportTargetEndDate}
+                        onChange={(e) => setExportTargetEndDate(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {exportDateType === "todas" && (
+                  <p className="text-xs text-slate-400 font-mono pt-1">
+                    O relatório incluirá todas as solicitações registradas na base de auditoria, organizadas bloco por bloco de setor.
+                  </p>
+                )}
+              </div>
+
+              {/* 2. Status Scope Selection */}
+              <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-3">
+                <label className="text-xs font-bold text-slate-300 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>2. Escopo das Situações / Status</span>
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label
+                    onClick={() => setExportStatusScope("todos_status")}
+                    className={`p-3 rounded-xl border cursor-pointer flex items-start space-x-3 transition-all ${
+                      exportStatusScope === "todos_status"
+                        ? "bg-blue-950/40 border-blue-500/70 text-white shadow-sm"
+                        : "bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="statusScope"
+                      checked={exportStatusScope === "todos_status"}
+                      onChange={() => setExportStatusScope("todos_status")}
+                      className="mt-0.5"
+                    />
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-xs">Todas as Situações</span>
+                        <span className="text-[9px] bg-emerald-950 border border-emerald-800/60 text-emerald-300 px-1.5 py-0.5 rounded font-bold uppercase font-mono">
+                          Recomendado
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-tight">
+                        Aprovadas, Reprovadas, Pendentes e Recadastrar agrupadas e com identificação visual.
+                      </p>
+                    </div>
+                  </label>
+
+                  <label
+                    onClick={() => setExportStatusScope("filtro_ativo")}
+                    className={`p-3 rounded-xl border cursor-pointer flex items-start space-x-3 transition-all ${
+                      exportStatusScope === "filtro_ativo"
+                        ? "bg-blue-950/40 border-blue-500/70 text-white shadow-sm"
+                        : "bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="statusScope"
+                      checked={exportStatusScope === "filtro_ativo"}
+                      onChange={() => setExportStatusScope("filtro_ativo")}
+                      className="mt-0.5"
+                    />
+                    <div className="space-y-0.5">
+                      <span className="font-bold text-xs">Apenas o Filtro Ativo ({selectedStatus.toUpperCase()})</span>
+                      <p className="text-[11px] text-slate-400 leading-tight">
+                        Exporta somente solicitações que correspondem ao filtro atual selecionado na tela.
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* 3. Sector Scope */}
+              <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 space-y-2">
+                <label className="text-xs font-bold text-slate-300 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>3. Filtro de Setor</span>
+                </label>
+
+                <select
+                  value={exportSectorScope}
+                  onChange={(e) => setExportSectorScope(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-semibold text-slate-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500 cursor-pointer font-mono"
+                >
+                  <option value="todos">Todos os Setores (Separados por Seção)</option>
+                  {sectors.map((sec) => (
+                    <option key={sec} value={sec}>
+                      Setor {sec}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 4. Real-time Live Summary Box (Analyst View) */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">
+                    Resumo do Relatório a Ser Gerado
+                  </span>
+                  <span className="text-xs font-bold text-blue-400 font-mono">
+                    {exportPreviewData.solicitationsCount} Solicitações • {exportPreviewData.sectorsCount} Setores
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center font-mono">
+                  <div className="bg-slate-900 p-2 rounded-lg border border-slate-850">
+                    <span className="text-[10px] text-slate-400 block">Total R$</span>
+                    <span className="text-xs font-bold text-white block truncate">
+                      {formatCurrency(exportPreviewData.totalValor)}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-2 rounded-lg border border-slate-850">
+                    <span className="text-[10px] text-slate-400 block">Volume (HL)</span>
+                    <span className="text-xs font-bold text-indigo-400 block truncate">
+                      {exportPreviewData.totalHl.toFixed(2)} HL
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-2 rounded-lg border border-slate-850">
+                    <span className="text-[10px] text-emerald-400 block">Aprovadas</span>
+                    <span className="text-xs font-bold text-emerald-400 block">
+                      {exportPreviewData.aprovSols}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-2 rounded-lg border border-slate-850">
+                    <span className="text-[10px] text-amber-400 block">Pendentes</span>
+                    <span className="text-xs font-bold text-amber-400 block">
+                      {exportPreviewData.pendSols}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-850 font-mono">
+                  <span>Reprovadas: <strong className="text-rose-400">{exportPreviewData.reprovSols}</strong></span>
+                  {exportPreviewData.recadSols > 0 && (
+                    <span>Recadastrar: <strong className="text-purple-400">{exportPreviewData.recadSols}</strong></span>
+                  )}
+                  <span>Registros Totais: <strong className="text-slate-200">{exportPreviewData.records.length} itens</strong></span>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Modal Actions Footer */}
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setIsExportModalOpen(false)}
+                disabled={isExportingPdf || isExportingExcel}
+                className="px-4 py-2.5 bg-slate-900 hover:bg-slate-850 text-slate-300 rounded-xl text-xs font-semibold transition-colors cursor-pointer border border-slate-800"
+              >
+                Cancelar
+              </button>
+
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleExecuteExcelExport}
+                  disabled={isExportingExcel || exportPreviewData.records.length === 0}
+                  className="flex items-center space-x-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-850 text-emerald-300 hover:text-white border border-emerald-700/60 hover:border-emerald-500 rounded-xl text-xs font-bold font-mono transition-all cursor-pointer shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Exportar planilha Excel (.xlsx) com aba de resumo e solicitações agrupadas por RN"
+                >
+                  {isExportingExcel ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                      <span>Gerando Excel...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4 text-emerald-400" />
+                      <span>Planilha Excel (RNs)</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleExecutePdfExport}
+                  disabled={isExportingPdf || exportPreviewData.records.length === 0}
+                  className="flex items-center space-x-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold font-mono transition-all cursor-pointer shadow-lg shadow-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Exportar documento PDF executivo com todas as solicitações agrupadas por RN & Setor"
+                >
+                  {isExportingPdf ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>Gerando PDF Executivo...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="w-4 h-4 text-white" />
+                      <span>Gerar PDF por RN ({exportPreviewData.solicitationsCount} Sols)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

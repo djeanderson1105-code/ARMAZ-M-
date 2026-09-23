@@ -29,14 +29,33 @@ export function getTodayKey(): string {
   return `${year}-${month}-${day}`;
 }
 
+// In-memory cache & debounced persistence to prevent main-thread locks
+let cachedTelemetryStats: TelemetryStats | null = null;
+let telemetryDebounceTimer: any = null;
+
+function flushTelemetryToStorage() {
+  if (!cachedTelemetryStats) return;
+  try {
+    localStorage.setItem(`sstr_db_telemetry_${cachedTelemetryStats.dateKey}`, JSON.stringify(cachedTelemetryStats));
+    window.dispatchEvent(new CustomEvent("sstr_telemetry_updated", { detail: cachedTelemetryStats }));
+  } catch (e) {
+    // safe fallback
+  }
+}
+
 export function getTelemetryStats(): TelemetryStats {
   const todayKey = getTodayKey();
+  if (cachedTelemetryStats && cachedTelemetryStats.dateKey === todayKey) {
+    return cachedTelemetryStats;
+  }
+
   const rawStats = localStorage.getItem(`sstr_db_telemetry_${todayKey}`);
   
   if (rawStats) {
     try {
       const parsed = JSON.parse(rawStats);
       if (parsed.dateKey === todayKey) {
+        cachedTelemetryStats = parsed;
         return parsed;
       }
     } catch (e) {
@@ -75,16 +94,19 @@ export function getTelemetryStats(): TelemetryStats {
     lastUpdated: new Date().toLocaleTimeString("pt-BR")
   };
 
-  saveTelemetryStats(defaultStats);
+  cachedTelemetryStats = defaultStats;
+  saveTelemetryStats(defaultStats, true);
   return defaultStats;
 }
 
-export function saveTelemetryStats(stats: TelemetryStats) {
-  try {
-    localStorage.setItem(`sstr_db_telemetry_${stats.dateKey}`, JSON.stringify(stats));
-    window.dispatchEvent(new CustomEvent("sstr_telemetry_updated", { detail: stats }));
-  } catch (e) {
-    // safe fallback
+export function saveTelemetryStats(stats: TelemetryStats, immediate: boolean = false) {
+  cachedTelemetryStats = stats;
+  if (immediate) {
+    if (telemetryDebounceTimer) clearTimeout(telemetryDebounceTimer);
+    flushTelemetryToStorage();
+  } else {
+    if (telemetryDebounceTimer) clearTimeout(telemetryDebounceTimer);
+    telemetryDebounceTimer = setTimeout(flushTelemetryToStorage, 350);
   }
 }
 
@@ -97,7 +119,7 @@ export function setCalibratedReadsAndWrites(reads: number, writes?: number) {
     stats.writes = Math.round(writes);
   }
   stats.lastUpdated = `${new Date().toLocaleTimeString("pt-BR")} (Calibrado via Firebase Console)`;
-  saveTelemetryStats(stats);
+  saveTelemetryStats(stats, true);
 }
 
 export function recordReads(count: number) {
@@ -105,7 +127,7 @@ export function recordReads(count: number) {
   const stats = getTelemetryStats();
   stats.reads += count;
   stats.lastUpdated = new Date().toLocaleTimeString("pt-BR");
-  saveTelemetryStats(stats);
+  saveTelemetryStats(stats, false);
 }
 
 export function recordWrites(count: number) {
@@ -113,7 +135,7 @@ export function recordWrites(count: number) {
   const stats = getTelemetryStats();
   stats.writes += count;
   stats.lastUpdated = new Date().toLocaleTimeString("pt-BR");
-  saveTelemetryStats(stats);
+  saveTelemetryStats(stats, false);
 }
 
 export function recordDeletes(count: number) {
@@ -121,7 +143,7 @@ export function recordDeletes(count: number) {
   const stats = getTelemetryStats();
   stats.deletes += count;
   stats.lastUpdated = new Date().toLocaleTimeString("pt-BR");
-  saveTelemetryStats(stats);
+  saveTelemetryStats(stats, false);
 }
 
 export interface SimulationResult {

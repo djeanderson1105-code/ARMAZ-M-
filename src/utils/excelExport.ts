@@ -328,6 +328,7 @@ export function exportFilteredRequestsExcel(
     sectorFilter?: string;
     processTypeFilter?: string;
     valeFilter?: string;
+    onlyContingencia?: boolean;
   } = {}
 ) {
   if (!requests || requests.length === 0) {
@@ -371,6 +372,8 @@ export function exportFilteredRequestsExcel(
     const cast = req as any;
     const isBaixada = !!cast.faltaBaixa || !!cast.contingenciaBaixada || cast.status === "baixado" || cast.status === "concluido" || req.statusPromax === "cadastrado";
 
+    const isContingencia = (!req.motivo?.toLowerCase().includes("completo") && !req.motivo?.toLowerCase().includes("fechado") && req.statusPromax !== "reprovado");
+
     return {
       "Data": formatExcelDate(req.data || req.cadastroDate),
       "Código": sku || "-",
@@ -387,11 +390,12 @@ export function exportFilteredRequestsExcel(
       "Volume (HL)": Number(hectolitros.toFixed(4)),
       "Motivo Declarado": req.motivo || "-",
       "Tipo de Processo": isRep ? "Reposição (Falta)" : "Troca",
-      "Elegível Recibo Contingência": (!req.motivo?.toLowerCase().includes("completo") && !req.motivo?.toLowerCase().includes("fechado") && req.statusPromax !== "reprovado") ? "SIM" : "NÃO",
+      "Elegível Recibo Contingência": isContingencia ? "SIM" : "NÃO",
+      "Status Conciliação / Vales": hasVale ? "DUPLICADO NA GUIA DE VALES (VALE EMITIDO)" : "CONCILIADO - BASE PURA (SEM VALE)",
       "Status Promax": req.statusPromax || "-",
       "Situação da Baixa": isBaixada ? "Baixada" : "Pendente",
       "Status do Vale": hasVale ? "COM VALE EMITIDO" : "SEM VALE",
-      "ID Vale": req.valeId || (hasVale ? "Identificado p/ Mapa e SKU" : "-"),
+      "ID Vale": req.valeId || (hasVale ? "Identificado p/ Guia de Vales" : "-"),
       "Origem Cadastro": req.cadastroRole || req.origem || "-",
       "Usuário Cadastro": req.cadastroUser || "-",
       "ID Solicitação": req.id,
@@ -418,6 +422,7 @@ export function exportFilteredRequestsExcel(
     { wch: 24 }, // Motivo Declarado
     { wch: 20 }, // Tipo Processo
     { wch: 22 }, // Elegível Recibo Contingência
+    { wch: 34 }, // Status Conciliação / Vales
     { wch: 16 }, // Status Promax
     { wch: 16 }, // Situação Baixa
     { wch: 20 }, // Status do Vale
@@ -429,12 +434,15 @@ export function exportFilteredRequestsExcel(
   ];
 
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Base Filtrada SSTR");
+  const isContingenciaBase = filters.processTypeFilter === "troca_exceto_sku_fechado" || filters.processTypeFilter === "contingencia" || (filters as any).onlyContingencia;
+  const sheetTitle = isContingenciaBase ? "Base Contingências Promax" : "Base Filtrada SSTR";
+  XLSX.utils.book_append_sheet(workbook, worksheet, sheetTitle);
 
   const startStr = filters.startDate ? filters.startDate.replace(/-/g, "") : "ini";
   const endStr = filters.endDate ? filters.endDate.replace(/-/g, "") : "fim";
-  const valeSuffix = filters.valeFilter === "sem_vale" ? "_SemVale" : filters.valeFilter === "com_vale" ? "_ComVale" : "";
-  const filename = `base_filtrada_sstr_${startStr}_a_${endStr}${valeSuffix}.xlsx`;
+  const prefix = isContingenciaBase ? "base_contingencias" : "base_filtrada_sstr";
+  const valeSuffix = filters.valeFilter === "sem_vale" ? "_SemVale_Limpas" : filters.valeFilter === "com_vale" ? "_ComVale" : "";
+  const filename = `${prefix}_${startStr}_a_${endStr}${valeSuffix}.xlsx`;
 
   XLSX.writeFile(workbook, filename);
 }

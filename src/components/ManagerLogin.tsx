@@ -2,11 +2,33 @@ import React, { useState } from "react";
 import { motion } from "motion/react";
 import { Eye, EyeOff, Lock, User, ShieldCheck, ArrowLeft, AlertCircle } from "lucide-react";
 import PauBrasilLogo from "./PauBrasilLogo";
+import { useSstrData } from "../context/SstrDataContext";
 
 interface ManagerLoginProps {
   onLoginSuccess: (username: string) => void;
   onCancel: () => void;
 }
+
+// Authoritative system managers list for instant zero-latency authentication
+const SYSTEM_DEFAULT_MANAGERS: Array<{
+  username: string;
+  password: string;
+  name: string;
+  altPassword?: string;
+}> = [
+  { username: "admin", password: "admin", name: "Administrador" },
+  { username: "gestor", password: "paubrasil2026", name: "Gestor Principal" },
+  { username: "g1002", password: "!Liz1105", name: "Djeanderson Soares", altPassword: "!Liz1105;" },
+  { username: "g1009", password: "Bud0102", name: "Nixon Henrique" },
+  { username: "7171", password: "Anbev10", name: "Marcos Guilherme" },
+  { username: "7224", password: "Anbev10", name: "Elisson Minervino" },
+  { username: "g1022", password: "Anbev10", name: "JOAO PAULO" },
+  { username: "g1121", password: "Anbev10", name: "José Gonçalves" },
+  { username: "g1163", password: "Anbev10", name: "Alécya Ferreira" },
+  { username: "monitoramento", password: "Anbev10", name: "MONITORAMENTO" }
+];
+
+const normalizeUser = (u: string) => (u || "").trim().toLowerCase().replace(/^@+/, "");
 
 export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginProps) {
   const [username, setUsername] = useState("");
@@ -15,12 +37,14 @@ export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginP
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Read managers from in-memory context (hydrated on boot)
+  const { managers: contextManagers = [] } = useSstrData();
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    // Remove any leading "@" characters (e.g. @gestor -> gestor, @1234 -> 1234)
-    const checkUser = username.trim().toLowerCase().replace(/^@+/, "");
+    const checkUser = normalizeUser(username);
     const checkPass = password.trim();
 
     if (!checkUser || !checkPass) {
@@ -30,31 +54,76 @@ export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginP
 
     setIsLoading(true);
 
+    // Watchdog timer: Guarantee the button NEVER hangs indefinitely
+    const watchdogTimer = setTimeout(() => {
+      setIsLoading(false);
+      setError("Tempo limite de resposta excedido. Verifique seus dados e tente novamente.");
+    }, 3000);
+
     try {
-      let registeredList: any[] = [];
-      const listJson = localStorage.getItem("sstr_registered_managers");
-      if (listJson) {
-        try {
-          registeredList = JSON.parse(listJson);
-        } catch (e) {
-          console.error(e);
+      // 1. FAST PATH: Check Built-in / System Managers directly in memory (<1ms)
+      const systemMatch = SYSTEM_DEFAULT_MANAGERS.find(
+        (m) => normalizeUser(m.username) === checkUser
+      );
+
+      if (systemMatch) {
+        if (
+          systemMatch.password === checkPass ||
+          (systemMatch.altPassword && systemMatch.altPassword === checkPass)
+        ) {
+          clearTimeout(watchdogTimer);
+          setIsLoading(false);
+          onLoginSuccess(systemMatch.name);
+          return;
         }
       }
 
-      // If storage is empty or failed, default credentials are check fallback
-      let matchedManagerName = "";
-      let isValid = false;
-
-      let matched = null;
-      if (Array.isArray(registeredList)) {
-        matched = registeredList.find(
-          (m: any) => m && m.username && typeof m.username === "string" && m.username.toLowerCase().replace(/^@+/, "") === checkUser && m.password === checkPass
-        );
+      // 2. CONTEXT & LOCAL STORAGE PATH: Check registered managers in memory/cache
+      let registeredList: any[] = [];
+      if (contextManagers.length > 0) {
+        registeredList = contextManagers;
+      } else {
+        const listJson = localStorage.getItem("sstr_registered_managers");
+        if (listJson) {
+          try {
+            registeredList = JSON.parse(listJson);
+          } catch (e) {
+            console.error(e);
+          }
+        }
       }
 
-      // Fallback: If not found in local storage cache, fetch directly from Firestore (handles newly registered users on slow/lagging connections)
-      if (!matched) {
-        try {
+      const localMatch = registeredList.find(
+        (m: any) => m && normalizeUser(m.username || m.id) === checkUser
+      );
+
+      if (localMatch) {
+        if (localMatch.password === checkPass) {
+          clearTimeout(watchdogTimer);
+          setIsLoading(false);
+          onLoginSuccess(localMatch.name || checkUser);
+          return;
+        } else {
+          // User exists locally, but password is wrong -> Immediate rejection without network lag
+          clearTimeout(watchdogTimer);
+          setIsLoading(false);
+          setError("Usuário ou senha incorretos.");
+          return;
+        }
+      }
+
+      // If user matched system default but password failed, reject immediately
+      if (systemMatch) {
+        clearTimeout(watchdogTimer);
+        setIsLoading(false);
+        setError("Usuário ou senha incorretos.");
+        return;
+      }
+
+      // 3. REMOTE FIRESTORE FALLBACK WITH STRICT TIMEOUT (1.5s max)
+      // Only for completely unknown users (e.g. newly created on another device)
+      try {
+        const fetchRemoteWithTimeout = async () => {
           const { doc, getDoc } = await import("firebase/firestore");
           const { firestoreDb } = await import("../utils/apiSync");
           
@@ -62,68 +131,39 @@ export default function ManagerLogin({ onLoginSuccess, onCancel }: ManagerLoginP
           const docSnap = await getDoc(docRef);
           
           if (docSnap.exists()) {
-            const remoteManager = docSnap.data();
-            if (remoteManager && remoteManager.password === checkPass) {
-              matched = remoteManager;
-              
-              // Insert/update local storage to avoid redundant network roundtrips in the future
-              const filteredList = registeredList.filter((m: any) => m && m.username && m.username.toLowerCase().replace(/^@+/, "") !== checkUser);
-              const updatedList = [...filteredList, remoteManager];
-              localStorage.setItem("sstr_registered_managers", JSON.stringify(updatedList));
-            }
+            return docSnap.data();
           }
-        } catch (err) {
-          console.warn("[LOGIN-FIREBASE-FALLBACK] Direct query to Firestore failed:", err);
+          return null;
+        };
+
+        const timeoutPromise = new Promise<null>((resolve) => 
+          setTimeout(() => resolve(null), 1500)
+        );
+
+        const remoteData = await Promise.race([fetchRemoteWithTimeout(), timeoutPromise]);
+
+        if (remoteData && remoteData.password === checkPass) {
+          clearTimeout(watchdogTimer);
+          try {
+            const currentCached = JSON.parse(localStorage.getItem("sstr_registered_managers") || "[]");
+            const updated = [...currentCached.filter((m: any) => normalizeUser(m.username) !== checkUser), remoteData];
+            localStorage.setItem("sstr_registered_managers", JSON.stringify(updated));
+          } catch (e) {}
+
+          setIsLoading(false);
+          onLoginSuccess(remoteData.name || checkUser);
+          return;
         }
+      } catch (err) {
+        console.warn("[LOGIN] Remote fallback check bypassed:", err);
       }
 
-      if (matched) {
-        isValid = true;
-        matchedManagerName = matched.name;
-      } else {
-        if (checkUser === "gestor" && checkPass === "paubrasil2026") {
-          isValid = true;
-          matchedManagerName = "Gestor Principal";
-        } else if (checkUser === "admin" && checkPass === "admin") {
-          isValid = true;
-          matchedManagerName = "Administrador";
-        } else if (checkUser === "g1002" && (checkPass === "!Liz1105" || checkPass === "!Liz1105;")) {
-          isValid = true;
-          matchedManagerName = "Djeanderson Soares";
-        } else if (checkUser === "g1009" && checkPass === "Bud0102") {
-          isValid = true;
-          matchedManagerName = "Nixon Henrique";
-        } else if (checkUser === "7171" && checkPass === "Anbev10") {
-          isValid = true;
-          matchedManagerName = "Marcos Guilherme";
-        } else if (checkUser === "7224" && checkPass === "Anbev10") {
-          isValid = true;
-          matchedManagerName = "Elisson Minervino";
-        } else if (checkUser === "g1022" && checkPass === "Anbev10") {
-          isValid = true;
-          matchedManagerName = "JOAO PAULO";
-        } else if (checkUser === "g1121" && checkPass === "Anbev10") {
-          isValid = true;
-          matchedManagerName = "José Gonçalves";
-        } else if (checkUser === "g1163" && checkPass === "Anbev10") {
-          isValid = true;
-          matchedManagerName = "Alécya Ferreira";
-        } else if (checkUser === "monitoramento" && checkPass === "Anbev10") {
-          isValid = true;
-          matchedManagerName = "MONITORAMENTO";
-        }
-      }
-
-      // Small artificial delay for natural UX visual feedback
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      if (isValid) {
-        onLoginSuccess(matchedManagerName || username.trim().replace(/^@+/, ""));
-      } else {
-        setError("Usuário ou senha incorretos.");
-        setIsLoading(false);
-      }
+      // If reached here, credentials are invalid
+      clearTimeout(watchdogTimer);
+      setIsLoading(false);
+      setError("Usuário ou senha incorretos.");
     } catch (err: any) {
+      clearTimeout(watchdogTimer);
       console.error(err);
       setError("Erro ao autenticar: " + (err.message || "Erro desconhecido"));
       setIsLoading(false);

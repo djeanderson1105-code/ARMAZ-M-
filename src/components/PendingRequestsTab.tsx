@@ -81,6 +81,15 @@ const isContingenciaAlertReq = (req: PendingRequest): boolean => {
   return true;
 };
 
+// Helper to check if a request qualifies as Promax Contingency Occurrence in database (regardless of pending, cadastrada, or baixada)
+export const isContingenciaReq = (req: PendingRequest): boolean => {
+  if (!req) return false;
+  if (req.statusPromax === "reprovado") return false;
+  if (isFaltaSkuCompletoReq(req) || isInversaoReq(req)) return false;
+  if (req.emContingencia === false && !req.contingenciaBaixada) return false;
+  return true;
+};
+
 // Helper to check if a request is "Reposição" (i.e. motivo contains "falta" / product lack)
 const isReposicaoReq = (req: PendingRequest): boolean => {
   const m = (req.motivo || "").toLowerCase();
@@ -443,6 +452,10 @@ const formatCurrency = (val: number) => {
   }).format(val);
 };
 
+// Module-level deduplication set to avoid infinite loops and parallel PDF compile storms across renders
+const globallyAttemptedPdfs = new Set<string>();
+let isPdfWorkerActive = false;
+
 export default function PendingRequestsTab() {
   const { 
     pendingRequests: requests, 
@@ -456,56 +469,52 @@ export default function PendingRequestsTab() {
     deleteValeEntry
   } = useSstrData();
 
-  const compilingPdfRef = useRef<Set<string>>(new Set());
-
-  // Client-side triggers for compiling PDFs on demand via server API
+  // Client-side sequential processor for compiling PDFs on demand via server API without saturating streams
   useEffect(() => {
-    const compilingSet = compilingPdfRef.current;
-    
-    // Find requests that are concluded and need a compiled PDF
+    // Find requests that are concluded and need a compiled PDF and haven't been attempted yet
     const pendingCompilations = requests.filter(req => {
       const isConcluded = req.statusPromax === "cadastrado" || req.faltaBaixa === true;
       const hasImage = req.fotoUrl && typeof req.fotoUrl === "string";
       const isAlreadyPdf = hasImage && (req.fotoUrl.endsWith(".pdf") || req.fotoUrl.includes("pdf_finalizada_"));
-      return isConcluded && hasImage && !isAlreadyPdf && !compilingSet.has(req.id);
+      return isConcluded && hasImage && !isAlreadyPdf && !globallyAttemptedPdfs.has(req.id);
     });
 
-    if (pendingCompilations.length === 0) return;
+    if (pendingCompilations.length === 0 || isPdfWorkerActive) return;
 
-    // Process each compilation
-    pendingCompilations.forEach(async (req) => {
-      const requestId = req.id;
-      compilingSet.add(requestId);
-      console.log(`[CLIENT-PDF] Triggering PDF compile for ${requestId}...`);
-
+    // Run sequential background queue with throttle
+    isPdfWorkerActive = true;
+    (async () => {
       try {
-        const res = await fetch(getApiUrl("/api/compile-pdf"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ requestId, docData: req })
-        });
+        for (const req of pendingCompilations) {
+          const requestId = req.id;
+          globallyAttemptedPdfs.add(requestId); // Mark immediately to prevent loop
 
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success && data.url) {
-            console.log(`[CLIENT-PDF] PDF compiled successfully for ${requestId}: ${data.url}`);
-            
-            const itemToUpdate = requests.find(item => item.id === requestId);
-            if (itemToUpdate) {
-              savePendingRequest({ ...itemToUpdate, fotoUrl: data.url });
+          try {
+            const res = await fetch(getApiUrl("/api/compile-pdf"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ requestId, docData: req })
+            });
+
+            if (res.ok) {
+              const data = await res.json();
+              if (data.success && data.url) {
+                const itemToUpdate = requests.find(item => item.id === requestId);
+                if (itemToUpdate) {
+                  await savePendingRequest({ ...itemToUpdate, fotoUrl: data.url });
+                }
+              }
             }
-          } else {
-            console.warn(`[CLIENT-PDF] Compile failed for ${requestId}:`, data.error || "unknown error");
+          } catch (err: any) {
+            console.warn(`[PDF-WORKER] Background compile attempt failed for ${requestId}:`, err?.message || err);
           }
-        } else {
-          console.warn(`[CLIENT-PDF] Server responded with error status ${res.status} for ${requestId}`);
+          // Non-blocking 250ms delay between compilations to keep UI and network smooth
+          await new Promise(resolve => setTimeout(resolve, 250));
         }
-      } catch (err: any) {
-        console.error(`[CLIENT-PDF] Error requesting PDF compile for ${requestId}:`, err.message);
       } finally {
-        compilingSet.delete(requestId);
+        isPdfWorkerActive = false;
       }
-    });
+    })();
   }, [requests, savePendingRequest]);
 
   const [searchTerm, setSearchTerm] = useState("");
@@ -2600,14 +2609,14 @@ export default function PendingRequestsTab() {
         }
       }
 
-      // 3.6 Contingency Alert Filter
-      if (onlyContingenciaFilter && activeTab !== "historico_baixas") {
-        if (!isContingenciaAlertReq(req)) return false;
+      // 3.6 Contingency Alert Filter (Promax)
+      if (onlyContingenciaFilter || processTypeFilter === "contingencia" || processTypeFilter === "troca_exceto_sku_fechado") {
+        if (!isContingenciaReq(req)) return false;
       }
 
-      // 3.7 Vale filter
+      // 3.7 Vale filter (Anti-duplicação: desmarcar/ocultar ocorrências que já constam na Guia de Vales)
       if (valeFilter !== "todos") {
-        const hasVale = isRequestWithVale(req, valesHistorico);
+        const hasVale = isRequestWithVale(req, valesHistorico) || isRequestWithVale(req, displayVales);
         if (valeFilter === "sem_vale" && hasVale) return false;
         if (valeFilter === "com_vale" && !hasVale) return false;
       }
@@ -2659,12 +2668,13 @@ export default function PendingRequestsTab() {
         return true;
       } else {
         let matchStatus = req.statusPromax === activeTab;
-        if (activeTab === "pendente") {
+        if (onlyContingenciaFilter || processTypeFilter === "contingencia" || processTypeFilter === "troca_exceto_sku_fechado") {
+          // Exibe todas as ocorrências de contingência do período (pendentes, cadastradas ou baixadas)
+          matchStatus = true;
+        } else if (activeTab === "pendente") {
           if (!isAllowedInPending(req, repsList, motoristasList)) {
             matchStatus = false;
           }
-        } else if (processTypeFilter === "troca_exceto_sku_fechado") {
-          matchStatus = req.statusPromax === "pendente" || req.statusPromax === "cadastrado";
         } else if (activeTab === "reprovado") {
           matchStatus = req.statusPromax === "reprovado" || req.statusPromax === "corrigir";
         }
@@ -2774,15 +2784,50 @@ export default function PendingRequestsTab() {
 
       // 5. Vale Filter: "pois se houver alguma reposição que já tenha sido gerado vale não entre nos dados e na soma, identifique pelo mapa e o sku cadastrado"
       if (valeFilter !== "todos") {
-        const hasVale = isRequestWithVale(r, valesHistorico);
+        const hasVale = isRequestWithVale(r, valesHistorico) || isRequestWithVale(r, displayVales);
         if (valeFilter === "sem_vale" && hasVale) return false;
         if (valeFilter === "com_vale" && !hasVale) return false;
       }
 
       // 6. Contingency alert filter if applied
-      if (onlyContingenciaFilter && !isContingenciaAlertReq(r)) return false;
+      if ((onlyContingenciaFilter || processTypeFilter === "contingencia") && !isContingenciaReq(r)) return false;
 
       return true;
+    });
+
+    // Dedicated Period Contingency Metrics (Calculated across the period for data analyst conciliation)
+    let contingenciasTotalCount = 0;
+    let contingenciasTotalVal = 0;
+    let contingenciasComValeCount = 0;
+    let contingenciasComValeVal = 0;
+    let contingenciasSemValeCount = 0;
+    let contingenciasSemValeVal = 0;
+
+    requests.forEach(r => {
+      // Check date filter
+      if (startDate || endDate) {
+        const reqYmd = getReqNormalizedDate(r);
+        if (reqYmd) {
+          if (startDate && reqYmd < startDate) return;
+          if (endDate && reqYmd > endDate) return;
+        } else {
+          return;
+        }
+      }
+      if (sectorFilter !== "todos" && r.setor.trim() !== sectorFilter.trim()) return;
+      if (isContingenciaReq(r)) {
+        const val = getRequestValue(r, promaxRecords);
+        contingenciasTotalCount++;
+        contingenciasTotalVal += val;
+        const hasVale = isRequestWithVale(r, valesHistorico) || isRequestWithVale(r, displayVales);
+        if (hasVale) {
+          contingenciasComValeCount++;
+          contingenciasComValeVal += val;
+        } else {
+          contingenciasSemValeCount++;
+          contingenciasSemValeVal += val;
+        }
+      }
     });
 
     filteredForSummary.forEach(r => {
@@ -2822,10 +2867,16 @@ export default function PendingRequestsTab() {
       excetoSkuFechadoCount,
       excetoSkuFechadoVal,
       cadastradosContingenciaCount,
+      contingenciasTotalCount,
+      contingenciasTotalVal,
+      contingenciasComValeCount,
+      contingenciasComValeVal,
+      contingenciasSemValeCount,
+      contingenciasSemValeVal,
       isPeriodFiltered: !!(startDate || endDate),
       filteredCount: filteredForSummary.length
     };
-  }, [requests, promaxRecords, repsList, motoristasList, startDate, endDate, sectorFilter, searchTerm, createdRoleFilter, valeFilter, onlyContingenciaFilter, valesHistorico]);
+  }, [requests, promaxRecords, repsList, motoristasList, startDate, endDate, sectorFilter, searchTerm, createdRoleFilter, valeFilter, onlyContingenciaFilter, processTypeFilter, valesHistorico, displayVales]);
 
   // Trigger handlers to open custom interactive modals
   const triggerRegister = (id: string) => {
@@ -3949,7 +4000,7 @@ export default function PendingRequestsTab() {
             </div>
 
             {/* Sector filter */}
-            <div className="md:col-span-3 space-y-1">
+            <div className="md:col-span-2 space-y-1">
               <span className="text-[10px] font-bold text-slate-400 font-mono uppercase tracking-wider block">Setor / Rota RN:</span>
               <select
                 value={sectorFilter}
@@ -3988,20 +4039,34 @@ export default function PendingRequestsTab() {
             </div>
 
             {/* Contingency Filter Toggle */}
-            <div className="md:col-span-1 space-y-1">
-              <span className="text-[10px] font-bold text-amber-400 font-mono uppercase tracking-wider block">Alerta:</span>
+            <div className="md:col-span-2 space-y-1">
+              <span className="text-[10px] font-bold text-amber-400 font-mono uppercase tracking-wider block">Base Promax:</span>
               <button
                 type="button"
-                onClick={() => setOnlyContingenciaFilter(!onlyContingenciaFilter)}
-                className={`w-full h-10 px-1 rounded-xl text-[10px] font-mono font-bold uppercase border transition-all cursor-pointer flex items-center justify-center gap-1 ${
-                  onlyContingenciaFilter
-                    ? "bg-amber-500/20 border-amber-500 text-amber-300 shadow-md ring-1 ring-amber-500/50"
+                onClick={() => {
+                  const nextState = !onlyContingenciaFilter;
+                  setOnlyContingenciaFilter(nextState);
+                  if (nextState) {
+                    setProcessTypeFilter("contingencia");
+                  } else {
+                    if (processTypeFilter === "contingencia" || processTypeFilter === "troca_exceto_sku_fechado") {
+                      setProcessTypeFilter("todos");
+                    }
+                  }
+                }}
+                className={`w-full h-10 px-2 rounded-xl text-[10.5px] font-mono font-bold uppercase border transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  onlyContingenciaFilter || processTypeFilter === "contingencia" || processTypeFilter === "troca_exceto_sku_fechado"
+                    ? "bg-amber-500/25 border-amber-400 text-amber-300 shadow-md ring-2 ring-amber-500/40"
                     : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700"
                 }`}
-                title="Filtrar apenas registros marcados como Contingência Promax"
+                title="Filtrar todas as contingências do período selecionado"
               >
-                <span>🚨 Conting.</span>
-                {onlyContingenciaFilter && <span className="text-[8px] bg-amber-500 text-slate-950 px-1 rounded font-black">ON</span>}
+                <span>🚨 Contingências</span>
+                {(onlyContingenciaFilter || processTypeFilter === "contingencia" || processTypeFilter === "troca_exceto_sku_fechado") && (
+                  <span className="text-[9px] bg-amber-500 text-slate-950 px-1.5 py-0.2 rounded font-black">
+                    {processSummary.contingenciasTotalCount > 0 ? processSummary.contingenciasTotalCount : "ON"}
+                  </span>
+                )}
               </button>
             </div>
 
@@ -4072,7 +4137,7 @@ export default function PendingRequestsTab() {
                 {/* DIVIDER */}
                 <div className="h-6 w-px bg-slate-800 mx-1 hidden lg:block" />
 
-                {/* FILTRO DE VALE (User requirement: "crie um filtro com vale ou sem vale, pois se houver alguma reposição que já tenha sido gerado vale não entre nos dados e na soma, identifique pelo mapa e o sku cadastrado") */}
+                {/* FILTRO DE VALE (Anti-duplicação de bases) */}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="text-[10px] font-bold text-amber-400 font-mono uppercase tracking-wider mr-1 flex items-center gap-1">
                     <span>Filtro de Vale:</span>
@@ -4090,6 +4155,11 @@ export default function PendingRequestsTab() {
                   >
                     <span>📋</span>
                     <span>Todos</span>
+                    {(onlyContingenciaFilter || processTypeFilter === "contingencia" || processTypeFilter === "troca_exceto_sku_fechado") && processSummary.contingenciasTotalCount > 0 && (
+                      <span className="text-[10px] px-1.5 py-0.2 bg-black/40 rounded-full font-mono">
+                        {processSummary.contingenciasTotalCount}
+                      </span>
+                    )}
                   </button>
 
                   <button
@@ -4097,13 +4167,18 @@ export default function PendingRequestsTab() {
                     onClick={() => setValeFilter("sem_vale")}
                     className={`h-9 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
                       valeFilter === "sem_vale"
-                        ? "bg-emerald-600 border-emerald-400 text-white shadow-md shadow-emerald-950/60 ring-1 ring-emerald-300/40"
-                        : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900"
+                        ? "bg-emerald-600 border-emerald-400 text-white shadow-md shadow-emerald-950/60 ring-2 ring-emerald-300/60"
+                        : "bg-slate-950 border-emerald-800/60 text-emerald-400 hover:text-white hover:bg-emerald-950/40"
                     }`}
-                    title="Oculta reposições que já geraram vale (identificadas pelo Mapa e SKU cadastrado) - removidas dos dados e das somas"
+                    title="Desmarcar/ocultar ocorrências que estão na Guia de Vales para não duplicar com a Base de Vales na exportação"
                   >
                     <span>🛡️</span>
-                    <span>Sem Vale (Ocultar Vales)</span>
+                    <span>Desmarcar Vales (Sem Vale)</span>
+                    {(onlyContingenciaFilter || processTypeFilter === "contingencia" || processTypeFilter === "troca_exceto_sku_fechado") && processSummary.contingenciasSemValeCount > 0 && (
+                      <span className="text-[10px] px-1.5 py-0.2 bg-black/40 rounded-full font-mono">
+                        {processSummary.contingenciasSemValeCount}
+                      </span>
+                    )}
                   </button>
 
                   <button
@@ -4112,12 +4187,17 @@ export default function PendingRequestsTab() {
                     className={`h-9 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
                       valeFilter === "com_vale"
                         ? "bg-purple-600 border-purple-400 text-white shadow-md shadow-purple-950/60 ring-1 ring-purple-300/40"
-                        : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900"
+                        : "bg-slate-950 border-purple-800/60 text-purple-400 hover:text-white hover:bg-purple-950/40"
                     }`}
-                    title="Exibir apenas ocorrências que já geraram vale (identificadas pelo Mapa e SKU cadastrado)"
+                    title="Exibir apenas ocorrências que estão na Guia de Vales"
                   >
                     <span>🎫</span>
                     <span>Com Vale</span>
+                    {(onlyContingenciaFilter || processTypeFilter === "contingencia" || processTypeFilter === "troca_exceto_sku_fechado") && processSummary.contingenciasComValeCount > 0 && (
+                      <span className="text-[10px] px-1.5 py-0.2 bg-black/40 rounded-full font-mono">
+                        {processSummary.contingenciasComValeCount}
+                      </span>
+                    )}
                   </button>
                 </div>
               </div>
@@ -4128,19 +4208,27 @@ export default function PendingRequestsTab() {
                 <button
                   type="button"
                   onClick={() => {
+                    const isContingencia = onlyContingenciaFilter || processTypeFilter === "troca_exceto_sku_fechado" || processTypeFilter === "contingencia";
                     exportFilteredRequestsExcel(filteredRequests, valesHistorico, promaxRecords, {
                       startDate,
                       endDate,
                       sectorFilter,
-                      processTypeFilter,
-                      valeFilter
+                      processTypeFilter: isContingencia ? "contingencia" : processTypeFilter,
+                      valeFilter,
+                      onlyContingencia: isContingencia
                     });
                   }}
                   className="h-9 px-3.5 bg-emerald-600 hover:bg-emerald-500 active:scale-95 border border-emerald-400 text-white text-xs font-mono font-bold rounded-xl cursor-pointer flex items-center gap-1.5 shadow-md shadow-emerald-950/60 transition-all hover:scale-[1.02]"
                   title={`Exportar planilha Excel com as ${filteredRequests.length} ocorrências do período filtrado`}
                 >
                   <Download className="w-3.5 h-3.5 shrink-0 text-emerald-100" />
-                  <span>Exportar Base ({filteredRequests.length})</span>
+                  <span>
+                    {(onlyContingenciaFilter || processTypeFilter === "troca_exceto_sku_fechado" || processTypeFilter === "contingencia")
+                      ? valeFilter === "sem_vale"
+                        ? `Exportar Contingências Limpas (${filteredRequests.length})`
+                        : `Exportar Base Contingências (${filteredRequests.length})`
+                      : `Exportar Base (${filteredRequests.length})`}
+                  </span>
                 </button>
 
                 {(searchTerm || startDate || endDate || sectorFilter !== "todos" || processTypeFilter !== "todos" || createdRoleFilter !== "todos" || onlyContingenciaFilter || valeFilter !== "todos") ? (
@@ -4217,6 +4305,169 @@ export default function PendingRequestsTab() {
                   {st.label}
                 </button>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* PAINEL DO ANALISTA DE DADOS: CONCILIAÇÃO & ANTI-DUPLICAÇÃO DE BASES (CONTINGÊNCIAS VS VALES) */}
+        {(onlyContingenciaFilter || processTypeFilter === "troca_exceto_sku_fechado" || processTypeFilter === "contingencia") && (
+          <div className="bg-slate-900 border-2 border-amber-500/80 rounded-2xl p-4.5 shadow-2xl text-left no-print space-y-3.5 animate-fade-in">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-3">
+                <span className="p-2.5 bg-amber-500/20 border border-amber-500/50 rounded-xl text-amber-400 text-lg shrink-0">
+                  🚨
+                </span>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
+                    <span>Base de Contingências do Período & Conciliação Anti-Duplicação</span>
+                    <span className="text-[10px] font-mono font-black bg-amber-500 text-slate-950 px-2.5 py-0.5 rounded-full uppercase">
+                      {startDate && endDate ? `${startDate.split("-").reverse().join("/")} até ${endDate.split("-").reverse().join("/")}` : "Período Completo"}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 font-sans mt-0.5">
+                    Visão do analista: conciliação entre a Base de Contingência e a Guia de Vales para garantir exportações 100% exclusivas e sem duplicação de prejuízo.
+                  </p>
+                </div>
+              </div>
+
+              {/* Botão Ação Anti-Duplicação */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setValeFilter(prev => prev === "sem_vale" ? "todos" : "sem_vale");
+                  }}
+                  className={`h-9 px-3.5 rounded-xl text-xs font-bold font-mono transition-all flex items-center gap-2 border cursor-pointer ${
+                    valeFilter === "sem_vale"
+                      ? "bg-emerald-600 border-emerald-400 text-white shadow-lg shadow-emerald-950/60 ring-2 ring-emerald-400/50"
+                      : "bg-slate-950 border-amber-500/80 text-amber-300 hover:bg-slate-900 hover:text-white"
+                  }`}
+                  title="Desmarcar/ocultar as contingências que também constam na Guia de Vales"
+                >
+                  <span className="text-sm">{valeFilter === "sem_vale" ? "☑️" : "⬜"}</span>
+                  <span>Desmarcar as da Guia de Vales ({processSummary.contingenciasComValeCount})</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Painel de Métricas do Analista */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {/* Card 1: Total Bruto do Período */}
+              <div 
+                onClick={() => setValeFilter("todos")}
+                className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                  valeFilter === "todos" 
+                    ? "bg-amber-950/50 border-amber-400 ring-2 ring-amber-400/40 shadow-lg shadow-amber-950" 
+                    : "bg-slate-950/70 border-slate-800 hover:border-slate-700"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase font-bold block">1. Total no Período (Bruto)</span>
+                  {valeFilter === "todos" && (
+                    <span className="text-[9px] font-mono font-black px-1.5 py-0.2 bg-amber-500 text-slate-950 rounded">VISÃO ATIVA</span>
+                  )}
+                </div>
+                <p className="text-xl font-black font-mono text-white mt-1">
+                  {processSummary.contingenciasTotalCount} <span className="text-xs font-sans font-medium text-slate-400">ocorrências</span>
+                </p>
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-xs font-mono font-bold text-amber-400">{formatCurrency(processSummary.contingenciasTotalVal)}</span>
+                  <span className="text-[10px] text-slate-400 font-sans">Com e Sem Vales</span>
+                </div>
+              </div>
+
+              {/* Card 2: Constam na Guia de Vales */}
+              <div 
+                onClick={() => setValeFilter("com_vale")}
+                className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                  valeFilter === "com_vale" 
+                    ? "bg-purple-950/60 border-purple-400 ring-2 ring-purple-400/40 shadow-lg shadow-purple-950" 
+                    : "bg-slate-950/70 border-slate-800 hover:border-slate-700"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono text-purple-400 uppercase font-bold block">2. Na Guia de Vales (Vales Emitidos)</span>
+                  <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded">
+                    {processSummary.contingenciasComValeCount} reg.
+                  </span>
+                </div>
+                <p className="text-xl font-black font-mono text-purple-200 mt-1">
+                  {formatCurrency(processSummary.contingenciasComValeVal)}
+                </p>
+                <span className="text-[10px] text-purple-300/80 block font-sans mt-0.5">
+                  ⚠️ Já cobrado na Base de Vales (não duplicar)
+                </span>
+              </div>
+
+              {/* Card 3: Base Limpa de Contingência (Sem Vales) */}
+              <div 
+                onClick={() => setValeFilter("sem_vale")}
+                className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                  valeFilter === "sem_vale" 
+                    ? "bg-emerald-950/70 border-emerald-400 ring-2 ring-emerald-400/50 shadow-xl shadow-emerald-950" 
+                    : "bg-slate-950/70 border-slate-800 hover:border-slate-700"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono text-emerald-400 uppercase font-bold block">3. Base Limpa de Contingência</span>
+                  <span className="text-[9px] font-mono font-black px-1.5 py-0.2 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded">
+                    {processSummary.contingenciasSemValeCount} reg.
+                  </span>
+                </div>
+                <p className="text-xl font-black font-mono text-emerald-200 mt-1">
+                  {formatCurrency(processSummary.contingenciasSemValeVal)}
+                </p>
+                <span className="text-[10px] text-emerald-300 font-semibold block font-sans mt-0.5">
+                  🛡️ Sem Vale (Base pura para exportação)
+                </span>
+              </div>
+            </div>
+
+            {/* Aviso Dinâmico de Conciliação e Exportação */}
+            <div className={`p-3 rounded-xl border text-xs font-sans flex items-center justify-between gap-3 flex-wrap transition-colors ${
+              valeFilter === "sem_vale"
+                ? "bg-emerald-950/40 border-emerald-600/50 text-emerald-200"
+                : "bg-amber-950/40 border-amber-600/50 text-amber-200"
+            }`}>
+              <div className="flex items-center gap-2.5 max-w-2xl">
+                <span className="text-xl shrink-0">{valeFilter === "sem_vale" ? "🛡️" : "⚠️"}</span>
+                <div>
+                  <span className="font-bold block text-sm">
+                    {valeFilter === "sem_vale"
+                      ? "Proteção Anti-Duplicação ATIVADA!"
+                      : "Atenção: Base de Contingência Não Conciliada"}
+                  </span>
+                  <span className="text-[11px] text-slate-300 leading-relaxed block mt-0.5">
+                    {valeFilter === "sem_vale"
+                      ? `As ${processSummary.contingenciasComValeCount} contingências que também estão na Guia de Vales foram desmarcadas e excluídas desta lista. Ao exportar esta base e depois exportar a Base de Vales, NENHUM valor será somado duas vezes!`
+                      : `A lista abaixo contém ${processSummary.contingenciasComValeCount} contingências que também geraram Vale. Se você exportar agora, esses valores serão duplicados ao juntar com a Base de Vales. Clique no botão "Desmarcar as da Guia de Vales" acima para gerar a base líquida de contingência.`}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0 ml-auto">
+                <button
+                  type="button"
+                  onClick={() => {
+                    exportFilteredRequestsExcel(filteredRequests, valesHistorico, promaxRecords, {
+                      startDate,
+                      endDate,
+                      sectorFilter,
+                      processTypeFilter: "contingencia",
+                      valeFilter,
+                      onlyContingencia: true
+                    });
+                  }}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 active:scale-95 border border-emerald-400 text-white font-mono font-bold text-xs rounded-xl shadow-lg shadow-emerald-950 cursor-pointer flex items-center gap-2 hover:scale-[1.02] transition-all"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>
+                    {valeFilter === "sem_vale"
+                      ? `Exportar Base de Contingência Limpa (${filteredRequests.length})`
+                      : `Exportar Base de Contingência (${filteredRequests.length})`}
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -13,8 +13,11 @@ export interface ExchangeRecord {
   status: string; // Status Solicitação (Aprovada, Pendente, Reprovada)
   dataAcao: string;
   usuarioAcao: string;
-  mapa: string; // Mapa Reposição
+  mapa: string; // Mapa Operacional / Entrega (Coluna X / Origem ou Reposição)
+  mapaOrigem?: string; // Coluna X do Relatório 03.18.05 (Mapa Origem da Carga/Entrega)
+  mapaReposicao?: string; // Coluna L do Relatório 03.18.05 (Mapa de Reposição Gerado)
   nf: string; // Nota Fiscal/Serie
+  nfOrigem?: string; // NF Origem (Coluna Y)
   statusNf: string;
   produto: string; // Código do Produto
   descricaoProduto: string;
@@ -72,26 +75,28 @@ export interface RepresentativeInfo {
   setor: string;
   nome: string;
   gv: string;
+  cpf?: string;
+  base?: string;
 }
 
 export const DEFAULT_REPRESENTATIVOS_SETOR: Record<string, RepresentativeInfo> = {
-  "600": { setor: "600", nome: "THIAGO BATISTA", gv: "DIEGO" },
-  "601": { setor: "601", nome: "FELIPE MOREIRA", gv: "DIEGO" },
-  "602": { setor: "602", nome: "JEAN REGIS", gv: "DIEGO" },
-  "603": { setor: "603", nome: "JOSÉ KLEBSON", gv: "DIEGO" },
-  "604": { setor: "604", nome: "MARCOS ANTONIO", gv: "DIEGO" },
-  "605": { setor: "605", nome: "LUCAS GABRIEL", gv: "DIEGO" },
-  "606": { setor: "606", nome: "MARCOS VINICIUS", gv: "DIEGO" },
-  "607": { setor: "607", nome: "KAHLIL GIBRAN", gv: "DIEGO" },
-  "608": { setor: "608", nome: "JHONATAN BOTOLO", gv: "DIEGO" },
-  "700": { setor: "700", nome: "VALDEMIR VANDEREI", gv: "ERIVAN" },
-  "701": { setor: "701", nome: "ROBSON ALLAN", gv: "ERIVAN" },
-  "702": { setor: "702", nome: "JUAN PABLO", gv: "ERIVAN" },
-  "703": { setor: "703", nome: "CARLOS EMANUEL", gv: "ERIVAN" },
-  "704": { setor: "704", nome: "JOAO LUCAS", gv: "ERIVAN" },
-  "705": { setor: "705", nome: "RONIELYSON ALVES", gv: "ERIVAN" },
-  "706": { setor: "706", nome: "ALEX JUNIOR", gv: "ERIVAN" },
-  "707": { setor: "707", nome: "MATHEUS ALVES", gv: "ERIVAN" }
+  "600": { setor: "600", nome: "JOSE THIAGO BATISTA DO NASCIMENTO", gv: "DIEGO", cpf: "084.279.294-55", base: "DIEGO" },
+  "601": { setor: "601", nome: "FELIPE MOREIRA FELIX", gv: "DIEGO", cpf: "702.505.984-69", base: "DIEGO" },
+  "602": { setor: "602", nome: "JEAN REGIS DOS SANTOS", gv: "DIEGO", cpf: "102.881.334-12", base: "DIEGO" },
+  "603": { setor: "603", nome: "JOSE KLEBSON BRAGANTE SILVA FILHO", gv: "DIEGO", cpf: "069.775.604-10", base: "DIEGO" },
+  "604": { setor: "604", nome: "MARCOS ANTONIO COSTA FERREIRA", gv: "DIEGO", cpf: "131.606.934-65", base: "DIEGO" },
+  "605": { setor: "605", nome: "LUCAS GABRIEL COSTA SOARES", gv: "DIEGO", cpf: "139.975.894-29", base: "DIEGO" },
+  "606": { setor: "606", nome: "JOSUEL ALVES LIMA DA SILVA", gv: "DIEGO", cpf: "063.511.704-51", base: "DIEGO" },
+  "607": { setor: "607", nome: "KAHLIL GIBRAN VIEIRA DOS SANTOS", gv: "DIEGO", cpf: "075.223.134-06", base: "DIEGO" },
+  "608": { setor: "608", nome: "JHONATAN BOTOLO ROCHA", gv: "DIEGO", cpf: "081.608.154-92", base: "DIEGO" },
+  "700": { setor: "700", nome: "VALDEMIR VANDERLEI GOMES FILHO", gv: "ERIVAN", cpf: "105.880.584-32", base: "ERIVAN" },
+  "701": { setor: "701", nome: "ROBSON ALLAN SANTOS DA SILVA", gv: "ERIVAN", cpf: "704.979.364-70", base: "ERIVAN" },
+  "702": { setor: "702", nome: "JUAN PABLO MACIEL SANTOS DE ALMEIDA", gv: "ERIVAN", cpf: "163.696.974-78", base: "ERIVAN" },
+  "703": { setor: "703", nome: "CARLOS EMANUEL PONTES DOS SANTOS", gv: "ERIVAN", cpf: "102.956.624-09", base: "ERIVAN" },
+  "704": { setor: "704", nome: "JOAO LUCAS DOS SANTOS", gv: "ERIVAN", cpf: "126.912.944-98", base: "ERIVAN" },
+  "705": { setor: "705", nome: "RONIELYSON ALVES EVANGELISTA MARINHO", gv: "ERIVAN", cpf: "702.288.514-16", base: "ERIVAN" },
+  "706": { setor: "706", nome: "ALEX JUNIOR VELOSO DA SILVA", gv: "ERIVAN", cpf: "118.273.704-83", base: "ERIVAN" },
+  "707": { setor: "707", nome: "MATHEUS ALVES LIMA DA SILVA", gv: "ERIVAN", cpf: "060.058.094-66", base: "ERIVAN" }
 };
 
 let cachedRepresentativosSetor: Record<string, RepresentativeInfo> | null = null;
@@ -112,8 +117,15 @@ export const getRepresentativosSetor = (): Record<string, RepresentativeInfo> =>
   const saved = localStorage.getItem("sstr_reps_setor");
   if (saved) {
     try {
-      cachedRepresentativosSetor = JSON.parse(saved);
-      return cachedRepresentativosSetor!;
+      const parsed = JSON.parse(saved);
+      const merged: Record<string, RepresentativeInfo> = { ...DEFAULT_REPRESENTATIVOS_SETOR, ...parsed };
+      Object.keys(DEFAULT_REPRESENTATIVOS_SETOR).forEach(k => {
+        if (!merged[k] || !merged[k].cpf || merged[k].nome !== DEFAULT_REPRESENTATIVOS_SETOR[k].nome) {
+          merged[k] = { ...merged[k], ...DEFAULT_REPRESENTATIVOS_SETOR[k] };
+        }
+      });
+      cachedRepresentativosSetor = merged;
+      return cachedRepresentativosSetor;
     } catch (e) {
       console.error(e);
     }

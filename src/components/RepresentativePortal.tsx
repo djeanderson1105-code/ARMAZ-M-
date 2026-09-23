@@ -4,6 +4,7 @@ import { getApiUrl } from "../utils/apiUrl";
 import { useSstrData } from "../context/SstrDataContext";
 import { PRODUCT_DATABASE, ProductInfo, calculateHectolitros, calculateItemValue, calculateItemHL, getUnitLabel } from "../data/products";
 import { getPdvDatabase } from "../data/pdvData";
+import GroupedRnRequestsView from "./GroupedRnRequestsView";
 import { 
   Search, 
   ChevronRight, 
@@ -32,7 +33,8 @@ import {
   Calendar,
   Copy,
   FolderOpen,
-  RotateCcw
+  RotateCcw,
+  Users
 } from "lucide-react";
 
 // Helper to parse inversion product string into code, full product description, quantity and full formatted text
@@ -243,6 +245,7 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
 
   const [selectedSector, setSelectedSector] = useState<string | null>(null);
   const [roleContext, setRoleContext] = useState<"rn" | "rota">("rn");
+  const [showAllRnsGrouped, setShowAllRnsGrouped] = useState(false);
   
   // Tabs within a selected sector: "historico" | "novo" | "pendentes" | "aprovadas"
   const [sectorTab, setSectorTab] = useState<"historico" | "novo" | "pendentes" | "aprovadas">("historico");
@@ -1817,6 +1820,33 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
     }
   };
 
+  if (showAllRnsGrouped) {
+    return (
+      <div className="max-w-7xl mx-auto space-y-5 animate-fade-in p-3 sm:p-5">
+        <div className="bg-slate-900 border border-slate-800 p-4 rounded-3xl flex items-center justify-between shadow-2xl">
+          <button
+            onClick={() => setShowAllRnsGrouped(false)}
+            className="px-4 py-2.5 bg-slate-950 hover:bg-slate-850 text-slate-200 hover:text-white rounded-2xl border border-slate-800 font-mono text-xs font-bold transition-all cursor-pointer flex items-center gap-2 shadow-sm"
+          >
+            <ArrowLeft className="w-4 h-4 text-blue-400" />
+            <span>Voltar à Seleção de Setor</span>
+          </button>
+          <div className="text-right">
+            <span className="text-[10px] font-mono text-slate-400 block uppercase">Canal de Campo</span>
+            <span className="text-xs font-bold font-mono text-emerald-400">Todos os Setores / RNs</span>
+          </div>
+        </div>
+
+        <GroupedRnRequestsView
+          requests={pendingRequests}
+          promaxRecords={records}
+          repsList={repsList}
+          motoristasList={motoristasList}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-md mx-auto bg-slate-900 min-h-[780px] shadow-2xl rounded-3xl border border-slate-800 overflow-hidden flex flex-col justify-between text-slate-100 relative">
       
@@ -1861,6 +1891,28 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
             </button>
           </div>
 
+          {/* Botão de Acesso Rápido a Todas as Solicitações Agrupadas por RN */}
+          <button
+            type="button"
+            onClick={() => setShowAllRnsGrouped(true)}
+            className="w-full p-3 rounded-2xl bg-gradient-to-r from-blue-950/90 via-indigo-950/80 to-slate-900 border border-blue-600/40 hover:border-blue-500 text-left transition-all cursor-pointer shadow-lg flex items-center justify-between group"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-blue-600 text-white shadow-md">
+                <Users className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-white block group-hover:text-blue-300 transition-colors">
+                  Todas as Solicitações dos RNs
+                </span>
+                <span className="text-[10px] text-slate-300">
+                  Painel agrupado por setor com status e valores
+                </span>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-blue-400 group-hover:translate-x-1 transition-transform" />
+          </button>
+
           <div className="space-y-2.5 flex-grow my-2 max-h-[340px] overflow-y-auto pr-1">
             {roleContext === "rn" ? (
               <>
@@ -1885,12 +1937,18 @@ export default function RepresentativePortal({ records, onTransferApprovedReques
                           <span className="text-xs font-bold text-white block group-hover:text-blue-300 transition-colors">
                             {repInfo ? repInfo.nome : `Setor Residencial ${sec}`}
                           </span>
-                          <span className="text-[9px] text-slate-400 font-mono flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[9px] text-slate-400 font-mono flex items-center gap-1.5 mt-0.5 flex-wrap">
                             <span>Setor {sec}</span>
                             {repInfo && (
                               <>
                                 <span className="text-slate-650">•</span>
                                 <span className="bg-slate-900 text-blue-400 px-1 py-0.2 rounded text-[7.5px] font-semibold">GV: {repInfo.gv}</span>
+                                {repInfo.cpf && (
+                                  <>
+                                    <span className="text-slate-650">•</span>
+                                    <span className="text-slate-400 text-[8px]">CPF: {repInfo.cpf}</span>
+                                  </>
+                                )}
                               </>
                             )}
                           </span>

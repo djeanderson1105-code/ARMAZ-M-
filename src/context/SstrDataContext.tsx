@@ -116,19 +116,22 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
   }, []);
 
-  // Hydrate local state from storage immediately
-  const hydrateFromLocalStorage = useCallback(() => {
-    const localRequests = readLocal("sstr_representative_pending_requests", []);
-    const unifiedRequests = combineShortagesWithDynamic(localRequests);
-    setPendingRequests(unifiedRequests);
-    
-    // Unify cached dynamic records with the permanent in-code historical baseline (Jan-Jul 2026)
-    const rawCachedRecords = readLocal("sstr_cached_records_v1", []);
-    const unifiedRecords = combineBaselineWithDynamic(rawCachedRecords);
-    setRecords(unifiedRecords);
-    
-    const cachedBatches = readLocal("sstr_cached_batches_v1", []);
-    if (cachedBatches.length === 0) {
+  // Granular slice hydrators for zero-lock updates
+  const hydratePendingRequestsSlice = useCallback((data?: any[]) => {
+    const raw = data !== undefined ? data : readLocal("sstr_representative_pending_requests", []);
+    const unified = combineShortagesWithDynamic(raw);
+    setPendingRequests(unified);
+  }, [readLocal]);
+
+  const hydrateRecordsSlice = useCallback((data?: any[]) => {
+    const raw = data !== undefined ? data : readLocal("sstr_cached_records_v1", []);
+    const unified = combineBaselineWithDynamic(raw);
+    setRecords(unified);
+  }, [readLocal]);
+
+  const hydrateBatchesSlice = useCallback((data?: any[]) => {
+    const raw = data !== undefined ? data : readLocal("sstr_cached_batches_v1", []);
+    if (raw.length === 0) {
       const defaultBatch: ImportBatch = {
         id: "batch_default_hist",
         timestamp: Date.now(),
@@ -138,45 +141,154 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
       };
       setBatches([defaultBatch]);
     } else {
-      setBatches(cachedBatches);
+      setBatches(raw);
     }
-    
-    // Normalize and merge saved managers with DEFAULT_MANAGERS fallback
-    const savedManagers = readLocal("sstr_registered_managers", DEFAULT_MANAGERS);
+  }, [readLocal]);
+
+  const hydrateManagersSlice = useCallback((data?: any[]) => {
+    const raw = data !== undefined ? data : readLocal("sstr_registered_managers", DEFAULT_MANAGERS);
     const mgrMap = new Map<string, any>();
     DEFAULT_MANAGERS.forEach(m => {
       const norm = normalizeManagerUsername(m.username);
       if (norm) mgrMap.set(norm, { ...m, username: norm });
     });
-    if (Array.isArray(savedManagers)) {
-      savedManagers.forEach(m => {
+    if (Array.isArray(raw)) {
+      raw.forEach(m => {
         const norm = normalizeManagerUsername(m.username || m.id);
         if (norm) mgrMap.set(norm, { ...m, username: norm });
       });
     }
     setManagers(Array.from(mgrMap.values()));
-
-    setCrewList(readLocal("sstr_lista_crew", DEFAULT_LISTA_CREW));
-    setRepsList(readLocal("sstr_reps_setor", DEFAULT_REPRESENTATIVOS_SETOR));
-    setMotoristasList(readLocal("sstr_motoristas_rotas", DEFAULT_MOTORISTAS_ROTAS));
-    
-    const localVales = readLocal("sstr_vales_historico_reg", []);
-    const unifiedVales = combineValesWithDynamic(localVales);
-    setVales(unifiedVales);
-
-    setProducts(readLocal("sstr_products_database", getProductsDatabase()));
   }, [readLocal]);
+
+  const hydrateCrewSlice = useCallback((data?: any[]) => {
+    const raw = data !== undefined ? data : readLocal("sstr_lista_crew", DEFAULT_LISTA_CREW);
+    setCrewList(raw);
+  }, [readLocal]);
+
+  const hydrateRepsSlice = useCallback((data?: any) => {
+    const raw = data !== undefined ? data : readLocal("sstr_reps_setor", DEFAULT_REPRESENTATIVOS_SETOR);
+    const merged: Record<string, any> = { ...DEFAULT_REPRESENTATIVOS_SETOR, ...(raw || {}) };
+    Object.keys(DEFAULT_REPRESENTATIVOS_SETOR).forEach(k => {
+      if (!merged[k] || !merged[k].cpf || merged[k].nome !== DEFAULT_REPRESENTATIVOS_SETOR[k].nome) {
+        merged[k] = { ...merged[k], ...DEFAULT_REPRESENTATIVOS_SETOR[k] };
+      }
+    });
+    setRepsList(merged);
+  }, [readLocal]);
+
+  const hydrateMotoristasSlice = useCallback((data?: any) => {
+    const raw = data !== undefined ? data : readLocal("sstr_motoristas_rotas", DEFAULT_MOTORISTAS_ROTAS);
+    setMotoristasList(raw);
+  }, [readLocal]);
+
+  const hydrateValesSlice = useCallback((data?: any[]) => {
+    const raw = data !== undefined ? data : readLocal("sstr_vales_historico_reg", []);
+    const unified = combineValesWithDynamic(raw);
+    setVales(unified);
+  }, [readLocal]);
+
+  const hydrateProductsSlice = useCallback((data?: any[]) => {
+    const raw = data !== undefined ? data : readLocal("sstr_products_database", getProductsDatabase());
+    setProducts(raw);
+  }, [readLocal]);
+
+  const hydrateSliceByKey = useCallback((key: string, data?: any) => {
+    switch (key) {
+      case "sstr_representative_pending_requests":
+        hydratePendingRequestsSlice(data);
+        break;
+      case "sstr_cached_records_v1":
+        hydrateRecordsSlice(data);
+        break;
+      case "sstr_cached_batches_v1":
+        hydrateBatchesSlice(data);
+        break;
+      case "sstr_registered_managers":
+        hydrateManagersSlice(data);
+        break;
+      case "sstr_lista_crew":
+        hydrateCrewSlice(data);
+        break;
+      case "sstr_reps_setor":
+        hydrateRepsSlice(data);
+        break;
+      case "sstr_motoristas_rotas":
+        hydrateMotoristasSlice(data);
+        break;
+      case "sstr_vales_historico_reg":
+        hydrateValesSlice(data);
+        break;
+      case "sstr_products_database":
+        hydrateProductsSlice(data);
+        break;
+      default:
+        break;
+    }
+  }, [
+    hydratePendingRequestsSlice,
+    hydrateRecordsSlice,
+    hydrateBatchesSlice,
+    hydrateManagersSlice,
+    hydrateCrewSlice,
+    hydrateRepsSlice,
+    hydrateMotoristasSlice,
+    hydrateValesSlice,
+    hydrateProductsSlice
+  ]);
+
+  // Full initial hydration
+  const hydrateFromLocalStorage = useCallback(() => {
+    hydratePendingRequestsSlice();
+    hydrateRecordsSlice();
+    hydrateBatchesSlice();
+    hydrateManagersSlice();
+    hydrateCrewSlice();
+    hydrateRepsSlice();
+    hydrateMotoristasSlice();
+    hydrateValesSlice();
+    hydrateProductsSlice();
+  }, [
+    hydratePendingRequestsSlice,
+    hydrateRecordsSlice,
+    hydrateBatchesSlice,
+    hydrateManagersSlice,
+    hydrateCrewSlice,
+    hydrateRepsSlice,
+    hydrateMotoristasSlice,
+    hydrateValesSlice,
+    hydrateProductsSlice
+  ]);
 
   useEffect(() => {
     // Initial local hydration
     hydrateFromLocalStorage();
+
+    // Listen for targeted sub-millisecond in-memory collection updates (Task optimization)
+    const handleCollectionUpdate = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (detail && detail.key) {
+        hydrateSliceByKey(detail.key, detail.data);
+      }
+    };
+
+    // Cross-tab storage fallback: only hydrate the specific changed key
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key) {
+        hydrateSliceByKey(e.key);
+      } else {
+        hydrateFromLocalStorage();
+      }
+    };
+
+    window.addEventListener("sstr_collection_updated", handleCollectionUpdate);
+    window.addEventListener("storage", handleStorageEvent);
 
     // Start background Firestore sync promises
     const { fastSyncPromise, heavySyncPromise } = initializeSync();
 
     fastSyncPromise.then(() => {
       setIsInitialLoading(false);
-      hydrateFromLocalStorage();
     }).catch(err => {
       console.warn("[CONTEXT] Fast sync fallback:", err);
       setIsInitialLoading(false);
@@ -184,22 +296,16 @@ export const SstrDataProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     heavySyncPromise.then(() => {
       setIsHeavyLoading(false);
-      hydrateFromLocalStorage();
     }).catch(err => {
       console.warn("[CONTEXT] Heavy sync fallback:", err);
       setIsHeavyLoading(false);
     });
 
-    // Central listener for storage events
-    const handleStorageEvent = () => {
-      hydrateFromLocalStorage();
-    };
-
-    window.addEventListener("storage", handleStorageEvent);
     return () => {
+      window.removeEventListener("sstr_collection_updated", handleCollectionUpdate);
       window.removeEventListener("storage", handleStorageEvent);
     };
-  }, [hydrateFromLocalStorage]);
+  }, [hydrateFromLocalStorage, hydrateSliceByKey]);
 
   // Granular Actions (Task 4)
   const savePendingRequest = async (req: PendingRequest) => {

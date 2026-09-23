@@ -130,8 +130,11 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
     status: findAnyIndex([["statussolicitacao"], ["status", "soli"], ["statussolic"], ["status"]]),
     dataAcao: findAnyIndex([["dataacao"], ["data", "acao"], ["dt", "acao"]]),
     usuarioAcao: findAnyIndex([["usuarioacao"], ["user", "acao"], ["usuario"], ["user"]]),
-    mapa: findAnyIndex([["mapareposicao"], ["mapa", "repo"], ["mapa"]]),
+    mapaReposicao: findAnyIndex([["mapareposicao"], ["mapa", "repo"]]),
+    mapaOrigem: findAnyIndex([["mapaorigem"], ["mapa", "origem"], ["mapaorig"], ["mapacarga"], ["mapaentrega"]]),
+    mapa: findAnyIndex([["mapaorigem"], ["mapa", "origem"], ["mapaorig"], ["mapacarga"], ["mapaentrega"], ["mapareposicao"], ["mapa", "repo"], ["mapa"]]),
     nf: findAnyIndex([["notafiscalserie"], ["nota", "serie"], ["notafiscal"], ["nf"]]),
+    nfOrigem: findAnyIndex([["nforigem"], ["nf", "origem"], ["nota", "origem"]]),
     statusNf: findAnyIndex([["statusnf"], ["status", "nota"]]),
     produto: findAnyIndex([["codigoproduto"], ["cod", "prod"], ["produto"], ["sku"]]),
     descricaoProduto: findAnyIndex([["descricaoproduto"], ["descri", "prod"], ["desc", "prod"], ["descricao"]]),
@@ -156,10 +159,30 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
   };
 
   // Positional fallbacks for standard 03.18.05 Promax CSV column layout if headers were non-standard
-  if (indices.codigoCliente === -1) indices.codigoCliente = 2;
-  if (indices.nomeCliente === -1) indices.nomeCliente = 3;
-  if (indices.solicitacao === -1) indices.solicitacao = 4;
-  if (indices.usuarioAcao === -1) indices.usuarioAcao = 10;
+  if (indices.codigoCliente === -1) indices.codigoCliente = 2; // Col C
+  if (indices.nomeCliente === -1) indices.nomeCliente = 3; // Col D
+  if (indices.solicitacao === -1) indices.solicitacao = 4; // Col E
+  if (indices.dataSolicitacao === -1) indices.dataSolicitacao = 6; // Col G
+  if (indices.hora === -1) indices.hora = 7; // Col H
+  if (indices.status === -1) indices.status = 8; // Col I
+  if (indices.usuarioAcao === -1) indices.usuarioAcao = 10; // Col K
+  if (indices.mapaReposicao === -1) indices.mapaReposicao = 11; // Col L (Mapa Reposição)
+  if (indices.nf === -1) indices.nf = 12; // Col M
+  if (indices.justificativa === -1) indices.justificativa = 22; // Col W
+  if (indices.mapaOrigem === -1) indices.mapaOrigem = 23; // Col X (MAPA ORIGEM / CARGA - COLUNA X 03.18.05)
+  if (indices.nfOrigem === -1) indices.nfOrigem = 24; // Col Y
+  if (indices.veiculo === -1) indices.veiculo = 29; // Col AD
+  if (indices.placa === -1) indices.placa = 30; // Col AE
+  if (indices.transportadora === -1) indices.transportadora = 31; // Col AF
+  if (indices.nomeTransportadora === -1) indices.nomeTransportadora = 32; // Col AG
+  if (indices.motorista === -1) indices.motorista = 33; // Col AH
+  if (indices.nomeMotorista === -1) indices.nomeMotorista = 34; // Col AI
+  if (indices.conferente === -1) indices.conferente = 39; // Col AN
+  if (indices.conferenteCarregamento === -1) indices.conferenteCarregamento = 41; // Col AP
+  if (indices.nrPedidoReposicao === -1) indices.nrPedidoReposicao = 56; // Col BE
+  if (indices.sistemaOrigem === -1) indices.sistemaOrigem = 62; // Col BK
+  if (indices.observacao === -1) indices.observacao = 63; // Col BL
+  if (indices.setorVenda === -1) indices.setorVenda = 68; // Col BQ
 
   // Specific corrections for overrides if findIndex returned same index for valor and valorUnitario
   if (indices.valorUnitario === indices.valorTotal && indices.valorTotal !== -1) {
@@ -223,6 +246,34 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
     const fatHecto = getHectoFactor(produtoVal);
     const computedHl = calculateHL(produtoVal, qty, umVal, descVal);
 
+    // Operational Map resolution:
+    // In Promax report 03.18.05:
+    // - Column X (index 23) is "Mapa Origem" (the delivery route/map that experienced the missing product or break)
+    // - Column L (index 11) is "Mapa Reposição" (generated for redelivery)
+    const mapaOrigemVal = getValSafe(parts, indices.mapaOrigem, "").trim();
+    const colXDirect = parts.length > 23 ? (parts[23] || "").trim() : "";
+    const mapaReposicaoVal = getValSafe(parts, indices.mapaReposicao, "").trim();
+    const colLDirect = parts.length > 11 ? (parts[11] || "").trim() : "";
+
+    let effectiveMapa = "";
+    // 1. Prefer Column X (Mapa Origem) if present and not 0 / falta
+    if (mapaOrigemVal && mapaOrigemVal !== "0" && mapaOrigemVal.toLowerCase() !== "falta") {
+      effectiveMapa = mapaOrigemVal;
+    } else if (colXDirect && colXDirect !== "0" && colXDirect.toLowerCase() !== "falta") {
+      effectiveMapa = colXDirect;
+    } else if (mapaReposicaoVal && mapaReposicaoVal !== "0" && mapaReposicaoVal.toLowerCase() !== "falta") {
+      effectiveMapa = mapaReposicaoVal;
+    } else if (colLDirect && colLDirect !== "0" && colLDirect.toLowerCase() !== "falta") {
+      effectiveMapa = colLDirect;
+    } else {
+      const fallbackMapa = getValSafe(parts, indices.mapa, "").trim();
+      if (fallbackMapa && fallbackMapa !== "0" && fallbackMapa.toLowerCase() !== "falta") {
+        effectiveMapa = fallbackMapa;
+      }
+    }
+
+    const nfOrigemVal = getValSafe(parts, indices.nfOrigem, parts.length > 24 ? parts[24] : "").trim();
+
     const record: ExchangeRecord = {
       id: uniqueId,
       unb: getValSafe(parts, indices.unb, "").trim(),
@@ -236,8 +287,11 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
       status: getValSafe(parts, indices.status, "Pendente").trim() || "Pendente",
       dataAcao: getValSafe(parts, indices.dataAcao, "").trim(),
       usuarioAcao: getValSafe(parts, indices.usuarioAcao, "").trim(),
-      mapa: getValSafe(parts, indices.mapa, "").trim(),
+      mapa: effectiveMapa,
+      mapaOrigem: (mapaOrigemVal && mapaOrigemVal !== "0") ? mapaOrigemVal : (colXDirect && colXDirect !== "0" ? colXDirect : ""),
+      mapaReposicao: (mapaReposicaoVal && mapaReposicaoVal !== "0") ? mapaReposicaoVal : (colLDirect && colLDirect !== "0" ? colLDirect : ""),
       nf: getValSafe(parts, indices.nf, "").trim(),
+      nfOrigem: nfOrigemVal,
       statusNf: getValSafe(parts, indices.statusNf, "").trim(),
       produto: produtoVal,
       descricaoProduto: getValSafe(parts, indices.descricaoProduto, "Produto Sem Descrição").trim().replace(/\s+/g, ' '),

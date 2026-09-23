@@ -460,7 +460,7 @@ function MainApp() {
                 {[
                   { id: "dashboard", label: "Dashboard Geral", icon: BarChart2 },
                   { id: "tracking", label: "Auditoria & Rastreamento", icon: Search },
-                  { id: "pending", label: "Faltas, Inversões & Vales", icon: Clock },
+                  { id: "pending", label: "Solicitações, Faltas & Vales", icon: Clock },
                   { id: "faltas", label: "BI Faltas & Inversões", icon: PieChart },
                   { id: "rankings", label: "Rankings SSTR", icon: Award },
                   { id: "import", label: "Atualizar Base (Lançamentos)", icon: Upload },

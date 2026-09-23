@@ -333,6 +333,9 @@ async function startServer() {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
   }
 
+  // Concurrency deduplication map for compiling PDFs
+  const inFlightPdfCompilations = new Map<string, Promise<string>>();
+
   // Endpoint to compile PDF on-demand, bypassing server-side firestore queries entirely
   app.post("/api/compile-pdf", async (req, res) => {
     try {
@@ -341,103 +344,127 @@ async function startServer() {
         return res.status(400).json({ error: "Parâmetros 'requestId' e 'docData' são obrigatórios." });
       }
 
-      console.log(`[API-COMPILE-PDF] Request received to compile PDF for ${requestId}.`);
-
-      let imageBuffer: Buffer | null = null;
-      let ext = "jpg";
-      let originalFilename = "";
-
-      if (docData.fotoUrl && typeof docData.fotoUrl === "string") {
-        if (docData.fotoUrl.startsWith("/api/uploads/")) {
-          originalFilename = docData.fotoUrl.split("/").pop() || "";
-          const filePath = path.join(UPLOADS_DIR, originalFilename);
-          if (fs.existsSync(filePath)) {
-            try {
-              imageBuffer = fs.readFileSync(filePath);
-              ext = originalFilename.split(".").pop() || "jpg";
-            } catch (err) {
-              console.error(`[API-COMPILE-PDF] Error reading cached local file:`, err);
-            }
-          }
-        } else if (docData.fotoUrl.startsWith("data:image/")) {
-          try {
-            const matches = docData.fotoUrl.match(/^data:image\/([A-Za-z+]+);base64,(.+)$/);
-            if (matches && matches.length === 3) {
-              ext = matches[1];
-              imageBuffer = Buffer.from(matches[2], "base64");
-            } else {
-              imageBuffer = Buffer.from(docData.fotoUrl, "base64");
-            }
-          } catch (err) {
-            console.error(`[API-COMPILE-PDF] Base64 decoding failed:`, err);
-          }
-        } else if (docData.fotoUrl.startsWith("http://") || docData.fotoUrl.startsWith("https://")) {
-          try {
-            const imgRes = await fetch(docData.fotoUrl);
-            if (imgRes.ok) {
-              const arrayBuf = await imgRes.arrayBuffer();
-              imageBuffer = Buffer.from(arrayBuf);
-              ext = docData.fotoUrl.split(".").pop()?.split("?")[0] || "jpg";
-            }
-          } catch (err) {
-            console.error(`[API-COMPILE-PDF] Failed fetching photo from URL:`, err);
-          }
-        }
-      }
-
-      const pdfBuffer = await createEvidencePdf(docData, imageBuffer, ext);
       const pdfFilename = `pdf_finalizada_${requestId}.pdf`;
       const pdfFilePath = path.join(UPLOADS_DIR, pdfFilename);
-
-      // Save to disk cache
-      fs.writeFileSync(pdfFilePath, pdfBuffer);
-
-      // Try uploading to cloud storage if bucket is ready
-      if (bucket) {
-        try {
-          const destination = `evidencias/finalizadas/${requestId}.pdf`;
-          await bucket.upload(pdfFilePath, {
-            destination,
-            metadata: {
-              contentType: "application/pdf"
-            }
-          });
-          console.log(`[API-COMPILE-PDF] Permanent PDF uploaded to Cloud Storage: ${destination}`);
-          
-          // Purge the original image from Cloud Storage to maintain database hygiene and save space
-          if (originalFilename) {
-            try {
-              const fileRef = bucket.file(`evidencias/pendentes/${requestId}/${originalFilename}`);
-              const [exists] = await fileRef.exists();
-              if (exists) {
-                await fileRef.delete();
-                console.log(`[API-COMPILE-PDF] Purged original image from Cloud Storage bucket: ${originalFilename}`);
-              }
-            } catch (storageDelErr: any) {
-              console.warn(`[API-COMPILE-PDF] Cloud Storage original cleanup warning:`, storageDelErr.message);
-            }
-          }
-        } catch (err: any) {
-          console.warn(`[API-COMPILE-PDF] Cloud Storage PDF upload/cleanup warning:`, err.message);
-        }
-      }
-
       const finalPdfUrl = `/api/uploads/${pdfFilename}`;
 
-      // Try to clean up local cache of original heavy image if requested
-      if (originalFilename) {
-        const originalPath = path.join(UPLOADS_DIR, originalFilename);
-        if (fs.existsSync(originalPath)) {
-          try {
-            fs.unlinkSync(originalPath);
-            console.log(`[API-COMPILE-PDF] Deleted original image cache: ${originalFilename}`);
-          } catch (err) {
-            console.error(`[API-COMPILE-PDF] Disk cleanup error:`, err);
-          }
-        }
+      // 1. FAST-PATH CACHE HIT: If already compiled on disk, return immediately without re-rendering
+      if (fs.existsSync(pdfFilePath) && fs.statSync(pdfFilePath).size > 1000) {
+        return res.json({ success: true, url: finalPdfUrl, cached: true });
       }
 
-      res.json({ success: true, url: finalPdfUrl });
+      // 2. IN-FLIGHT DEDUPLICATION: If another worker or client is currently compiling this exact PDF, await it
+      if (inFlightPdfCompilations.has(requestId)) {
+        console.log(`[API-COMPILE-PDF] Joining existing in-flight compilation for ${requestId}...`);
+        const url = await inFlightPdfCompilations.get(requestId)!;
+        return res.json({ success: true, url });
+      }
+
+      const compileTask = (async (): Promise<string> => {
+        console.log(`[API-COMPILE-PDF] Compiling PDF for ${requestId}...`);
+
+        let imageBuffer: Buffer | null = null;
+        let ext = "jpg";
+        let originalFilename = "";
+
+        if (docData.fotoUrl && typeof docData.fotoUrl === "string") {
+          if (docData.fotoUrl.startsWith("/api/uploads/")) {
+            originalFilename = docData.fotoUrl.split("/").pop() || "";
+            const filePath = path.join(UPLOADS_DIR, originalFilename);
+            if (fs.existsSync(filePath)) {
+              try {
+                imageBuffer = fs.readFileSync(filePath);
+                ext = originalFilename.split(".").pop() || "jpg";
+              } catch (err) {
+                console.error(`[API-COMPILE-PDF] Error reading cached local file:`, err);
+              }
+            }
+          } else if (docData.fotoUrl.startsWith("data:image/")) {
+            try {
+              const matches = docData.fotoUrl.match(/^data:image\/([A-Za-z+]+);base64,(.+)$/);
+              if (matches && matches.length === 3) {
+                ext = matches[1];
+                imageBuffer = Buffer.from(matches[2], "base64");
+              } else {
+                imageBuffer = Buffer.from(docData.fotoUrl, "base64");
+              }
+            } catch (err) {
+              console.error(`[API-COMPILE-PDF] Base64 decoding failed:`, err);
+            }
+          } else if (docData.fotoUrl.startsWith("http://") || docData.fotoUrl.startsWith("https://")) {
+            try {
+              const imgRes = await fetch(docData.fotoUrl);
+              if (imgRes.ok) {
+                const arrayBuf = await imgRes.arrayBuffer();
+                imageBuffer = Buffer.from(arrayBuf);
+                ext = docData.fotoUrl.split(".").pop()?.split("?")[0] || "jpg";
+              }
+            } catch (err) {
+              console.error(`[API-COMPILE-PDF] Failed fetching photo from URL:`, err);
+            }
+          }
+        }
+
+        const pdfBuffer = await createEvidencePdf(docData, imageBuffer, ext);
+
+        // Save to disk cache
+        fs.writeFileSync(pdfFilePath, pdfBuffer);
+
+        // Try uploading to cloud storage if bucket is ready
+        if (bucket) {
+          try {
+            const destination = `evidencias/finalizadas/${requestId}.pdf`;
+            await bucket.upload(pdfFilePath, {
+              destination,
+              metadata: {
+                contentType: "application/pdf"
+              }
+            });
+            console.log(`[API-COMPILE-PDF] Permanent PDF uploaded to Cloud Storage: ${destination}`);
+            
+            // Purge the original image from Cloud Storage to maintain database hygiene and save space
+            if (originalFilename) {
+              try {
+                const fileRef = bucket.file(`evidencias/pendentes/${requestId}/${originalFilename}`);
+                const [exists] = await fileRef.exists();
+                if (exists) {
+                  await fileRef.delete();
+                  console.log(`[API-COMPILE-PDF] Purged original image from Cloud Storage bucket: ${originalFilename}`);
+                }
+              } catch (storageDelErr: any) {
+                console.warn(`[API-COMPILE-PDF] Cloud Storage original cleanup warning:`, storageDelErr.message);
+              }
+            }
+          } catch (err: any) {
+            console.warn(`[API-COMPILE-PDF] Cloud Storage PDF upload/cleanup warning:`, err.message);
+          }
+        }
+
+        // Try to clean up local cache of original heavy image if requested
+        if (originalFilename) {
+          const originalPath = path.join(UPLOADS_DIR, originalFilename);
+          if (fs.existsSync(originalPath)) {
+            try {
+              fs.unlinkSync(originalPath);
+              console.log(`[API-COMPILE-PDF] Deleted original image cache: ${originalFilename}`);
+            } catch (err) {
+              console.error(`[API-COMPILE-PDF] Disk cleanup error:`, err);
+            }
+          }
+        }
+
+        return finalPdfUrl;
+      })();
+
+      inFlightPdfCompilations.set(requestId, compileTask);
+      let resultUrl: string;
+      try {
+        resultUrl = await compileTask;
+      } finally {
+        inFlightPdfCompilations.delete(requestId);
+      }
+
+      res.json({ success: true, url: resultUrl });
     } catch (err: any) {
       console.error("[API-COMPILE-PDF] Compilation error:", err);
       res.status(500).json({ error: "Erro ao compilar PDF: " + err.message });

@@ -9,6 +9,8 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  persistentSingleTabManager,
+  memoryLocalCache,
   enableIndexedDbPersistence,
   doc,
   getDoc,
@@ -145,7 +147,8 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 const firebaseApp = initializeApp(firebaseConfig);
 const dbId = (firebaseConfig as any).firestoreDatabaseId || (firebaseConfig as any).databaseId;
 
-// Initialize Firestore with modern local cache persistence, with a fallback to memory-only standard instance if blocked by the browser (Incognito/Private browsing/Iframe sandbox constraints)
+// Initialize Firestore with resilient multi-tab persistent cache support,
+// falling back cleanly to single-tab forceOwnership or memory-only cache if IndexedDB is restricted.
 let firestoreDbInstance: any;
 try {
   firestoreDbInstance = initializeFirestore(firebaseApp, {
@@ -153,17 +156,27 @@ try {
       tabManager: persistentMultipleTabManager()
     })
   }, dbId && dbId !== "(default)" ? dbId : undefined);
-  console.log("[FIREBASE-INIT] Firestore initialized with persistent multiple-tab local cache.");
-} catch (cacheErr) {
-  console.warn("[FIREBASE-INIT] Failed to initialize Firestore with persistent local cache (e.g. Incognito / Private window or sandboxed iframe restriction). Falling back to memory-only standard Firestore...", cacheErr);
+  console.log("[FIREBASE-INIT] Firestore initialized with multi-tab persistent cache.");
+} catch (multiTabErr) {
   try {
-    firestoreDbInstance = getFirestore(firebaseApp, dbId && dbId !== "(default)" ? dbId : undefined);
-  } catch (fallbackErr) {
-    console.error("[FIREBASE-INIT] Critical: Could not initialize standard fallback. Retrying getFirestore default...", fallbackErr);
+    firestoreDbInstance = initializeFirestore(firebaseApp, {
+      localCache: persistentLocalCache({
+        tabManager: persistentSingleTabManager({ forceOwnership: true })
+      })
+    }, dbId && dbId !== "(default)" ? dbId : undefined);
+    console.log("[FIREBASE-INIT] Firestore initialized with single-tab local cache fallback (forceOwnership: true).");
+  } catch (cacheErr) {
+    console.warn("[FIREBASE-INIT] Persistent local cache unavailable. Initializing with memoryLocalCache...", cacheErr);
     try {
-      firestoreDbInstance = getFirestore(firebaseApp);
-    } catch (finalErr) {
-      console.error("[FIREBASE-INIT] Ultimate: Failed all Firestore initializations", finalErr);
+      firestoreDbInstance = initializeFirestore(firebaseApp, {
+        localCache: memoryLocalCache()
+      }, dbId && dbId !== "(default)" ? dbId : undefined);
+    } catch (memErr) {
+      try {
+        firestoreDbInstance = getFirestore(firebaseApp, dbId && dbId !== "(default)" ? dbId : undefined);
+      } catch (finalErr) {
+        firestoreDbInstance = getFirestore(firebaseApp);
+      }
     }
   }
 }
@@ -704,6 +717,7 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
     let unsubscribe: (() => void) | null = null;
     let retryDelay = 3000;
     let retryTimer: any = null;
+    let isInitialLoad = true;
 
     function attach() {
       if (unsubscribe) {
@@ -713,7 +727,16 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
 
       unsubscribe = onSnapshot(collection(firestoreDb, "exchangeRecords_chunks"), (snapshot) => {
         retryDelay = 3000; // Reset backoff on successful snapshot arrival
-        recordReads(snapshot.docs.length);
+
+        if (isInitialLoad) {
+          isInitialLoad = false;
+          recordReads(snapshot.docs.length);
+        } else {
+          const changes = snapshot.docChanges().filter(c => c.type !== 'removed');
+          if (changes.length > 0) {
+            recordReads(changes.length);
+          }
+        }
 
         if (isWritingExchangeRecords) {
           if (!resolved) {
@@ -742,6 +765,7 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
           const localStr = safeGetItem(localKey);
           if (!localStr || localStr === "[]") {
             safeSetItem(localKey, JSON.stringify(HISTORICAL_RECORDS_JAN_JUL_2026));
+            window.dispatchEvent(new CustomEvent("sstr_collection_updated", { detail: { key: localKey, data: HISTORICAL_RECORDS_JAN_JUL_2026 } }));
             window.dispatchEvent(new Event("storage"));
           }
           if (!resolved) {
@@ -809,6 +833,7 @@ function subscribeExchangeRecordsChunks(localKey: string): Promise<void> {
           safeSetItem(localKey, remoteStr);
           isSyncingFromFirestore = false;
           
+          window.dispatchEvent(new CustomEvent("sstr_collection_updated", { detail: { key: localKey, data: unifiedRecords } }));
           window.dispatchEvent(new Event("storage"));
         }
         
@@ -918,9 +943,13 @@ function getActiveUser(): string {
   return "Colaborador";
 }
 
-// Advanced operation diff tracker and logger
+// Operation diff tracker and logger (throttled to avoid burning daily write limits)
 async function logChange(key: string, oldList: any[], newList: any[]) {
   if (isFirestoreInCooldown()) return;
+  // Guard against excessive write consumption: routine single-item edits are already tracked
+  // in their document states. Only log significant operations, bulk actions, or admin changes.
+  const isCriticalTable = key === "sstr_registered_managers" || key === "sstr_cached_batches_v1" || key === "sstr_products_database";
+  
   try {
     const operator = getActiveUser();
     const logsCol = collection(firestoreDb, "sstr_logs");
@@ -953,12 +982,13 @@ async function logChange(key: string, oldList: any[], newList: any[]) {
     
     const totalChanges = added.length + modified.length + deleted.length;
     if (totalChanges === 0) return;
+    if (!isCriticalTable && totalChanges < 3) return; // Do not waste write quota on minor single-field edits
 
     await enqueueFirestoreWrite(async () => {
       try {
         const action = added.length > 0 && modified.length === 0 && deleted.length === 0 ? "CRIACAO" :
                        deleted.length > 0 && added.length === 0 && modified.length === 0 ? "EXCLUSAO" : "EDICAO";
-        const details = `Operação em lote: ${added.length} criados, ${modified.length} alterados, ${deleted.length} excluídos na tabela "${COLLECTION_MAP[key]?.name || key}".`;
+        const details = `Operação: ${added.length} criados, ${modified.length} alterados, ${deleted.length} excluídos na tabela "${COLLECTION_MAP[key]?.name || key}".`;
         
         await addDoc(logsCol, sanitizeForFirestore({
           usuario: operator,
@@ -984,6 +1014,11 @@ function subscribeCollection(collectionName: string, localKey: string, isObject:
     let unsubscribe: (() => void) | null = null;
     let retryDelay = 3000;
     let retryTimer: any = null;
+    let isInitialLoad = true;
+    let updateDebounceTimer: any = null;
+
+    // In-memory document map for this collection to avoid reconstructing from scratch
+    const docsMap = new Map<string, any>();
 
     function attach() {
       if (unsubscribe) {
@@ -993,61 +1028,90 @@ function subscribeCollection(collectionName: string, localKey: string, isObject:
 
       unsubscribe = onSnapshot(collection(firestoreDb, collectionName), (snapshot) => {
         retryDelay = 3000; // Reset backoff on successful snapshot arrival
-        recordReads(snapshot.docs.length);
 
-        let remoteVal: any;
-        if (isObject) {
-          const obj: Record<string, any> = {};
-          snapshot.docs.forEach(doc => {
-            obj[doc.id] = doc.data();
-          });
-          remoteVal = obj;
+        // Accurate Firestore reads tracking:
+        // Firestore only bills for initial snapshot count + subsequent changed docs, NOT entire collection on each tick!
+        if (isInitialLoad) {
+          isInitialLoad = false;
+          recordReads(snapshot.docs.length);
         } else {
-          remoteVal = snapshot.docs.map(doc => doc.data());
-        }
-
-        let remoteStr = JSON.stringify(remoteVal || (isObject ? {} : []));
-        if (localKey === "sstr_representative_pending_requests" || localKey === "sstr_vales_historico_reg") {
-          remoteStr = extractImagesToIDB(remoteStr);
-        }
-
-        const localStr = safeGetItem(localKey);
-
-        if (hasPendingOfflineWrite(localKey)) {
-          console.warn(`[SYNC-SHIELD] Unconfirmed local write pending in queue for "${localKey}". Preserving local state.`);
-          if (!resolved) {
-            resolved = true;
-            resolve();
+          const nonRemovedChanges = snapshot.docChanges().filter(c => c.type !== 'removed');
+          if (nonRemovedChanges.length > 0) {
+            recordReads(nonRemovedChanges.length);
           }
-          return;
-        }
-        if (localKey === "sstr_products_database" && Array.isArray(remoteVal)) {
-          try {
-            const localArr = localStr ? JSON.parse(localStr) : [];
-            if (Array.isArray(localArr) && localArr.length > remoteVal.length) {
-              // Merge local products into remoteVal to prevent wiping user uploaded catalog
-              const prodMap = new Map<string, any>();
-              remoteVal.forEach(p => p.codigo && prodMap.set(p.codigo.trim(), p));
-              localArr.forEach(p => p.codigo && !prodMap.has(p.codigo.trim()) && prodMap.set(p.codigo.trim(), p));
-              remoteVal = Array.from(prodMap.values());
-              remoteStr = JSON.stringify(remoteVal);
-            }
-          } catch (e) {}
         }
 
-        if (localStr !== remoteStr) {
-          isSyncingFromFirestore = true;
-          safeSetItem(localKey, remoteStr);
-          isSyncingFromFirestore = false;
+        // Apply granular document changes to local Map
+        snapshot.docChanges().forEach(change => {
+          if (change.type === "removed") {
+            docsMap.delete(change.doc.id);
+          } else {
+            docsMap.set(change.doc.id, change.doc.data());
+          }
+        });
 
-          // Dispatch storage event so React updates
-          window.dispatchEvent(new Event("storage"));
+        // Ensure full map synchronization if this was initial or reset
+        if (docsMap.size === 0 && snapshot.docs.length > 0) {
+          snapshot.docs.forEach(doc => docsMap.set(doc.id, doc.data()));
         }
 
         if (!resolved) {
           resolved = true;
           resolve();
         }
+
+        // If local write is still in flight, preserve optimistic local state
+        if (snapshot.metadata.hasPendingWrites || hasPendingOfflineWrite(localKey)) {
+          return;
+        }
+
+        // Debounce coalescing for rapid multi-user bursts (40ms) to prevent UI thread lock
+        if (updateDebounceTimer) clearTimeout(updateDebounceTimer);
+        updateDebounceTimer = setTimeout(() => {
+          let remoteVal: any;
+          if (isObject) {
+            const obj: Record<string, any> = {};
+            docsMap.forEach((v, k) => { obj[k] = v; });
+            remoteVal = obj;
+          } else {
+            remoteVal = Array.from(docsMap.values());
+          }
+
+          let remoteStr = JSON.stringify(remoteVal || (isObject ? {} : []));
+          if (localKey === "sstr_representative_pending_requests" || localKey === "sstr_vales_historico_reg") {
+            remoteStr = extractImagesToIDB(remoteStr);
+          }
+
+          const localStr = safeGetItem(localKey);
+
+          if (localKey === "sstr_products_database" && Array.isArray(remoteVal)) {
+            try {
+              const localArr = localStr ? JSON.parse(localStr) : [];
+              if (Array.isArray(localArr) && localArr.length > remoteVal.length) {
+                // Merge local products into remoteVal to prevent wiping user uploaded catalog
+                const prodMap = new Map<string, any>();
+                remoteVal.forEach(p => p.codigo && prodMap.set(p.codigo.trim(), p));
+                localArr.forEach(p => p.codigo && !prodMap.has(p.codigo.trim()) && prodMap.set(p.codigo.trim(), p));
+                remoteVal = Array.from(prodMap.values());
+                remoteStr = JSON.stringify(remoteVal);
+              }
+            } catch (e) {}
+          }
+
+          if (localStr !== remoteStr) {
+            isSyncingFromFirestore = true;
+            safeSetItem(localKey, remoteStr);
+            isSyncingFromFirestore = false;
+
+            // Dispatch targeted event for granular zero-lock state updates in React Context
+            window.dispatchEvent(new CustomEvent("sstr_collection_updated", { 
+              detail: { key: localKey, data: remoteVal } 
+            }));
+
+            // Dispatch standard storage event for cross-tab compatibility
+            window.dispatchEvent(new Event("storage"));
+          }
+        }, 40);
       }, (err) => {
         console.warn(`[REALTIME-SYNC] Firestore offline or error subscribing to ${collectionName}:`, err?.message || err);
         notifySyncIssue(`Erro de sincronização em tempo real na tabela "${collectionName}": ${err?.message || err}`, err);
@@ -1263,7 +1327,25 @@ function seedLocalStorageDefaults() {
   if (!safeGetItem("sstr_custom_pdvs_v1")) safeSetItem("sstr_custom_pdvs_v1", JSON.stringify([]));
   if (!safeGetItem("sstr_products_database")) safeSetItem("sstr_products_database", JSON.stringify(getProductsDatabase()));
   if (!safeGetItem("sstr_lista_crew")) safeSetItem("sstr_lista_crew", JSON.stringify(DEFAULT_LISTA_CREW));
-  if (!safeGetItem("sstr_reps_setor")) safeSetItem("sstr_reps_setor", JSON.stringify(DEFAULT_REPRESENTATIVOS_SETOR));
+  
+  const currentRepsRaw = safeGetItem("sstr_reps_setor");
+  if (!currentRepsRaw) {
+    safeSetItem("sstr_reps_setor", JSON.stringify(DEFAULT_REPRESENTATIVOS_SETOR));
+  } else {
+    try {
+      const parsedReps = JSON.parse(currentRepsRaw);
+      const mergedReps = { ...DEFAULT_REPRESENTATIVOS_SETOR, ...parsedReps };
+      Object.keys(DEFAULT_REPRESENTATIVOS_SETOR).forEach(k => {
+        if (!mergedReps[k] || !mergedReps[k].cpf || mergedReps[k].nome !== DEFAULT_REPRESENTATIVOS_SETOR[k].nome) {
+          mergedReps[k] = { ...mergedReps[k], ...DEFAULT_REPRESENTATIVOS_SETOR[k] };
+        }
+      });
+      safeSetItem("sstr_reps_setor", JSON.stringify(mergedReps));
+    } catch {
+      safeSetItem("sstr_reps_setor", JSON.stringify(DEFAULT_REPRESENTATIVOS_SETOR));
+    }
+  }
+
   if (!safeGetItem("sstr_motoristas_rotas")) safeSetItem("sstr_motoristas_rotas", JSON.stringify(DEFAULT_MOTORISTAS_ROTAS));
 }
 

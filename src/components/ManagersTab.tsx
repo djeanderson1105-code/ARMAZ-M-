@@ -735,6 +735,7 @@ export default function ManagersTab() {
   const [searchRep, setSearchRep] = useState("");
   const [newRepSetor, setNewRepSetor] = useState("");
   const [newRepNome, setNewRepNome] = useState("");
+  const [newRepCpf, setNewRepCpf] = useState("");
   const [newRepGv, setNewRepGv] = useState("DIEGO");
   const [rnDragActive, setRnDragActive] = useState(false);
   const [rnPasteText, setRnPasteText] = useState("");
@@ -967,6 +968,8 @@ export default function ManagersTab() {
     const setor = newRepSetor.trim();
     const nome = newRepNome.trim().toUpperCase();
     const gv = newRepGv.trim().toUpperCase();
+    const cpf = newRepCpf.trim();
+    const base = gv;
 
     if (!setor || !nome || !gv) {
       setError("Favor preencher todos os campos do Setor / RN.");
@@ -987,10 +990,11 @@ export default function ManagersTab() {
       if (setor !== editingRepId) {
         await deleteRepsSetor(editingRepId);
       }
-      await saveRepsSetor(setor, { setor, nome, gv });
+      await saveRepsSetor(setor, { setor, nome, gv, cpf, base });
 
       setNewRepSetor("");
       setNewRepNome("");
+      setNewRepCpf("");
       setEditingRepId(null);
       setSuccess(`Setor ${setor} (RN: ${nome}) atualizado com sucesso!`);
     } else {
@@ -999,10 +1003,11 @@ export default function ManagersTab() {
         return;
       }
 
-      await saveRepsSetor(setor, { setor, nome, gv });
+      await saveRepsSetor(setor, { setor, nome, gv, cpf, base });
 
       setNewRepSetor("");
       setNewRepNome("");
+      setNewRepCpf("");
       setSuccess(`Setor ${setor} (RN: ${nome}) cadastrado com sucesso!`);
     }
 
@@ -1091,7 +1096,13 @@ export default function ManagersTab() {
   const filteredReps = repsArray.filter(r => {
     if (!searchRep) return true;
     const q = searchRep.toLowerCase();
-    return r.nome.toLowerCase().includes(q) || r.setor.includes(q) || r.gv.toLowerCase().includes(q);
+    return (
+      r.nome.toLowerCase().includes(q) ||
+      r.setor.includes(q) ||
+      r.gv.toLowerCase().includes(q) ||
+      (r.cpf && r.cpf.includes(q)) ||
+      (r.base && r.base.toLowerCase().includes(q))
+    );
   });
 
   const routesArray = Object.values(motoristasRotasList) as RouteDriverInfo[];
@@ -1553,20 +1564,37 @@ export default function ManagersTab() {
         if (parts.length >= 2) {
           const setor = parts[0].trim();
           const nome = parts[1].trim().toUpperCase();
-          let gv = parts[2] ? parts[2].trim().toUpperCase() : "OUTRO";
+          let gv = "OUTRO";
+          let cpf = "";
+
+          for (let pIdx = 2; pIdx < parts.length; pIdx++) {
+            const val = parts[pIdx].trim().toUpperCase();
+            if (!val) continue;
+            const cleanDigits = val.replace(/\D/g, "");
+            if (cleanDigits.length === 11) {
+              cpf = val;
+            } else if (val.includes("DIEGO") || val.includes("GUERRA")) {
+              gv = "DIEGO";
+            } else if (val.includes("ERIVAN")) {
+              gv = "ERIVAN";
+            } else if (val.includes("OUTRO") || val.includes("GERAL")) {
+              gv = "OUTRO";
+            } else if (!gv || gv === "OUTRO") {
+              gv = val;
+            }
+          }
+
+          if (gv === "OUTRO") {
+            if (setor.startsWith("6")) gv = "DIEGO";
+            else if (setor.startsWith("7")) gv = "ERIVAN";
+          }
           
           if (!setor || !/^\d+$/.test(setor) || !nome) {
             skipped++;
             continue;
           }
           
-          if (gv.includes("DIEGO") || gv.includes("GUERRA")) {
-            gv = "DIEGO";
-          } else if (gv.includes("ERIVAN")) {
-            gv = "ERIVAN";
-          }
-          
-          newReps[setor] = { setor, nome, gv };
+          newReps[setor] = { setor, nome, gv, cpf, base: gv };
           count++;
         } else {
           skipped++;
@@ -3059,7 +3087,19 @@ export default function ManagersTab() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Gerente de Vendas (GV)</label>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">CPF do Representante</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: 000.000.000-00"
+                    value={newRepCpf}
+                    onChange={(e) => setNewRepCpf(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                  />
+                  <span className="text-[8px] text-slate-550 leading-none block">Cadastro oficial para emissões, vales e identificação de campo.</span>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block">Gerente de Vendas (GV) / Base</label>
                   <select
                     value={newRepGv}
                     onChange={(e) => setNewRepGv(e.target.value)}
@@ -3084,6 +3124,7 @@ export default function ManagersTab() {
                       onClick={() => {
                         setNewRepSetor("");
                         setNewRepNome("");
+                        setNewRepCpf("");
                         setEditingRepId(null);
                       }}
                       className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-350 hover:text-white font-sans font-semibold text-xs rounded-lg transition-colors cursor-pointer text-center block"
@@ -3118,11 +3159,11 @@ export default function ManagersTab() {
               <div className="space-y-3">
                 {/* Text Area for copy paste */}
                 <div className="space-y-1">
-                  <label className="text-[9px] font-bold text-slate-400 uppercase font-mono block">Colar Dados (Setor;Nome;GV)</label>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase font-mono block">Colar Dados (Setor;Nome;CPF ou Setor;Nome;GV)</label>
                   <textarea
                     value={rnPasteText}
                     onChange={(e) => setRnPasteText(e.target.value)}
-                    placeholder="601;JEAN ANDERSON;DIEGO&#10;602;CARLOS ANDRE;ERIVAN&#10;603;FABIO SILVA;OUTRO"
+                    placeholder="600;JOSE THIAGO BATISTA DO NASCIMENTO;084.279.294-55&#10;700;VALDEMIR VANDERLEI GOMES FILHO;105.880.584-32"
                     rows={4}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[11px] text-slate-200 focus:border-indigo-500 focus:outline-none font-mono"
                   />
@@ -3229,21 +3270,33 @@ export default function ManagersTab() {
                   <tr className="bg-slate-950/80 sticky top-0 text-slate-450 font-mono text-[9px] uppercase font-bold border-b border-slate-800">
                     <th className="p-3">Setor</th>
                     <th className="p-3">Representante (RN)</th>
-                    <th className="p-3">Gerente (GV)</th>
+                    <th className="p-3">CPF</th>
+                    <th className="p-3">Gerente (GV) / Base</th>
                     <th className="p-3 text-center">Ações</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-850">
                   {filteredReps.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="p-8 text-center text-slate-500 font-mono">Nenhum setor encontrado.</td>
+                      <td colSpan={5} className="p-8 text-center text-slate-500 font-mono">Nenhum setor encontrado.</td>
                     </tr>
                   ) : (
                     filteredReps.sort((a,b) => a.setor.localeCompare(b.setor)).map(r => (
                       <tr key={r.setor} className="hover:bg-slate-950/20">
                         <td className="p-3 font-mono text-indigo-400 font-bold">Setor {r.setor}</td>
                         <td className="p-3 font-semibold text-slate-200 uppercase text-[11px]">{r.nome}</td>
-                        <td className="p-3 font-mono text-slate-400">GV {r.gv}</td>
+                        <td className="p-3 font-mono text-slate-400 text-[10.5px]">{r.cpf || "-"}</td>
+                        <td className="p-3 font-mono text-slate-300">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            r.gv === "DIEGO" 
+                              ? "bg-blue-950/80 text-blue-300 border border-blue-800/60" 
+                              : r.gv === "ERIVAN" 
+                                ? "bg-emerald-950/80 text-emerald-300 border border-emerald-800/60" 
+                                : "bg-slate-900 text-slate-400 border border-slate-800"
+                          }`}>
+                            GV {r.gv}
+                          </span>
+                        </td>
                         <td className="p-3 text-center">
                           {confirmDeleteRep === r.setor ? (
                             <div className="inline-flex items-center gap-1.5 p-1 bg-slate-950 rounded-lg border border-red-900/60 animate-fade-in whitespace-nowrap">
@@ -3268,6 +3321,7 @@ export default function ManagersTab() {
                                   setEditingRepId(r.setor);
                                   setNewRepSetor(r.setor);
                                   setNewRepNome(r.nome);
+                                  setNewRepCpf(r.cpf || "");
                                   setNewRepGv(r.gv || "DIEGO");
                                   document.getElementById("gestor-rns-container")?.scrollIntoView({ behavior: "smooth" });
                                 }}
