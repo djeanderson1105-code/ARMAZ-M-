@@ -22,7 +22,7 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "9067", descricao: "ANTARCTICA PILSEN LATA 350ML SH C/12 NPAL", fator: 12, valor: 28.95, fatorHecto: 0.042 },
   { codigo: "9068", descricao: "SKOL LATA 350ML SH C/12 NPAL", fator: 12, valor: 28.52, fatorHecto: 0.042 },
   { codigo: "34608", descricao: "SKOL LATA 350ML SH C/12 NPAL MULTIPACK", fator: 12, valor: 39.00, fatorHecto: 0.042 },
-  { codigo: "33820", descricao: "BRAHMA CHOPP LT 350ML SH C/12 NP MULTIPK", fator: 12, valor: 34.90, fatorHecto: 0.042 },
+  { codigo: "33820", descricao: "BRAHMA CHOPP LATA 350ML SH C/12 NPAL MULTIPACK .", fator: 12, valor: 34.90, fatorHecto: 0.042 },
   { codigo: "28164", descricao: "BRAHMA DUPLO MALTE LT 350ML SH C/12 NPAL", fator: 12, valor: 37.40, fatorHecto: 0.042 },
   { codigo: "1804", descricao: "BRAHMA DUPLO MALTE 350ML C24", fator: 24, valor: 37.48, fatorHecto: 0.042 },
   { codigo: "9883", descricao: "SKOL LT 473ML SH C/12 NPAL", fator: 12, valor: 37.84, fatorHecto: 0.05676 },
@@ -86,7 +86,6 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "2006", descricao: "ANTARCTICA SUBZERO 600ML", fator: 12, valor: 60.00, fatorHecto: 0.072 },
   { codigo: "2008", descricao: "ANTARCTICA SUBZERO LATA 350ML SH C/12 NPAL", fator: 12, valor: 27.01, fatorHecto: 0.042 },
   { codigo: "2320", descricao: "SODA LIMONADA ANTARCTICA PET 1L CAIXA C/12", fator: 12, valor: 31.82, fatorHecto: 0.12 },
-  { codigo: "2350", descricao: "SODA LIMONADA ANTARCTICA PET 2L CAIXA C/6", fator: 6, valor: 27.02, fatorHecto: 0.12 },
   { codigo: "2585", descricao: "GUARANA CHP ANTARCTICA GFA VD 1L", fator: 12, valor: 27.69, fatorHecto: 0.12 },
   { codigo: "3733", descricao: "BOHEMIA NOVA EMBALAGEM 600ML", fator: 12, valor: 47.39, fatorHecto: 0.072 },
   { codigo: "4141", descricao: "PATAGONIA AMB LAG NACIONAL LT SLEEK 350ML C 8 CX CARTAO", fator: 8, valor: 31.95, fatorHecto: 0.028 },
@@ -169,7 +168,7 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "20853", descricao: "COLORADO LAGER LT SLEEK 350ML C 8 CX CARTAO", fator: 8, valor: 34.58, fatorHecto: 0.028 },
   { codigo: "21119", descricao: "SKOL BEATS GT LT 269ML CX CARTAO C/8 NPAL", fator: 8, valor: 31.27, fatorHecto: 0.02152 },
   { codigo: "21441", descricao: "SUKITA LIMAO PET 2L CAIXA C/6", fator: 6, valor: 19.02, fatorHecto: 0.12 },
-  { codigo: "21527", descricao: "TANQUERAY GIN LONDON DRY GARRAFA VIDRO 750ML", fator: 1, valor: 79.90, fatorHecto: 0.0075 },
+  { codigo: "21527", descricao: "TANQUERAY GIN LONDON DRY GARRAFA VIDRO 750ML", fator: 1, valor: 78.90, fatorHecto: 0.0075 },
   { codigo: "21529", descricao: "ABSOLUT ORIGINAL GARRAFA VIDRO 1 L", fator: 1, valor: 77.85, fatorHecto: 0.01 },
   { codigo: "21530", descricao: "SMIRNOFF ORIGINAL GARRAFA VIDRO 998ML", fator: 1, valor: 30.28, fatorHecto: 0.00998 },
   { codigo: "21632", descricao: "SPATEN N LN 355ML SIXPACK SH C/4", fator: 24, valor: 94.58, fatorHecto: 0.0852 },
@@ -188,9 +187,9 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "22003", descricao: "HALLS CEREJA ENVELOPE 28G CX C/21", fator: 21, valor: 21.85, fatorHecto: 0.00588 },
   { codigo: "22005", descricao: "HALLS MENTA ENVELOPE 28G CX C/21", fator: 21, valor: 21.85, fatorHecto: 0.00588 },
   { codigo: "22007", descricao: "HALLS EXTRA FORTE ENVELOPE 28G CX C/21", fator: 21, valor: 21.85, fatorHecto: 0.00588 },
-  { codigo: "22009", descricao: "CHICLETE ADAMS HORTELA CAIXINHA 2,8G CX C/100", fator: 100, valor: 18.65, fatorHecto: 0 },
+  { codigo: "22009", descricao: "CHICLETE ADAMS HORTELA CAIXINHA 2,8G CX C/100", fator: 100, valor: 18.65, fatorHecto: 0.0 },
   { codigo: "22027", descricao: "COLORADO APPIA LT SLEEK 350ML C8 CX CARTAO NPAL", fator: 8, valor: 35.00, fatorHecto: 0.028 },
-  { codigo: "22106", descricao: "MINI OREO PCT 35G CX C/10", fator: 10, valor: 18.07, fatorHecto: 0 },
+  { codigo: "22106", descricao: "MINI OREO PCT 35G CX C/10", fator: 10, valor: 18.07, fatorHecto: 0.0 },
   { codigo: "22180", descricao: "BUDWEISER ZERO LONG NECK 330ML SIX-PACK SHRINK C/4", fator: 24, valor: 86.52, fatorHecto: 0.0792 },
   { codigo: "22200", descricao: "TONICA ANTARCTICA PET 1 L SH C/06", fator: 6, valor: 27.31, fatorHecto: 0.06 },
   { codigo: "22202", descricao: "TONICA ANTARCTICA ZERO PET 1L SH C/06", fator: 6, valor: 25.67, fatorHecto: 0.06 },
@@ -198,7 +197,7 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "22330", descricao: "MENDORATO PCT 27G CX C/60", fator: 60, valor: 26.53, fatorHecto: 0.0162 },
   { codigo: "22562", descricao: "DOMECQ COQ. COMPOSTO GARRAFA VIDRO 1 L", fator: 1, valor: 42.19, fatorHecto: 0.01 },
   { codigo: "23028", descricao: "BUCHANANS WHISKY DELUXE 12 ANOS GARRAFA VIDRO 1 L", fator: 1, valor: 180.86, fatorHecto: 0.01 },
-  { codigo: "29926", descricao: "JOHNNIE WALKER BLACK LABEL WHISKY ICONS GARRAFA VIDRO 1 L", fator: 1, valor: 177.42, fatorHecto: 0.01 },
+  { codigo: "29926", descricao: "JOHNNIE  WALKER BLACK LABEL WHISKY ICONS GARRAFA VIDRO 1 L", fator: 1, valor: 177.42, fatorHecto: 0.01 },
   { codigo: "23184", descricao: "PITU AGUARDENTE LT 350ML CX C/12", fator: 12, valor: 48.03, fatorHecto: 0.042 },
   { codigo: "23246", descricao: "PIRACANJUBA LEITE CONDENSADO TETRAPAK 395G CX C/27", fator: 27, valor: 120.96, fatorHecto: 0.11 },
   { codigo: "23256", descricao: "PIRACANJUBA CREME DE LEITE TETRAPAK 200G CX C/27", fator: 27, valor: 72.63, fatorHecto: 0.05 },
@@ -216,7 +215,7 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "24410", descricao: "QUINTA DO MORGADO VINHO BRANCO SUAVE GFA VD 750 ML", fator: 1, valor: 16.00, fatorHecto: 0.0075 },
   { codigo: "24479", descricao: "BOHEMIA LONG NECK 330ML SIX-PACK SHRINK C/4", fator: 24, valor: 78.42, fatorHecto: 0.0792 },
   { codigo: "25151", descricao: "OLD PARR WHISKY GFA VDR 1L", fator: 1, valor: 108.92, fatorHecto: 0.01 },
-  { codigo: "25160", descricao: "BLACK & WHITE WHISKY GFA VDR 1L", fator: 1, valor: 44.51, fatorHecto: 0.01 },
+  { codigo: "25160", descricao: "BLACK & WHITE WHISKY GFA VDR 1L", fator: 1, valor: 53.00, fatorHecto: 0.01 },
   { codigo: "25178", descricao: "51 ICE LIMAO GARRAFA VD 275ML CX C24", fator: 24, valor: 100.48, fatorHecto: 0.066 },
   { codigo: "25194", descricao: "CACHACA 51 LT 350ML CX C/12", fator: 12, valor: 29.82, fatorHecto: 0.042 },
   { codigo: "25220", descricao: "CACHACA 51 PIRASS OURO DESCARTAVEL GFA DE VDRO 965ML", fator: 1, valor: 12.30, fatorHecto: 0.01 },
@@ -233,8 +232,8 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "27686", descricao: "MIKES HARD LEMONADE N LONG NECK 275ML SIX PACK SH C/4", fator: 24, valor: 126.46, fatorHecto: 0.066 },
   { codigo: "27866", descricao: "CORONA CERO SUNBREW N LONG NECK 330 ML SP BASKET CX C4", fator: 24, valor: 119.80, fatorHecto: 0.0792 },
   { codigo: "28137", descricao: "SKOL BEATS CAIPIRINHA LT 269ML CX CARTAO C/8 NPAL", fator: 8, valor: 32.58, fatorHecto: 0.02152 },
-  { codigo: "28203", descricao: "BUBBALOO MORANGO DISPLAY 300G", fator: 1, valor: 11.31, fatorHecto: 0 },
-  { codigo: "28204", descricao: "BUBBALOO UVA DISPLAY 300G", fator: 1, valor: 10.99, fatorHecto: 0 },
+  { codigo: "28203", descricao: "BUBBALOO MORANGO DISPLAY 300G", fator: 1, valor: 11.31, fatorHecto: 0.0 },
+  { codigo: "28204", descricao: "BUBBALOO UVA DISPLAY 300G", fator: 1, valor: 10.99, fatorHecto: 0.0 },
   { codigo: "29197", descricao: "TANG REFRESCO EM PO LIMAO PCT 18G DP C/18", fator: 18, valor: 13.38, fatorHecto: 0.00324 },
   { codigo: "29199", descricao: "TANG REFRESCO EM PO LARANJA PCT 18G DP C/18", fator: 18, valor: 13.37, fatorHecto: 0.00324 },
   { codigo: "29201", descricao: "TANG REFRESCO EM PO ABACAXI PCT 18G DP C/18", fator: 18, valor: 13.38, fatorHecto: 0.00324 },
@@ -250,30 +249,30 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "29580", descricao: "STELLA ARTOIS PURE GOLD LONG NECK 330ML SP SH C/4", fator: 24, valor: 106.95, fatorHecto: 0.0792 },
   { codigo: "29845", descricao: "PEPSI BLACK PET 1 L SH C/12", fator: 12, valor: 34.44, fatorHecto: 0.12 },
   { codigo: "30045", descricao: "RED BULL BR LATA 473ML CX C 12", fator: 12, valor: 96.18, fatorHecto: 0.05676 },
-  { codigo: "30852", descricao: "BUBBALOO BALA TUTTI FRUTI DISPLAY 15G CX/12", fator: 12, valor: 14.00, fatorHecto: 0 },
-  { codigo: "30854", descricao: "BUBBALOO BALA MIX DISPLAY 15G CX/12", fator: 12, valor: 14.00, fatorHecto: 0 },
+  { codigo: "30852", descricao: "BUBBALOO BALA TUTTI FRUTI DISPLAY 15G CX/12", fator: 12, valor: 14.00, fatorHecto: 0.0 },
+  { codigo: "30854", descricao: "BUBBALOO BALA MIX DISPLAY 15G CX/12", fator: 12, valor: 14.00, fatorHecto: 0.0 },
   { codigo: "31064", descricao: "BUDWEISER LT 269ML SH C 15", fator: 15, valor: 33.68, fatorHecto: 0.04035 },
   { codigo: "31272", descricao: "FUSION LT 473ML SH C/12 NPAL", fator: 12, valor: 45.00, fatorHecto: 0.05676 },
   { codigo: "32067", descricao: "GATORADE BERRY BLUE PET 500ML SIXPACK", fator: 6, valor: 22.72, fatorHecto: 0.03 },
   { codigo: "32126", descricao: "AMINDUS GRELHADITOS AMEND. TOR. S/ PELE PCT 24G FD C/60", fator: 60, valor: 26.53, fatorHecto: 0.0144 },
-  { codigo: "32128", descricao: "PACOQUITA QUADRADA PCT PL 18G DSP C/24", fator: 24, valor: 10.01, fatorHecto: 0 },
+  { codigo: "32128", descricao: "PACOQUITA QUADRADA PCT PL 18G DSP C/24", fator: 24, valor: 10.01, fatorHecto: 0.0 },
   { codigo: "32131", descricao: "PACOQUITA ROLHA EMBALADA PCT 15G PT/50", fator: 50, valor: 18.35, fatorHecto: 0.01 },
-  { codigo: "32155", descricao: "PACOQUITA ZERO QUADRADA PCT PL 18G DSP C/24", fator: 24, valor: 21.25, fatorHecto: 0 },
+  { codigo: "32155", descricao: "PACOQUITA ZERO QUADRADA PCT PL 18G DSP C/24", fator: 24, valor: 21.25, fatorHecto: 0.0 },
   { codigo: "32349", descricao: "BEATS TROPICAL LT 269ML CX CARTAO C/8 NPAL", fator: 8, valor: 32.12, fatorHecto: 0.02152 },
   { codigo: "32361", descricao: "BEATS TROPICAL LONG NECK 269ML SIX-PACK SH C/4", fator: 24, valor: 123.34, fatorHecto: 0.06456 },
   { codigo: "32425", descricao: "FUSION MELANCIA LT 473ML SH C/12 NPAL", fator: 12, valor: 51.48, fatorHecto: 0.05676 },
   { codigo: "32427", descricao: "FUSION TROPICAL LT 473ML SH C/12 NPAL", fator: 12, valor: 45.00, fatorHecto: 0.05676 },
   { codigo: "32644", descricao: "BUBBALOO UVA DISPLAY 5G CX/60", fator: 60, valor: 12.44, fatorHecto: 0.003 },
-  { codigo: "32646", descricao: "BUBBALOO TUTTI FRUTTI DISPLAY 5G CX/60", fator: 60, valor: 12.44, fatorHecto: 0 },
+  { codigo: "32646", descricao: "BUBBALOO TUTTI FRUTTI DISPLAY 5G CX/60", fator: 60, valor: 12.44, fatorHecto: 0.0 },
   { codigo: "32648", descricao: "BUBBALOO MORANGO DISPLAY 5G CX/60", fator: 60, valor: 12.44, fatorHecto: 0.003 },
   { codigo: "33109", descricao: "51 OURO AGUARDENTE COMPOSTA LT 350ML CX C/12", fator: 12, valor: 50.02, fatorHecto: 0.042 },
   { codigo: "33734", descricao: "BEATS RED MIX LT 269ML SH C/8", fator: 8, valor: 35.29, fatorHecto: 0.02152 },
   { codigo: "33738", descricao: "BEATS RED MIX LONG NECK 269ML SIX-PACK SH C/2", fator: 12, valor: 67.23, fatorHecto: 0.03228 },
   { codigo: "22859", descricao: "PIRAQUE LEITE MALTADO PCT 160G CX C/40", fator: 40, valor: 140.00, fatorHecto: 0.06 },
   { codigo: "22860", descricao: "PIRAQUE BISC AGUA GERGELIM PCT 240G CX C/40", fator: 40, valor: 70.00, fatorHecto: 0.1 },
-  { codigo: "22871", descricao: "PIRAQUE ROLAD. GOIABA PCT 75G CX C/40", fator: 40, valor: 120.80, fatorHecto: 0.03 },
-  { codigo: "22876", descricao: "PIRAQUE SALG QUEIJINHO PCT 100G CX C/20", fator: 20, valor: 50.00, fatorHecto: 0.02 },
-  { codigo: "24184", descricao: "PIRAQUE MALTADO COBERTO PCT 80G CX C/40", fator: 40, valor: 120.80, fatorHecto: 0.03 },
+  { codigo: "22871", descricao: "PIRAQUE ROLADINHO GOIABA PCT 75G CX C/40", fator: 40, valor: 120.80, fatorHecto: 0.03 },
+  { codigo: "22876", descricao: "PIRAQUE BISC SALG QUEIJINHO PCT 100G CX C/20", fator: 20, valor: 50.00, fatorHecto: 0.02 },
+  { codigo: "24184", descricao: "PIRAQUE MALTADO COBERTO CHOCOLATE PCT 80G CX C/40", fator: 40, valor: 120.80, fatorHecto: 0.03 },
   { codigo: "30132", descricao: "VITARELLA BISC MARIA TRADICIONAL PCT 350G CX 24", fator: 24, valor: 70.00, fatorHecto: 0.08 },
   { codigo: "30134", descricao: "VITARELLA BISC MAIZENA TRADICIONAL PCT 350G CX 24", fator: 24, valor: 70.00, fatorHecto: 0.08 },
   { codigo: "30136", descricao: "VITARELLA CREAM CRACKER TRADICIONAL PCT 350G CX 24", fator: 24, valor: 89.75, fatorHecto: 0.08 },
@@ -283,7 +282,7 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "30220", descricao: "PIRAQUE NEWAFER CHOCOLATE PCT PLAST 100G CX/20", fator: 20, valor: 50.60, fatorHecto: 0.02 },
   { codigo: "30440", descricao: "ISABELA BISCOITO SABOR LEITE PCT 350G CX 24", fator: 24, valor: 70.00, fatorHecto: 0.08 },
   { codigo: "32036", descricao: "PIRAQUE MAIZENA PCT PLAST 175G C48", fator: 48, valor: 94.08, fatorHecto: 0.08 },
-  { codigo: "32754", descricao: "PIRAQUE BISC DOCE C/ LEITE MALT BLACK PCT PLAST 132G C50", fator: 50, valor: 159.00, fatorHecto: 0.07 },
+  { codigo: "32754", descricao: "PIRAQUE BISC LEITE MALTADO BLACK PCT PLAST 132G C50", fator: 50, valor: 159.00, fatorHecto: 0.07 },
   { codigo: "34681", descricao: "PIRAQUE RECH PRETTY PCT 76G CX40", fator: 40, valor: 65.00, fatorHecto: 0.03 },
   { codigo: "34683", descricao: "PIRAQUE RECH LIMAO PCT 76G CX40", fator: 40, valor: 90.00, fatorHecto: 0.03 },
   { codigo: "34685", descricao: "PIRAQUE RECH CHOCOLATE PCT 76G CX40", fator: 40, valor: 90.00, fatorHecto: 0.03 },
@@ -314,7 +313,7 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "34479", descricao: "ELEVE AGUA MIN S GAS PET 1,5 SHRINK C/6", fator: 6, valor: 13.42, fatorHecto: 0.09 },
   { codigo: "34770", descricao: "RED BULL SUGAR FREE POMELO LATA 250ML FOUR PACK NPAL", fator: 4, valor: 31.96, fatorHecto: 0.01 },
   { codigo: "35003", descricao: "TRIDENT XFRESH 5S PRETO CEREJA ENVELOPE 8G CX C/21", fator: 21, valor: 34.04, fatorHecto: 0.00168 },
-  { codigo: "371", descricao: "MALZBIER BRAHMA LONG NECK 355ML SIX-PACK BANDEJA C/4", fator: 24, valor: 115.80, fatorHecto: 0.0852 },
+  { codigo: "371", descricao: "MALZBIER BRAHMA LONG NECK 355ML SIX-PACK BANDEJA C/4", fator: 24, valor: 71.36, fatorHecto: 0.0852 },
   { codigo: "1164", descricao: "SUKITA UVA LATA 350ML SH C/12 NPAL", fator: 12, valor: 25.00, fatorHecto: 0.042 },
   { codigo: "8411", descricao: "GUARANA CHP ANTARCTICA PET 1,5 SHRINK C/6", fator: 6, valor: 25.00, fatorHecto: 0.09 },
   { codigo: "18752", descricao: "PATAGONIA WEISSE NACIONAL ONE WAY 740ML CX6", fator: 6, valor: 71.96, fatorHecto: 0.0444 },
@@ -332,9 +331,9 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "34529", descricao: "YPE TIXAN LAVA ROUPAS LIQ MACIEZ FRASCO PLAST 1L CX12", fator: 12, valor: 120.60, fatorHecto: 0.12 },
   { codigo: "31713", descricao: "YPE AMACIANTE CONC PINK FRASCO PLAST 500ML CX/12", fator: 12, valor: 86.21, fatorHecto: 0.06 },
   { codigo: "31789", descricao: "YPE AMACIANTE TRADICIONAL ACONCHEGO FRASCO PLASTICO 2 L CX6", fator: 6, valor: 47.68, fatorHecto: 0.12 },
-  { codigo: "34890", descricao: "YPE ASSOLAN ESPONJA LA ACO CX PAPEL CART 1,6KG LEVE 20 PAG 18", fator: 1, valor: 25.00, fatorHecto: 0.016 },
+  { codigo: "34890", descricao: "YPE ASSOLAN ESPONJA LA ACO CX PAPEL CART 1,6KG LEVE 20 PAG 1", fator: 1, valor: 25.00, fatorHecto: 0.016 },
   { codigo: "31805", descricao: "YPE TIXAN LAVA ROUPAS LIQ PRIMAVERA FRASCO PLAST 1 L CX12", fator: 12, valor: 120.60, fatorHecto: 0.12 },
-  { codigo: "34527", descricao: "YPE AMACIANTE TRADICIONAL ACONCHEGO FRASCO PLASTICO 500 ML C24", fator: 24, valor: 62.51, fatorHecto: 0.12 },
+  { codigo: "34527", descricao: "YPE AMACIANTE TRADICIONAL ACONCHEGO FRASCO PLASTICO 500 ML C", fator: 24, valor: 62.51, fatorHecto: 0.12 },
   { codigo: "31708", descricao: "YPE AMACIANTE CONC BLUE GARDEN FRASCO PLAST 500ML CX/12", fator: 12, valor: 83.80, fatorHecto: 0.06 },
   { codigo: "34320", descricao: "GUARANA ANTARCTICA ZERO LATA 350ML SH C/12 NPAL MULTIPACK", fator: 12, valor: 35.88, fatorHecto: 0.042 },
   { codigo: "34432", descricao: "RED BULL TROPICAL BR LATA 473ML CX C 12", fator: 12, valor: 140.44, fatorHecto: 0.05676 },
@@ -369,11 +368,11 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "13203", descricao: "ANTARCTICA PILSEN GFA VD 300ML CX C/23", fator: 23, valor: 53.90, fatorHecto: 0.069 },
   { codigo: "33818", descricao: "ORIGINAL LATA 350ML SHRINK C/12 MULTPACK", fator: 12, valor: 37.58, fatorHecto: 0.042 },
   { codigo: "9427", descricao: "ANTARCTICA PILSEN LT 473ML SH C/12 NPAL", fator: 12, valor: 45.90, fatorHecto: 0.05676 },
-  { codigo: "37576", descricao: "DOCES VIEIRA PE DE MOCA PCT PLAST 23G POTE C/40", fator: 40, valor: 40.91, fatorHecto: 0.0092 },
-  { codigo: "37579", descricao: "DOCES VIEIRA BEIJO DE LEITE PCT PLAST 23G POTE C/40", fator: 40, valor: 51.03, fatorHecto: 0.0092 },
-  { codigo: "37580", descricao: "DOCES VIEIRA CHURRITOS PCT PLAST 23G POTE C/40", fator: 40, valor: 48.90, fatorHecto: 0.0092 },
-  { codigo: "37581", descricao: "DOCES VIEIRA COCADA BAIANA PCT PLAST 23G POTE C/40", fator: 40, valor: 51.03, fatorHecto: 0.0092 },
-  { codigo: "37582", descricao: "DOCES VIEIRA COCADA BRANCA PCT PLAST 23G POTE C/40", fator: 40, valor: 48.90, fatorHecto: 0.0092 },
+  { codigo: "37576", descricao: "DOCES VIEIRA PE DE MOCA PCT PLAST 23G POTE C/40", fator: 40, valor: 32.80, fatorHecto: 0.0092 },
+  { codigo: "37579", descricao: "DOCES VIEIRA BEIJO DE LEITE PCT PLAST 23G POTE C/40", fator: 40, valor: 39.20, fatorHecto: 0.0092 },
+  { codigo: "37580", descricao: "DOCES VIEIRA CHURRITOS PCT PLAST 23G POTE C/40", fator: 40, valor: 39.20, fatorHecto: 0.0092 },
+  { codigo: "37581", descricao: "DOCES VIEIRA COCADA BAIANA PCT PLAST 23G POTE C/40", fator: 40, valor: 39.20, fatorHecto: 0.0092 },
+  { codigo: "37582", descricao: "DOCES VIEIRA COCADA BRANCA PCT PLAST 23G POTE C/40", fator: 40, valor: 39.20, fatorHecto: 0.0092 },
   { codigo: "37583", descricao: "DOCES VIEIRA BEIJO DE MOCA PCT PLAST 23G POTE C/40", fator: 40, valor: 39.20, fatorHecto: 0.0092 },
   { codigo: "23671", descricao: "CERVEGELA PLASTICA BRAHMA 1 UN P/ GFA 1L CX C/3", fator: 3, valor: 51.77, fatorHecto: 0.03 },
   { codigo: "23672", descricao: "CERVEGELA PLASTICA BRAHMA 1 UN P/ GFA 600ML CX C/3", fator: 3, valor: 51.77, fatorHecto: 0.018 },
@@ -381,7 +380,7 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "29418", descricao: "CERVEGELA BUDWEISER LITRAO 1 UN P/ GF 1L PACK C3", fator: 3, valor: 51.77, fatorHecto: 0.03 },
   { codigo: "24604", descricao: "MINALBA AGUA PREMIUM C/GAS GFA VDR 300ML CX/12", fator: 12, valor: 56.70, fatorHecto: 0.036 },
   { codigo: "24609", descricao: "MINALBA AGUA PREMIUM S/GAS GFA VDR 300ML CX/12", fator: 12, valor: 49.00, fatorHecto: 0.036 },
-  { codigo: "37933", descricao: "DOCES VIEIRA BRIGADEIRO PCT PLAST 23G POTE C/40", fator: 40, valor: 48.90, fatorHecto: 0.0092 },
+  { codigo: "37933", descricao: "DOCES VIEIRA BRIGADEIRO PCT PLAST 23G POTE C/40", fator: 40, valor: 39.20, fatorHecto: 0.0092 },
   { codigo: "34454", descricao: "H2OH LIMONETO LT SLEEK 350ML SH C 12", fator: 12, valor: 33.60, fatorHecto: 0.042 },
   { codigo: "1708", descricao: "GUARANA ANTARCTICA ZERO PET 2,5L CAIXA C/6", fator: 6, valor: 48.00, fatorHecto: 0.15 },
   { codigo: "25303", descricao: "GARRAFEIRA PL. PRETO BEES 1 UN P/24 GFA 600ML", fator: 1, valor: 31.16, fatorHecto: 0.006 },
@@ -394,7 +393,49 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "22188", descricao: "BUDWEISER ZERO LONG NECK 330ML SIX-PACK CX C/24", fator: 24, valor: 86.52, fatorHecto: 0.0792 },
   { codigo: "28538", descricao: "STELLA ARTOIS 600ML", fator: 12, valor: 64.71, fatorHecto: 0.072 },
   { codigo: "33828", descricao: "BRAHMA CHOPP LT 350ML SH C/12 NP MULTIPK", fator: 12, valor: 34.90, fatorHecto: 0.042 },
-  { codigo: "33212", descricao: "SKOL BEATS SENSES PET 1 L SH C/06", fator: 6, valor: 75.36, fatorHecto: 0.06 }
+  { codigo: "33212", descricao: "SKOL BEATS SENSES PET 1 L SH C/06", fator: 6, valor: 75.36, fatorHecto: 0.06 },
+  { codigo: "1232", descricao: "SUKITA UVA PET 2L CAIXA C/8", fator: 8, valor: 27.78, fatorHecto: 0.16 },
+  { codigo: "2104", descricao: "BRAHMA FRESH GFA VD 1L", fator: 12, valor: 35.45, fatorHecto: 0.12 },
+  { codigo: "9088", descricao: "SODA LIMONADA ANTARCTICA DIET LATA 350ML SH C/12 NPAL", fator: 12, valor: 35.76, fatorHecto: 0.042 },
+  { codigo: "10949", descricao: "AGUA MINERAL PETROPOLIS S/GAS PET 1,5 SHRINK C/6", fator: 6, valor: 19.00, fatorHecto: 0.09 },
+  { codigo: "19305", descricao: "TONICA ANTARCTICA ZERO LT 269ML SH C/15", fator: 15, valor: 26.00, fatorHecto: 0.04035 },
+  { codigo: "20647", descricao: "BRAHMA DUPLO MALTE LT 269ML SH C15 NPAL", fator: 15, valor: 25.81, fatorHecto: 0.04035 },
+  { codigo: "21025", descricao: "COLORADO APPIA LATA XSLEEK 410ML CX C12", fator: 12, valor: 62.20, fatorHecto: 0.0492 },
+  { codigo: "21422", descricao: "BOHEMIA NOVA EMBALAGEM 600ML NE MG", fator: 12, valor: 71.08, fatorHecto: 0.072 },
+  { codigo: "21786", descricao: "MONTILLA CARTA BRANCA GARRAFA VIDRO 1 L", fator: 1, valor: 22.00, fatorHecto: 0.01 },
+  { codigo: "22783", descricao: "BUDWEISER LATA 310ML CX CARTAO C/15 MULTPACK 15", fator: 15, valor: 98.63, fatorHecto: 0.0465 },
+  { codigo: "23029", descricao: "JOHNNIE WALKER BLACK LABEL GARRAFA VIDRO 1 L", fator: 1, valor: 122.34, fatorHecto: 0.01 },
+  { codigo: "23441", descricao: "SALINAS CRISTALINA CACHACA GARRAFA VIDRO 1 L", fator: 1, valor: 29.46, fatorHecto: 0.01 },
+  { codigo: "23600", descricao: "PIRACANJUBA WHEY BEB. LACT. ZL CACAU TETRAPAK 250ML CX C/12", fator: 12, valor: 50.40, fatorHecto: 0.03 },
+  { codigo: "23602", descricao: "PIRACANJUBA WHEY BEB. LACT. ZL BAUNILHA TETRAPAK 250ML CX C/", fator: 12, valor: 50.40, fatorHecto: 0.03 },
+  { codigo: "23651", descricao: "PARATUDO RAIZES AMARGAS GARRAFA VIDRO 900ML", fator: 1, valor: 16.11, fatorHecto: 0.009 },
+  { codigo: "23673", descricao: "CERVEGELA PLASTICA SKOL 1 UN P/ GFA 1L CX C/3", fator: 3, valor: 51.77, fatorHecto: 0.03 },
+  { codigo: "23674", descricao: "CERVEGELA PLASTICA SKOL 1 UN P/ GFA 600ML CX C/3", fator: 3, valor: 51.77, fatorHecto: 0.018 },
+  { codigo: "23731", descricao: "GATORADE MELANCIA-MORANGO PET 500ML SIXPACK", fator: 6, valor: 28.00, fatorHecto: 0.03 },
+  { codigo: "25174", descricao: "51 ICE BALADA GARRAFA VD 275ML CX C24", fator: 24, valor: 116.00, fatorHecto: 0.066 },
+  { codigo: "25176", descricao: "51 ICE FRUIT MIX MORANGO + LARANJA GARRAFA VD 275ML CX C24", fator: 24, valor: 116.00, fatorHecto: 0.066 },
+  { codigo: "26099", descricao: "TRIDENT XFRESH INTENSE ENVELOPE 8G CX21_", fator: 21, valor: 37.90, fatorHecto: 0.00168 },
+  { codigo: "27704", descricao: "MIKES HARD LEMONADE PITAIA N LONG NECK 275ML SIX PACK SH C/4", fator: 24, valor: 126.76, fatorHecto: 0.066 },
+  { codigo: "31766", descricao: "YPE ASSOLAN ESPONJA LA ACO PCT 45 G CX200", fator: 200, valor: 250.35, fatorHecto: 0.09 },
+  { codigo: "32043", descricao: "YPE SABAO BARRA ALOE VERA PCT PL 900G C10", fator: 10, valor: 11.49, fatorHecto: 0.009 },
+  { codigo: "32045", descricao: "YPE SABAO BARRA FRESH PCT PL 900G C10", fator: 10, valor: 10.08, fatorHecto: 0.009 },
+  { codigo: "32473", descricao: "STELLA ARTOIS PURE GOLD LT 473ML CX CARTAO C/12", fator: 12, valor: 60.82, fatorHecto: 0.05676 },
+  { codigo: "32785", descricao: "CORONA EXTRA N ONE WAY 600ML GARRAFEIRA C/24", fator: 24, valor: 210.48, fatorHecto: 0.144 },
+  { codigo: "33239", descricao: "PIRAQUE RECH MORANGO PCT 160G CX C/30", fator: 30, valor: 76.40, fatorHecto: 0.048 },
+  { codigo: "33250", descricao: "PIRAQUE RECH CHOCOLATE PCT 160G CX C/30", fator: 30, valor: 76.40, fatorHecto: 0.048 },
+  { codigo: "33251", descricao: "PIRAQUE RECH PRETTY PCT 160G CX C/30", fator: 30, valor: 76.40, fatorHecto: 0.048 },
+  { codigo: "33252", descricao: "PIRAQUE RECH LIMAO PCT 160G CX C/30", fator: 30, valor: 76.40, fatorHecto: 0.048 },
+  { codigo: "33318", descricao: "VITARELLA NIKITO REC CHOC C MORANGO PCT 120G CX/36", fator: 36, valor: 70.00, fatorHecto: 0.0432 },
+  { codigo: "34530", descricao: "YPE AMACIANTE TRADICIONAL ACONCHEGO FRASCO PLAST 500ML", fator: 12, valor: 75.33, fatorHecto: 0.06 },
+  { codigo: "36028", descricao: "SKOL ZERO LT SLEEK 350ML SH C 12", fator: 12, valor: 34.09, fatorHecto: 0.042 },
+  { codigo: "37820", descricao: "MENDORATO AMENDOIM S PELE SALGADO PCT 24G FD C/60", fator: 60, valor: 26.53, fatorHecto: 0.0144 },
+  { codigo: "38172", descricao: "STELLA ARTOIS PURE GOLD ONE WAY 600ML CX C12 NP", fator: 12, valor: 116.55, fatorHecto: 0.072 },
+  { codigo: "38404", descricao: "CORONA EXTRA N LN 330ML SIXPACK", fator: 6, valor: 35.14, fatorHecto: 0.0198 },
+  { codigo: "38405", descricao: "BUDWEISER ZERO LN 330ML SIXPACK", fator: 6, valor: 25.24, fatorHecto: 0.0198 },
+  { codigo: "38406", descricao: "CORONA CERO SUNBREW N LN 330ML SIX-PACK", fator: 6, valor: 34.14, fatorHecto: 0.0198 },
+  { codigo: "38418", descricao: "HALLS BLUEBERRY ENVELOPE 28G CX C/21", fator: 21, valor: 26.77, fatorHecto: 0.00588 },
+  { codigo: "39024", descricao: "STELLA ARTOIS PURE GOLD LN 330ML SIXPACK", fator: 6, valor: 30.64, fatorHecto: 0.0198 },
+  { codigo: "39025", descricao: "MICHELOB ULTRA N LN 330ML SIXPACK", fator: 6, valor: 28.24, fatorHecto: 0.0198 }
 ];
 
 let cachedProducts: ProductInfo[] | null = null;
@@ -428,33 +469,59 @@ export function extractFatorFromDescricao(descricao: string): number {
   return 12; // Standard default
 }
 
+export const CATALOG_VERSION = "2026_09_24_v2";
+
 export const getProductsDatabase = (): ProductInfo[] => {
   if (cachedProducts) return cachedProducts;
   if (typeof window === "undefined") {
     return DEFAULT_PRODUCT_DATABASE;
   }
+  const currentVersion = localStorage.getItem("sstr_products_catalog_version");
+  const isOutdated = currentVersion !== CATALOG_VERSION;
+
   const saved = localStorage.getItem("sstr_products_database");
   if (saved) {
     try {
       const parsed = JSON.parse(saved) as ProductInfo[];
       if (Array.isArray(parsed) && parsed.length > 0) {
-        // Merge defaults to ensure no new products are missing
+        // Merge defaults to ensure catalog updates take effect while custom products are preserved
         const mergedMap = new Map<string, ProductInfo>();
         DEFAULT_PRODUCT_DATABASE.forEach(p => mergedMap.set(p.codigo, p));
         parsed.forEach(p => {
           if (p && p.codigo) {
             const defaultItem = mergedMap.get(p.codigo);
-            mergedMap.set(p.codigo, {
-              ...defaultItem,
-              ...p,
-              fator: p.fator && p.fator > 0 ? p.fator : (defaultItem?.fator || extractFatorFromDescricao(p.descricao)),
-              valor: p.valor && p.valor > 0 ? p.valor : (defaultItem?.valor || 0),
-              fatorHecto: p.fatorHecto && p.fatorHecto > 0 ? p.fatorHecto : (defaultItem?.fatorHecto || 0.04)
-            });
+            if (defaultItem) {
+              // If catalog updated, use official defaultItem valor; otherwise keep custom if set
+              const finalVal = isOutdated 
+                ? defaultItem.valor 
+                : (p.valor && p.valor > 0 ? p.valor : defaultItem.valor);
+              mergedMap.set(p.codigo, {
+                ...defaultItem,
+                ...p,
+                valor: finalVal,
+                descricao: defaultItem.descricao || p.descricao,
+                fator: p.fator && p.fator > 0 ? p.fator : defaultItem.fator,
+                fatorHecto: p.fatorHecto && p.fatorHecto > 0 ? p.fatorHecto : defaultItem.fatorHecto
+              });
+            } else {
+              // Custom user-created product
+              mergedMap.set(p.codigo, {
+                ...p,
+                fator: p.fator && p.fator > 0 ? p.fator : extractFatorFromDescricao(p.descricao || ""),
+                valor: p.valor || 0,
+                fatorHecto: p.fatorHecto || 0.04
+              });
+            }
           }
         });
         const mergedList = Array.from(mergedMap.values());
         cachedProducts = mergedList;
+        if (isOutdated) {
+          safeSaveProducts("sstr_products_database", JSON.stringify(mergedList));
+          try {
+            localStorage.setItem("sstr_products_catalog_version", CATALOG_VERSION);
+          } catch (e) {}
+        }
         return mergedList;
       }
     } catch (e) {
@@ -463,6 +530,9 @@ export const getProductsDatabase = (): ProductInfo[] => {
   }
   
   safeSaveProducts("sstr_products_database", JSON.stringify(DEFAULT_PRODUCT_DATABASE));
+  try {
+    localStorage.setItem("sstr_products_catalog_version", CATALOG_VERSION);
+  } catch (e) {}
   cachedProducts = DEFAULT_PRODUCT_DATABASE;
   return DEFAULT_PRODUCT_DATABASE;
 };
@@ -663,11 +733,16 @@ export function calculateItemValue(item: {
   const um = (item.unidadeMedida || item.um || "").trim().toLowerCase();
   const itemsPerBox = prod?.fator || prod?.embalagem || item.fatorEmbalagem || 12;
   const isIndividualUnit = um === "un" || um === "und" || um === "unidade" || um === "unidades" || um === "gfa" || um === "lata" || um === "pet" || um === "u.m.";
+  const isDozen = um === "dz" || um === "duzia" || um === "dúzia";
 
   // 1. PRIMARY AUTHORITY: Official registered price in product catalog (Guia de Cadastros de Produto)
   if (prod && prod.valor && prod.valor > 0) {
     if (isIndividualUnit) {
       const unitPrice = prod.valor / Math.max(1, itemsPerBox);
+      return Number((unitPrice * qty).toFixed(2));
+    }
+    if (isDozen) {
+      const unitPrice = (prod.valor / Math.max(1, itemsPerBox)) * 12;
       return Number((unitPrice * qty).toFixed(2));
     }
     return Number((prod.valor * qty).toFixed(2));
@@ -677,6 +752,14 @@ export function calculateItemValue(item: {
   const customP = item.customUnitPrice || item.precoSugerido;
   if (customP && customP > 0) {
     if (customP <= 350) {
+      if (isIndividualUnit) {
+        const unitPrice = (customP > 15 && itemsPerBox > 1) ? (customP / Math.max(1, itemsPerBox)) : customP;
+        return Number((unitPrice * qty).toFixed(2));
+      }
+      if (isDozen) {
+        const unitPrice = (customP / Math.max(1, itemsPerBox)) * 12;
+        return Number((unitPrice * qty).toFixed(2));
+      }
       return Number((customP * qty).toFixed(2));
     }
   }
@@ -687,7 +770,14 @@ export function calculateItemValue(item: {
     }
   }
 
-  return Number((52.00 * qty).toFixed(2));
+  const defaultBoxPrice = 52.00;
+  if (isIndividualUnit) {
+    return Number(((defaultBoxPrice / Math.max(1, itemsPerBox)) * qty).toFixed(2));
+  }
+  if (isDozen) {
+    return Number((((defaultBoxPrice / Math.max(1, itemsPerBox)) * 12) * qty).toFixed(2));
+  }
+  return Number((defaultBoxPrice * qty).toFixed(2));
 }
 
 export function calculateHectolitros(codigo: string, quantidade: number, um: string = "cx"): number {

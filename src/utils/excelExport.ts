@@ -1,7 +1,7 @@
 import * as XLSX from "xlsx";
 import { ExchangeRecord, PendingRequest, calculateValeRateio, isDriverX } from "../types";
 import { ValeEntry } from "../components/ValesHistoryDashboard";
-import { PRODUCT_DATABASE, calculateRequestValueAndHL } from "../data/products";
+import { PRODUCT_DATABASE, calculateRequestValueAndHL, calculateItemValue, calculateItemHL } from "../data/products";
 import { getHectoFactor, getRecordHL } from "./hectoFactors";
 import { isRequestWithVale } from "./valeCheck";
 import { getPdvDatabase } from "../data/pdvData";
@@ -315,8 +315,81 @@ export function exportValesPacotePrejuizoExcel(vales: any[], filenamePrefix = "p
 }
 
 /**
- * Exports the filtered requests database with exact period, financial,
- * and voucher (vale) tracking information to an Excel (.xlsx) file.
+ * Helper to resolve accurate client registration (Fantasia, Razão, Documento)
+ * using local PDV catalog, historical Promax cache, and direct request metadata.
+ */
+function resolveClientInfo(
+  nb: string | undefined,
+  reqCliente?: string,
+  promaxRecords: ExchangeRecord[] = []
+): { codigoNb: string; nomeFantasia: string; razaoSocial: string; doc: string } {
+  const pdvDb = getPdvDatabase();
+  const cleanNb = String(nb || "").trim();
+
+  let nomeFantasia = "";
+  let razaoSocial = "";
+  let doc = "";
+
+  // 1. Direct match or numeric match in PDV database
+  if (cleanNb) {
+    if (pdvDb[cleanNb]) {
+      nomeFantasia = pdvDb[cleanNb].nomeFantasia || "";
+      razaoSocial = pdvDb[cleanNb].razaoSocial || "";
+      doc = pdvDb[cleanNb].documento || "";
+    } else {
+      const nbAsNum = parseInt(cleanNb, 10);
+      if (!isNaN(nbAsNum)) {
+        const foundKey = Object.keys(pdvDb).find(k => parseInt(k, 10) === nbAsNum);
+        if (foundKey && pdvDb[foundKey]) {
+          nomeFantasia = pdvDb[foundKey].nomeFantasia || "";
+          razaoSocial = pdvDb[foundKey].razaoSocial || "";
+          doc = pdvDb[foundKey].documento || "";
+        }
+      }
+    }
+  }
+
+  // 2. Historical Promax records lookup
+  if (!nomeFantasia && cleanNb) {
+    const matchingRecord = promaxRecords.find(r => {
+      const recCd = String(r.codigoCliente || "").trim();
+      if (recCd === cleanNb) return true;
+      const recAsNum = parseInt(recCd, 10);
+      const nbAsNum = parseInt(cleanNb, 10);
+      return !isNaN(recAsNum) && !isNaN(nbAsNum) && recAsNum === nbAsNum;
+    });
+
+    if (matchingRecord && matchingRecord.nomeCliente) {
+      nomeFantasia = matchingRecord.nomeCliente;
+      razaoSocial = matchingRecord.nomeCliente;
+      doc = (matchingRecord as any).cpfCnpj || (matchingRecord as any).documento || "";
+    }
+  }
+
+  // 3. Direct informed name on request
+  if (!nomeFantasia && reqCliente && reqCliente.trim()) {
+    nomeFantasia = reqCliente.trim();
+    razaoSocial = reqCliente.trim();
+  }
+
+  // 4. Professional fallback
+  if (!nomeFantasia) {
+    nomeFantasia = cleanNb ? `CLIENTE PARCEIRO (#${cleanNb})` : "CLIENTE NÃO INFORMADO";
+    razaoSocial = nomeFantasia;
+  }
+
+  return {
+    codigoNb: cleanNb || "-",
+    nomeFantasia: nomeFantasia || "-",
+    razaoSocial: razaoSocial || nomeFantasia || "-",
+    doc: doc || "-"
+  };
+}
+
+/**
+ * Exports the filtered requests database with exact client-level breakdown,
+ * itemized per product/SKU (one row per item), with unit price, total value,
+ * unit of measure (UN/CX/DZ), reason (avaria/falta), date, and sector.
  */
 export function exportFilteredRequestsExcel(
   requests: PendingRequest[],
@@ -336,111 +409,286 @@ export function exportFilteredRequestsExcel(
     return;
   }
 
-  const data = requests.map((req) => {
+  // Flatten and expand every request into item-level rows with full client context
+  const itemRows: any[] = [];
+
+  // Summary aggregation by client NB for Sheet 2
+  const clientSummaryMap: Record<string, {
+    codigoNb: string;
+    nomeFantasia: string;
+    razaoSocial: string;
+    setor: string;
+    solicitacoesCount: Set<string>;
+    totalItens: number;
+    totalQuantidade: number;
+    totalValor: number;
+    totalHl: number;
+    comValeCount: number;
+    semValeCount: number;
+  }> = {};
+
+  for (const req of requests) {
     const hasVale = isRequestWithVale(req, valesList);
-    const { valorTotal, hectolitros } = calculateRequestValueAndHL(req, promaxRecords);
-    
-    // Resolve product / SKU info
-    let sku = req.item || req.produto || "";
-    let desc = req.descricaoProduto || req.productDesc || "";
-    let qtd = req.quantidade || 0;
-    let um = (req.unidadeMedida || (req as any).um || "CX").toUpperCase();
-
-    if (req.items && req.items.length > 0) {
-      if (req.items.length === 1) {
-        sku = req.items[0].item || req.items[0].itemCode || (req.items[0] as any).produto || sku;
-        desc = req.items[0].descricao || desc;
-        qtd = req.items[0].quantidade || qtd;
-        um = (req.items[0].unidadeMedida || um).toUpperCase();
-      } else {
-        sku = req.items.map(it => it.item || it.itemCode || (it as any).produto).filter(Boolean).join(", ");
-        desc = req.items.map(it => `${it.descricao || it.item} (${it.quantidade} ${it.unidadeMedida || "cx"})`).join(" | ");
-        qtd = req.items.reduce((acc, it) => acc + (it.quantidade || 0), 0);
-      }
-    }
-
-    if (!desc || desc === "N/A" || desc === "-") {
-      const cleanCode = String(sku).replace(/^0+/, "");
-      const prod = PRODUCT_DATABASE.find(p => p.codigo === sku || p.codigo === cleanCode);
-      if (prod && prod.descricao) {
-        desc = prod.descricao;
-      }
-    }
-
     const motivoLower = (req.motivo || "").toLowerCase();
     const isRep = motivoLower.includes("falta") || (req.items && req.items.some(it => (it.motivo || "").toLowerCase().includes("falta")));
     const cast = req as any;
     const isBaixada = !!cast.faltaBaixa || !!cast.contingenciaBaixada || cast.status === "baixado" || cast.status === "concluido" || req.statusPromax === "cadastrado";
+    const dataSol = formatExcelDate(req.data || req.cadastroDate);
+    const setorSol = req.setor || "-";
+    const nfSol = req.nf || "-";
+    const mapaSol = req.mapa || "-";
+    const motoristaSol = req.faltaMotorista || "-";
+    const ajudantesSol = req.faltaAjudantes || "-";
+    const statusPromax = req.statusPromax || "-";
+    const situacaoBaixa = isBaixada ? "Baixada" : "Pendente";
+    const statusVale = hasVale ? "COM VALE EMITIDO" : "SEM VALE";
+    const obsSol = req.observacao || "-";
 
-    const isContingencia = (!req.motivo?.toLowerCase().includes("completo") && !req.motivo?.toLowerCase().includes("fechado") && req.statusPromax !== "reprovado");
+    const clientInfo = resolveClientInfo(
+      req.nb,
+      req.cliente || cast.nomeCliente || req.nomeRecibo,
+      promaxRecords
+    );
 
-    return {
-      "Data": formatExcelDate(req.data || req.cadastroDate),
-      "Código": sku || "-",
-      "Descrição": desc || "-",
-      "Quantidade": qtd,
-      "Valor Total": Number(valorTotal.toFixed(2)),
-      "Motorista": req.faltaMotorista || "-",
-      "Ajudantes": req.faltaAjudantes || "-",
-      "Código Cliente (NB)": req.nb || "-",
-      "Nota Fiscal (NF)": req.nf || "-",
-      "Mapa": req.mapa || "-",
-      "Setor / Rota": req.setor || "-",
-      "Unidade Medida (UM)": um,
-      "Volume (HL)": Number(hectolitros.toFixed(4)),
-      "Motivo Declarado": req.motivo || "-",
-      "Tipo de Processo": isRep ? "Reposição (Falta)" : "Troca",
-      "Elegível Recibo Contingência": isContingencia ? "SIM" : "NÃO",
-      "Status Conciliação / Vales": hasVale ? "DUPLICADO NA GUIA DE VALES (VALE EMITIDO)" : "CONCILIADO - BASE PURA (SEM VALE)",
-      "Status Promax": req.statusPromax || "-",
-      "Situação da Baixa": isBaixada ? "Baixada" : "Pendente",
-      "Status do Vale": hasVale ? "COM VALE EMITIDO" : "SEM VALE",
-      "ID Vale": req.valeId || (hasVale ? "Identificado p/ Guia de Vales" : "-"),
-      "Origem Cadastro": req.cadastroRole || req.origem || "-",
-      "Usuário Cadastro": req.cadastroUser || "-",
-      "ID Solicitação": req.id,
-      "Observações": req.observacao || "-"
-    };
+    // Initialize or get client summary record
+    const clientKey = clientInfo.codigoNb !== "-" ? clientInfo.codigoNb : clientInfo.nomeFantasia;
+    if (!clientSummaryMap[clientKey]) {
+      clientSummaryMap[clientKey] = {
+        codigoNb: clientInfo.codigoNb,
+        nomeFantasia: clientInfo.nomeFantasia,
+        razaoSocial: clientInfo.razaoSocial,
+        setor: setorSol,
+        solicitacoesCount: new Set(),
+        totalItens: 0,
+        totalQuantidade: 0,
+        totalValor: 0,
+        totalHl: 0,
+        comValeCount: 0,
+        semValeCount: 0
+      };
+    }
+    clientSummaryMap[clientKey].solicitacoesCount.add(req.id);
+    if (hasVale) {
+      clientSummaryMap[clientKey].comValeCount++;
+    } else {
+      clientSummaryMap[clientKey].semValeCount++;
+    }
+
+    // Determine items inside this request card
+    const rawItems = (req.items && req.items.length > 0)
+      ? req.items
+      : [
+          {
+            id: req.id,
+            item: req.item || req.produto || "9999",
+            itemCode: req.item || req.produto || "9999",
+            descricao: req.descricaoProduto || req.productDesc || "",
+            quantidade: req.quantidade || 1,
+            unidadeMedida: req.unidadeMedida || cast.um || "CX",
+            customUnitPrice: cast.customUnitPrice,
+            precoCalculated: cast.precoCalculated,
+            motivo: req.motivo
+          }
+        ];
+
+    for (const item of rawItems) {
+      const sku = String(item.item || item.itemCode || (item as any).codigo || (item as any).produto || req.item || req.produto || "").trim();
+      let desc = item.descricao || (item as any).itemDesc || (item as any).descricaoProduto || req.descricaoProduto || req.productDesc || "";
+      const qtd = Number(item.quantidade) || 0;
+      let um = String(item.unidadeMedida || (item as any).um || req.unidadeMedida || cast.um || "CX").trim().toUpperCase();
+
+      // Normalize unit of measure string (UN, CX, DZ)
+      if (um === "UND" || um === "UNIDADE" || um === "UNIDADES" || um === "GFA" || um === "LATA" || um === "PET" || um === "U.M.") {
+        um = "UN";
+      } else if (um === "DUZIA" || um === "DUZIAS" || um === "DZ") {
+        um = "DZ";
+      } else if (um === "CAIXA" || um === "CAIXAS" || um === "PACK" || um === "FARDO" || um === "PCT" || um === "SH") {
+        um = "CX";
+      }
+
+      // Fill in description from catalog if missing or generic
+      const cleanCode = sku.replace(/^0+/, "");
+      const prod = PRODUCT_DATABASE.find(p => p.codigo === sku || p.codigo === cleanCode);
+      if (!desc || desc === "N/A" || desc === "-" || desc.toUpperCase().includes("PRODUTO NÃO")) {
+        if (prod && prod.descricao) {
+          desc = prod.descricao;
+        } else {
+          desc = "PRODUTO DIVERSO / NÃO IDENTIFICADO";
+        }
+      }
+
+      const itemsPerBox = prod?.fator || prod?.embalagem || (item as any).fatorEmbalagem || 12;
+
+      // 1. Calculate authoritative total financial value for this line item strictly matching calculateRequestValueAndHL
+      const finalItemTotal = calculateItemValue({
+        item: sku,
+        quantidade: qtd,
+        unidadeMedida: um,
+        customUnitPrice: item.customUnitPrice || cast.customUnitPrice,
+        precoCalculated: item.precoCalculated || cast.precoCalculated,
+        descricao: desc,
+        motivo: item.motivo || req.motivo
+      });
+
+      // 2. Calculate true unit price (Valor Unitário) based on unit of measure (UN, CX, DZ)
+      let itemUnitVal = 0;
+      if (qtd > 0 && finalItemTotal > 0) {
+        itemUnitVal = Number((finalItemTotal / qtd).toFixed(2));
+      } else if (prod && prod.valor && prod.valor > 0) {
+        if (um === "UN") {
+          itemUnitVal = Number((prod.valor / Math.max(1, itemsPerBox)).toFixed(2));
+        } else if (um === "DZ") {
+          itemUnitVal = Number(((prod.valor / Math.max(1, itemsPerBox)) * 12).toFixed(2));
+        } else {
+          itemUnitVal = Number(prod.valor.toFixed(2));
+        }
+      } else {
+        itemUnitVal = um === "UN" ? Number((52.00 / itemsPerBox).toFixed(2)) : 52.00;
+      }
+
+      const itemHL = calculateItemHL({
+        item: sku,
+        quantidade: qtd,
+        unidadeMedida: um,
+        descricao: desc
+      });
+
+      const itemMotivo = item.motivo || req.motivo || "Avaria / Troca";
+
+      // Aggregate into client summary
+      clientSummaryMap[clientKey].totalItens += 1;
+      clientSummaryMap[clientKey].totalQuantidade += qtd;
+      clientSummaryMap[clientKey].totalValor += finalItemTotal;
+      clientSummaryMap[clientKey].totalHl += itemHL;
+
+      itemRows.push({
+        _sortNb: clientInfo.codigoNb,
+        _sortDate: req.data || req.cadastroDate || "",
+        _sortReqId: req.id,
+        "Código NB": clientInfo.codigoNb,
+        "Nome Fantasia do Cliente": clientInfo.nomeFantasia,
+        "Razão Social do Cliente": clientInfo.razaoSocial,
+        "Cód. do Produto": sku || "-",
+        "Descrição do Produto": desc,
+        "Unidade de Medida (UM)": um,
+        "Quantidade": qtd,
+        "Valor Unitário (R$)": Number(itemUnitVal.toFixed(2)),
+        "Valor Total (R$)": Number(finalItemTotal.toFixed(2)),
+        "Data da Solicitação": dataSol,
+        "Setor / Rota RN": setorSol,
+        "Motivo (Avaria / Ocorrência)": itemMotivo,
+        "Nota Fiscal (NF)": nfSol,
+        "Mapa de Carga": mapaSol,
+        "Motorista": motoristaSol,
+        "Ajudantes / Equipe": ajudantesSol,
+        "Tipo de Processo": isRep ? "Reposição (Falta)" : "Troca",
+        "Status Promax": statusPromax,
+        "Situação da Baixa": situacaoBaixa,
+        "Status do Vale": statusVale,
+        "Volume (HL)": Number(itemHL.toFixed(4)),
+        "ID da Solicitação": req.id,
+        "Observações": obsSol
+      });
+    }
+  }
+
+  // Sort rows cleanly grouped by Client NB, then by Date and Request ID
+  itemRows.sort((a, b) => {
+    const cleanA = String(a._sortNb).replace(/\D/g, "");
+    const cleanB = String(b._sortNb).replace(/\D/g, "");
+    const nbA = cleanA ? parseInt(cleanA, 10) : 999999999;
+    const nbB = cleanB ? parseInt(cleanB, 10) : 999999999;
+
+    if (nbA !== nbB) return nbA - nbB;
+
+    // Same NB: compare by Name Fantasia
+    const nameComp = String(a["Nome Fantasia do Cliente"]).localeCompare(String(b["Nome Fantasia do Cliente"]));
+    if (nameComp !== 0) return nameComp;
+
+    // Compare by Request ID
+    return String(a._sortReqId).localeCompare(String(b._sortReqId));
   });
 
-  const worksheet = XLSX.utils.json_to_sheet(data);
+  // Remove internal sort keys before building sheet
+  const exportData = itemRows.map(({ _sortNb, _sortDate, _sortReqId, ...row }) => row);
+
+  // Build Sheet 1: Detalhamento por Cliente (Requested Table)
+  const worksheet = XLSX.utils.json_to_sheet(exportData);
 
   worksheet["!cols"] = [
-    { wch: 14 }, // Data (1ª)
-    { wch: 14 }, // Código (2ª)
-    { wch: 38 }, // Descrição (3ª)
-    { wch: 12 }, // Quantidade (4ª)
-    { wch: 16 }, // Valor Total (5ª)
-    { wch: 26 }, // Motorista
-    { wch: 26 }, // Ajudantes
-    { wch: 18 }, // Código Cliente (NB)
+    { wch: 16 }, // Código NB (1ª)
+    { wch: 38 }, // Nome Fantasia do Cliente (2ª)
+    { wch: 38 }, // Razão Social do Cliente (3ª)
+    { wch: 16 }, // Cód. do Produto (4ª)
+    { wch: 42 }, // Descrição do Produto (5ª)
+    { wch: 14 }, // Unidade de Medida (UM) (6ª)
+    { wch: 12 }, // Quantidade (7ª)
+    { wch: 16 }, // Valor Unitário (R$) (8ª)
+    { wch: 16 }, // Valor Total (R$) (9ª)
+    { wch: 16 }, // Data da Solicitação (10ª)
+    { wch: 16 }, // Setor / Rota RN (11ª)
+    { wch: 28 }, // Motivo (Avaria / Ocorrência) (12ª)
     { wch: 16 }, // Nota Fiscal (NF)
-    { wch: 14 }, // Mapa
-    { wch: 14 }, // Setor / Rota
-    { wch: 12 }, // UM
-    { wch: 14 }, // Volume HL
-    { wch: 24 }, // Motivo Declarado
-    { wch: 20 }, // Tipo Processo
-    { wch: 22 }, // Elegível Recibo Contingência
-    { wch: 34 }, // Status Conciliação / Vales
+    { wch: 14 }, // Mapa de Carga
+    { wch: 28 }, // Motorista
+    { wch: 30 }, // Ajudantes / Equipe
+    { wch: 20 }, // Tipo de Processo
     { wch: 16 }, // Status Promax
-    { wch: 16 }, // Situação Baixa
+    { wch: 16 }, // Situação da Baixa
     { wch: 20 }, // Status do Vale
-    { wch: 26 }, // ID Vale
-    { wch: 18 }, // Origem Cadastro
-    { wch: 22 }, // Usuário Cadastro
-    { wch: 26 }, // ID Solicitação
+    { wch: 14 }, // Volume (HL)
+    { wch: 28 }, // ID da Solicitação
     { wch: 40 }  // Observações
+  ];
+
+  // Build Sheet 2: Resumo Analítico por Cliente
+  const summaryRows = Object.values(clientSummaryMap).map(cs => ({
+    "Código NB": cs.codigoNb,
+    "Nome Fantasia": cs.nomeFantasia,
+    "Razão Social": cs.razaoSocial,
+    "Setor / Rota RN": cs.setor,
+    "Total Solicitações": cs.solicitacoesCount.size,
+    "Total Linhas / Itens": cs.totalItens,
+    "Quantidade de Peças": cs.totalQuantidade,
+    "Valor Total Acumulado (R$)": Number(cs.totalValor.toFixed(2)),
+    "Volume Total Acumulado (HL)": Number(cs.totalHl.toFixed(4)),
+    "Ocorrências com Vale": cs.comValeCount,
+    "Ocorrências sem Vale": cs.semValeCount
+  }));
+
+  // Sort summary by NB
+  summaryRows.sort((a, b) => {
+    const nbA = parseInt(String(a["Código NB"]).replace(/\D/g, ""), 10) || 999999999;
+    const nbB = parseInt(String(b["Código NB"]).replace(/\D/g, ""), 10) || 999999999;
+    return nbA - nbB;
+  });
+
+  const summarySheet = XLSX.utils.json_to_sheet(summaryRows);
+  summarySheet["!cols"] = [
+    { wch: 16 }, // Código NB
+    { wch: 38 }, // Nome Fantasia
+    { wch: 38 }, // Razão Social
+    { wch: 16 }, // Setor / Rota RN
+    { wch: 18 }, // Total Solicitações
+    { wch: 18 }, // Total Linhas / Itens
+    { wch: 18 }, // Quantidade de Peças
+    { wch: 22 }, // Valor Total Acumulado (R$)
+    { wch: 22 }, // Volume Total Acumulado (HL)
+    { wch: 18 }, // Ocorrências com Vale
+    { wch: 18 }  // Ocorrências sem Vale
   ];
 
   const workbook = XLSX.utils.book_new();
   const isContingenciaBase = filters.processTypeFilter === "troca_exceto_sku_fechado" || filters.processTypeFilter === "contingencia" || (filters as any).onlyContingencia;
-  const sheetTitle = isContingenciaBase ? "Base Contingências Promax" : "Base Filtrada SSTR";
-  XLSX.utils.book_append_sheet(workbook, worksheet, sheetTitle);
+  const sheet1Title = isContingenciaBase ? "Itens Contingência por Cliente" : "Detalhamento por Cliente";
+  const sheet2Title = "Resumo por Cliente";
+
+  XLSX.utils.book_append_sheet(workbook, worksheet, sheet1Title);
+  XLSX.utils.book_append_sheet(workbook, summarySheet, sheet2Title);
 
   const startStr = filters.startDate ? filters.startDate.replace(/-/g, "") : "ini";
   const endStr = filters.endDate ? filters.endDate.replace(/-/g, "") : "fim";
-  const prefix = isContingenciaBase ? "base_contingencias" : "base_filtrada_sstr";
+  const prefix = isContingenciaBase ? "base_contingencias_clientes" : "base_solicitacoes_clientes";
   const valeSuffix = filters.valeFilter === "sem_vale" ? "_SemVale_Limpas" : filters.valeFilter === "com_vale" ? "_ComVale" : "";
   const filename = `${prefix}_${startStr}_a_${endStr}${valeSuffix}.xlsx`;
 
