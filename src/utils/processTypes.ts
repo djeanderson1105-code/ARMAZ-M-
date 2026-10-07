@@ -53,19 +53,39 @@ export const isRequestReposicao = (req: Partial<PendingRequest> | undefined | nu
  */
 export const isRecordReposicao = (r: Partial<ExchangeRecord> | any): boolean => {
   if (!r) return false;
-  // Promax 03.18.05 is specifically the official Reposição report
-  if (r.sistemaOrigem === "Promax" || (r.importBatchName && r.importBatchName.includes("03.18.05"))) {
+  // Promax 03.18.05 is specifically the official Reposição report (promax or customer origin)
+  const orig = (r.sistemaOrigem || r.origem || "").toLowerCase();
+  if (orig.includes("promax") || orig.includes("costumer") || orig.includes("customer") || (r.importBatchName && r.importBatchName.includes("03.18.05"))) {
     return true;
   }
   const j = (r.justificativa || "").toLowerCase();
   const t = (r.tipo || "").toLowerCase();
   const o = (r.observacao || "").toLowerCase();
-  const orig = (r.sistemaOrigem || "").toLowerCase();
   
   return j.includes("falta") || j.includes("reposi") || 
          t.includes("falta") || t.includes("reposi") || 
          o.includes("falta") || o.includes("reposi") ||
          orig.includes("reposição") || orig.includes("reposicao");
+};
+
+/**
+ * Checks if a record or solicitation origin is from Customer / Costumer (Column BK 03.18.05)
+ */
+export const isCustomerOrigin = (r: Partial<ExchangeRecord> | any | string): boolean => {
+  if (!r) return false;
+  const val = typeof r === "string" ? r : (r.sistemaOrigem || r.origem || "");
+  const s = String(val).trim().toLowerCase();
+  return s.includes("costumer") || s.includes("customer");
+};
+
+/**
+ * Checks if a record or solicitation origin is from Promax (Column BK 03.18.05)
+ */
+export const isPromaxOrigin = (r: Partial<ExchangeRecord> | any | string): boolean => {
+  if (!r) return false;
+  const val = typeof r === "string" ? r : (r.sistemaOrigem || r.origem || "");
+  const s = String(val).trim().toLowerCase();
+  return s.includes("promax");
 };
 
 /**
@@ -126,17 +146,16 @@ export function convertBaixadaRequestToRecords(req: PendingRequest): ExchangeRec
       const qty = Number(item.quantidade) || 1;
       const um = item.unidadeMedida || req.unidadeMedida || "CX";
       
-      const itemHl = item.hectolitros && item.hectolitros > 0 
-        ? item.hectolitros 
-        : calculateItemHL({
-            item: pCode,
-            quantidade: qty,
-            unidadeMedida: um,
-            descricao: pDesc,
-            fatorHecto: item.fatorHecto,
-            fatorEmbalagem: item.fatorEmbalagem,
-            motivo: item.motivo || req.motivo
-          });
+      const computedHl = calculateItemHL({
+        item: pCode,
+        quantidade: qty,
+        unidadeMedida: um,
+        descricao: pDesc,
+        fatorHecto: item.fatorHecto,
+        fatorEmbalagem: item.fatorEmbalagem,
+        motivo: item.motivo || req.motivo
+      });
+      const itemHl = computedHl > 0 ? computedHl : (item.hectolitros || 0);
 
       const itemVal = item.precoCalculated && item.precoCalculated > 0
         ? item.precoCalculated
@@ -199,17 +218,16 @@ export function convertBaixadaRequestToRecords(req: PendingRequest): ExchangeRec
     const qty = Number(req.quantidade) || 1;
     const um = req.unidadeMedida || req.um || "CX";
 
-    const itemHl = req.hectolitros && req.hectolitros > 0
-      ? req.hectolitros
-      : calculateItemHL({
-          item: pCode,
-          quantidade: qty,
-          unidadeMedida: um,
-          descricao: pDesc,
-          fatorHecto: req.fatorHecto,
-          fatorEmbalagem: req.fatorEmbalagem,
-          motivo: req.motivo
-        });
+    const computedHl = calculateItemHL({
+      item: pCode,
+      quantidade: qty,
+      unidadeMedida: um,
+      descricao: pDesc,
+      fatorHecto: req.fatorHecto,
+      fatorEmbalagem: req.fatorEmbalagem,
+      motivo: req.motivo
+    });
+    const itemHl = computedHl > 0 ? computedHl : (req.hectolitros || 0);
 
     const itemVal = req.valorTotal && req.valorTotal > 0
       ? req.valorTotal
@@ -268,6 +286,43 @@ export function convertBaixadaRequestToRecords(req: PendingRequest): ExchangeRec
   }
 
   return results;
+}
+
+/**
+ * Strictly verifies whether an ExchangeRecord is genuine from the imported Promax 03.18.05 report.
+ * Explicitly filters out items that were created/transferred via the platform (portal do representante, cadastro na plataforma, etc.).
+ */
+export function isOfficial031805Record(r: Partial<ExchangeRecord> | any): boolean {
+  if (!r) return false;
+  
+  // 1. Exclude platform-generated records and IDs
+  const idStr = String(r.id || "").toLowerCase();
+  if (
+    idStr.startsWith("baixada_req_") ||
+    idStr.startsWith("portal_") ||
+    idStr.startsWith("manual_") ||
+    idStr.startsWith("plat_")
+  ) {
+    return false;
+  }
+
+  // 2. Exclude platform origins
+  const orig = String(r.sistemaOrigem || r.origem || "").toLowerCase();
+  if (
+    orig.includes("plataforma") ||
+    orig.includes("portal do representante") ||
+    orig.includes("manual")
+  ) {
+    return false;
+  }
+
+  // 3. Exclude platform import batches
+  const batch = String(r.importBatchName || "").toLowerCase();
+  if (batch.includes("plataforma") || batch.includes("portal")) {
+    return false;
+  }
+
+  return true;
 }
 
 /**

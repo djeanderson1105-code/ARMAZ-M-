@@ -337,6 +337,16 @@ export interface PendingRequest {
   faltaAjudante1Cpf?: string;
   faltaAjudante2?: string;
   faltaAjudante2Cpf?: string;
+  faltaAjudante3?: string;
+  faltaAjudante3Cpf?: string;
+  faltaQtdColaboradores?: number;
+  faltaCrewList?: Array<{
+    id?: string;
+    role: string;
+    name: string;
+    cpf?: string;
+    isExempt?: boolean;
+  }>;
   mapaDataAnomalia?: string;
   dataEntrega?: string; // Delivery / alignment date informed in manager registration
   dataEntregaRecibo?: string;
@@ -451,23 +461,59 @@ export function calculateValeRateio(
   ajudante1Cpf?: string | null,
   ajudante2Name?: string | null,
   ajudante2Cpf?: string | null,
-  ajudantesCsv?: string | null
+  ajudantesCsv?: string | null,
+  customCrew?: Array<{ role: string; name: string; cpf?: string; isExempt?: boolean }> | null
 ): ValeRateioResult {
+  // If customCrew array is provided with items, compute rateio dynamically based on those collaborators
+  if (customCrew && customCrew.length > 0) {
+    const isAnyDriverX = customCrew.some(c => isDriverX(c.name) || c.isExempt);
+    const payingMembers = customCrew.filter(c => !(isDriverX(c.name) || c.isExempt));
+    const payingCount = payingMembers.length;
+    const splitValue = payingCount > 0 ? totalValue / payingCount : 0;
+
+    return {
+      isDriverX: isAnyDriverX,
+      count: customCrew.length,
+      individualValue: splitValue,
+      driverExempt: isAnyDriverX,
+      crew: customCrew.map(member => {
+        const exempt = isDriverX(member.name) || !!member.isExempt;
+        return {
+          role: member.role || "Colaborador",
+          name: member.name || "Não Declarado",
+          cpf: member.cpf || "",
+          value: exempt ? 0 : splitValue,
+          isExempt: exempt,
+          label: exempt
+            ? "0% (ISENTO)"
+            : payingCount === 1
+            ? "100% Integral"
+            : `${((1 / payingCount) * 100).toFixed(0)}% do Valor`
+        };
+      })
+    };
+  }
+
   const isX = isDriverX(driverName);
   let h1 = (ajudante1Name || "").trim();
   let h1Cpf = ajudante1Cpf || "";
   let h2 = (ajudante2Name || "").trim();
   let h2Cpf = ajudante2Cpf || "";
 
+  const extraHelpers: Array<{ role: string; name: string; cpf?: string }> = [];
   if (!h1 && ajudantesCsv && ajudantesCsv.trim() && ajudantesCsv.toUpperCase() !== "NÃO DECLARADOS") {
-    const parts = ajudantesCsv.split(",").map(s => s.trim());
+    const parts = ajudantesCsv.split(",").map(s => s.trim()).filter(Boolean);
     if (parts[0]) h1 = parts[0];
     if (parts[1]) h2 = parts[1];
+    for (let i = 2; i < parts.length; i++) {
+      extraHelpers.push({ role: `Ajudante ${i + 1}`, name: parts[i], cpf: "" });
+    }
   }
 
   const helpers: Array<{ role: string; name: string; cpf?: string }> = [];
   if (h1) helpers.push({ role: "Ajudante 1", name: h1, cpf: h1Cpf });
   if (h2) helpers.push({ role: "Ajudante 2", name: h2, cpf: h2Cpf });
+  helpers.push(...extraHelpers);
 
   if (isX) {
     if (helpers.length > 0) {

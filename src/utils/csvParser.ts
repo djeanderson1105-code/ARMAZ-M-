@@ -153,7 +153,10 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
     conferenteCarregamento: findAnyIndex([["conferentecarregamento"], ["conf", "carr"]]),
     nrPedidoReposicao: findAnyIndex([["nrpedidoreposicao"], ["pedi", "repo"], ["pedido"]]),
     statusCheck: findAnyIndex([["statuscheckreposicao"], ["status", "check"]]),
-    sistemaOrigem: findAnyIndex([["sistemaorigem"], ["origem"]]),
+    sistemaOrigem: findAnyIndex([
+      ["sistemaorigem"], ["sistema", "origem"], ["origem", "sistema"],
+      ["sis", "origem"], ["colunabk"], ["bk"], ["costumer"], ["customer"], ["promax"]
+    ]),
     observacao: findAnyIndex([["observacao"], ["obs"], ["observacoes"]]),
     setorVenda: findAnyIndex([["setorvenda"], ["setor"]]),
   };
@@ -314,7 +317,28 @@ export function parseCSVToRecords(csvText: string, batchName: string = "Manual")
       
       nrPedidoReposicao: getValSafe(parts, indices.nrPedidoReposicao, "").trim(),
       statusCheck: getValSafe(parts, indices.statusCheck, "").trim(),
-      sistemaOrigem: getValSafe(parts, indices.sistemaOrigem, "").trim(),
+      sistemaOrigem: (() => {
+        let sis = getValSafe(parts, indices.sistemaOrigem, "").trim();
+        if (!sis && parts.length > 62) {
+          sis = (parts[62] || "").trim();
+        }
+        if (parts.length > 62) {
+          const col62 = (parts[62] || "").trim();
+          const col62Lower = col62.toLowerCase();
+          if (col62Lower.includes("costumer") || col62Lower.includes("customer")) {
+            return "Customer";
+          } else if (col62Lower.includes("promax")) {
+            return "Promax";
+          }
+        }
+        const sisLower = sis.toLowerCase();
+        if (sisLower.includes("costumer") || sisLower.includes("customer")) {
+          return "Customer";
+        } else if (sisLower.includes("promax")) {
+          return "Promax";
+        }
+        return sis;
+      })(),
       observacao: getValSafe(parts, indices.observacao, "").trim(),
       setorVenda: sector,
       

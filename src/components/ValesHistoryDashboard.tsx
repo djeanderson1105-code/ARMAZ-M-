@@ -24,11 +24,12 @@ import {
   BarChart3,
   ArrowRight,
   Filter,
-  Award
+  Award,
+  Plus
 } from "lucide-react";
 import { exportValesPacotePrejuizoExcel } from "../utils/excelExport";
 import { useSstrData } from "../context/SstrDataContext";
-import { calculateRequestValueAndHL, getProductsDatabase } from "../data/products";
+import { calculateRequestValueAndHL, getProductsDatabase, PRODUCT_DATABASE } from "../data/products";
 import { 
   isInversaoOrSwapReq, 
   calculateValeRateio, 
@@ -56,6 +57,16 @@ export interface ValeEntry {
   ajudante1Cpf: string;
   ajudante2: string;
   ajudante2Cpf: string;
+  ajudante3?: string;
+  ajudante3Cpf?: string;
+  quantidadeColaboradores?: number;
+  crewList?: Array<{
+    id?: string;
+    role: string;
+    name: string;
+    cpf?: string;
+    isExempt?: boolean;
+  }>;
   hectolitros: number;
   valorTotal: number;
   itemsCount: number;
@@ -79,7 +90,10 @@ interface ValesHistoryDashboardProps {
     motorista: string;
     ajudantes: string;
     observacao: string;
+    crewList?: Array<{ role: string; name: string; cpf?: string; isExempt?: boolean }>;
+    quantidadeColaboradores?: number;
   }) => void;
+  openAvulsoTrigger?: number;
 }
 
 const MONTH_NAMES = [
@@ -186,7 +200,8 @@ export default function ValesHistoryDashboard({
   onDeleteSingleVale, 
   onUpdateValeStatus, 
   onInspectRequest, 
-  onCreateAvulsoVale 
+  onCreateAvulsoVale,
+  openAvulsoTrigger
 }: ValesHistoryDashboardProps) {
   // Navigation: "acumulado" (guia principal) vs "mensal" (guia mês a mês)
   const [activeTabMode, setActiveTabMode] = useState<"acumulado" | "mensal">("acumulado");
@@ -206,6 +221,13 @@ export default function ValesHistoryDashboard({
 
   // Vale Avulso Modal State
   const [isAvulsoModalOpen, setIsAvulsoModalOpen] = useState(false);
+
+  // Listen to openAvulsoTrigger from parent
+  useEffect(() => {
+    if (openAvulsoTrigger && openAvulsoTrigger > 0) {
+      setIsAvulsoModalOpen(true);
+    }
+  }, [openAvulsoTrigger]);
   const [avulsoMapa, setAvulsoMapa] = useState("");
   const [avulsoItemCode, setAvulsoItemCode] = useState("");
   const [avulsoItemDesc, setAvulsoItemDesc] = useState("");
@@ -216,6 +238,47 @@ export default function ValesHistoryDashboard({
   const [avulsoAjudantes, setAvulsoAjudantes] = useState("");
   const [avulsoObs, setAvulsoObs] = useState("");
   const [avulsoError, setAvulsoError] = useState<string | null>(null);
+
+  // Vale Avulso Dynamic Crew State
+  const [avulsoCrew, setAvulsoCrew] = useState<Array<{ role: string; name: string; cpf: string; isExempt?: boolean }>>([
+    { role: "Motorista", name: "", cpf: "", isExempt: false },
+    { role: "Ajudante 1", name: "", cpf: "", isExempt: false }
+  ]);
+
+  const handleSetAvulsoCrewQuantity = (qty: number) => {
+    if (qty < 1) return;
+    setAvulsoCrew(prev => {
+      if (qty === prev.length) return prev;
+      if (qty < prev.length) return prev.slice(0, qty);
+      const next = [...prev];
+      for (let i = prev.length; i < qty; i++) {
+        const role = i === 0 ? "Motorista" : `Ajudante ${i > 1 ? i : ""}`.trim();
+        next.push({ role: role || `Ajudante ${i}`, name: "", cpf: "", isExempt: false });
+      }
+      return next;
+    });
+  };
+
+  const handleUpdateAvulsoCrewMember = (index: number, field: "role" | "name" | "cpf" | "isExempt", val: any) => {
+    setAvulsoCrew(prev => {
+      const next = [...prev];
+      if (!next[index]) return prev;
+      if (field === "name") {
+        const clean = String(val).toUpperCase();
+        const match = getCrewDetailByName(clean);
+        const isX = isDriverX(clean);
+        next[index] = {
+          ...next[index],
+          name: clean,
+          cpf: match?.cpf ? match.cpf : (isX ? "000.000.000-00" : next[index].cpf),
+          isExempt: isX ? true : next[index].isExempt
+        };
+      } else {
+        next[index] = { ...next[index], [field]: val };
+      }
+      return next;
+    });
+  };
 
   // Recalculate Vales State
   const { saveValeEntry, deleteValeEntry, records: promaxRecords, pendingRequests, savePendingRequest, deletePendingRequest } = useSstrData();
@@ -231,23 +294,79 @@ export default function ValesHistoryDashboard({
   // Edit Driver & Crew Modal State
   const [isEditDriverModalOpen, setIsEditDriverModalOpen] = useState(false);
   const [editingVale, setEditingVale] = useState<ValeEntry | null>(null);
-  const [editMotoristaName, setEditMotoristaName] = useState("");
-  const [editMotoristaCpf, setEditMotoristaCpf] = useState("");
-  const [editAjudante1Name, setEditAjudante1Name] = useState("");
-  const [editAjudante1Cpf, setEditAjudante1Cpf] = useState("");
-  const [editAjudante2Name, setEditAjudante2Name] = useState("");
-  const [editAjudante2Cpf, setEditAjudante2Cpf] = useState("");
+  const [editCrew, setEditCrew] = useState<Array<{ id: string; role: string; name: string; cpf: string; isExempt?: boolean }>>([
+    { id: "1", role: "Motorista", name: "", cpf: "", isExempt: false },
+    { id: "2", role: "Ajudante 1", name: "", cpf: "", isExempt: false }
+  ]);
   const [isSavingDriverEdit, setIsSavingDriverEdit] = useState(false);
   const [driverEditFeedback, setDriverEditFeedback] = useState<string | null>(null);
 
+  const handleSetEditCrewQuantity = (qty: number) => {
+    if (qty < 1) return;
+    setEditCrew(prev => {
+      if (qty === prev.length) return prev;
+      if (qty < prev.length) return prev.slice(0, qty);
+      const next = [...prev];
+      for (let i = prev.length; i < qty; i++) {
+        const role = i === 0 ? "Motorista" : `Ajudante ${i > 1 ? i : ""}`.trim();
+        next.push({ id: `edit_c_${Date.now()}_${i}`, role: role || `Ajudante ${i}`, name: "", cpf: "", isExempt: false });
+      }
+      return next;
+    });
+  };
+
+  const handleUpdateEditCrewMember = (index: number, field: "role" | "name" | "cpf" | "isExempt", val: any) => {
+    setEditCrew(prev => {
+      const next = [...prev];
+      if (!next[index]) return prev;
+      if (field === "name") {
+        const clean = String(val).toUpperCase();
+        const match = getCrewDetailByName(clean);
+        const isX = isDriverX(clean);
+        next[index] = {
+          ...next[index],
+          name: clean,
+          cpf: match?.cpf ? match.cpf : (isX ? "000.000.000-00" : next[index].cpf),
+          isExempt: isX ? true : next[index].isExempt
+        };
+      } else {
+        next[index] = { ...next[index], [field]: val };
+      }
+      return next;
+    });
+  };
+
   const handleOpenEditDriverModal = (vale: ValeEntry) => {
     setEditingVale(vale);
-    setEditMotoristaName(vale.motorista || "");
-    setEditMotoristaCpf(vale.motoristaCpf || "");
-    setEditAjudante1Name(vale.ajudante1 || "");
-    setEditAjudante1Cpf(vale.ajudante1Cpf || "");
-    setEditAjudante2Name(vale.ajudante2 || "");
-    setEditAjudante2Cpf(vale.ajudante2Cpf || "");
+    if (vale.crewList && Array.isArray(vale.crewList) && vale.crewList.length > 0) {
+      setEditCrew(vale.crewList.map((m, idx) => ({
+        id: m.id || `crew_${idx}`,
+        role: m.role || (idx === 0 ? "Motorista" : `Ajudante ${idx}`),
+        name: (m.name || "").trim().toUpperCase(),
+        cpf: m.cpf || "",
+        isExempt: !!m.isExempt || isDriverX(m.name)
+      })));
+    } else {
+      const driver = (vale.motorista || "").trim().toUpperCase();
+      const driverCpf = vale.motoristaCpf || "";
+      const h1 = (vale.ajudante1 || (vale.ajudantes ? vale.ajudantes.split(",")[0]?.trim() : "") || "").trim().toUpperCase();
+      const h1Cpf = vale.ajudante1Cpf || "";
+      const h2 = (vale.ajudante2 || (vale.ajudantes ? vale.ajudantes.split(",")[1]?.trim() : "") || "").trim().toUpperCase();
+      const h2Cpf = vale.ajudante2Cpf || "";
+      const h3 = (vale.ajudante3 || (vale.ajudantes ? vale.ajudantes.split(",")[2]?.trim() : "") || "").trim().toUpperCase();
+      const h3Cpf = vale.ajudante3Cpf || "";
+
+      const initial: Array<{ id: string; role: string; name: string; cpf: string; isExempt?: boolean }> = [
+        { id: "1", role: "Motorista", name: driver, cpf: driverCpf || (getCrewDetailByName(driver)?.cpf || ""), isExempt: isDriverX(driver) }
+      ];
+      if (h1) initial.push({ id: "2", role: "Ajudante 1", name: h1, cpf: h1Cpf || (getCrewDetailByName(h1)?.cpf || ""), isExempt: false });
+      if (h2) initial.push({ id: "3", role: "Ajudante 2", name: h2, cpf: h2Cpf || (getCrewDetailByName(h2)?.cpf || ""), isExempt: false });
+      if (h3) initial.push({ id: "4", role: "Ajudante 3", name: h3, cpf: h3Cpf || (getCrewDetailByName(h3)?.cpf || ""), isExempt: false });
+      if (initial.length === 1) {
+        initial.push({ id: "2", role: "Ajudante 1", name: "", cpf: "", isExempt: false });
+      }
+      setEditCrew(initial);
+    }
     setDriverEditFeedback(null);
     setIsEditDriverModalOpen(true);
   };
@@ -257,38 +376,46 @@ export default function ValesHistoryDashboard({
     setIsSavingDriverEdit(true);
 
     try {
-      const isX = isDriverX(editMotoristaName);
-      const cleanDriverName = editMotoristaName.trim() || (isX ? "X" : "Motorista Não Declarado");
-      const cleanDriverCpf = isX ? "000.000.000-00" : (editMotoristaCpf.trim() || "");
+      const driverMember = editCrew.find(c => c.role.toLowerCase().includes("motorista")) || editCrew[0];
+      const helperMembers = editCrew.filter(c => c !== driverMember);
+      const isX = isDriverX(driverMember?.name);
+      const cleanDriverName = (driverMember?.name || "").trim() || (isX ? "X" : "Motorista Não Declarado");
+      const cleanDriverCpf = isX ? "000.000.000-00" : (driverMember?.cpf || "").trim();
 
-      const helpersList: string[] = [];
-      if (editAjudante1Name.trim()) helpersList.push(editAjudante1Name.trim());
-      if (editAjudante2Name.trim()) helpersList.push(editAjudante2Name.trim());
-      const helpersCsv = helpersList.join(", ");
+      const helpersCsv = helperMembers.map(h => h.name.trim()).filter(Boolean).join(", ");
 
       const updatedVale: ValeEntry = {
         ...editingVale,
         motorista: cleanDriverName,
         motoristaCpf: cleanDriverCpf,
-        ajudante1: editAjudante1Name.trim(),
-        ajudante1Cpf: editAjudante1Cpf.trim(),
-        ajudante2: editAjudante2Name.trim(),
-        ajudante2Cpf: editAjudante2Cpf.trim(),
-        ajudantes: helpersCsv || (editAjudante1Name.trim() ? editAjudante1Name.trim() : "Sem Ajudantes"),
+        ajudante1: helperMembers[0]?.name?.trim() || "",
+        ajudante1Cpf: helperMembers[0]?.cpf?.trim() || "",
+        ajudante2: helperMembers[1]?.name?.trim() || "",
+        ajudante2Cpf: helperMembers[1]?.cpf?.trim() || "",
+        ajudante3: helperMembers[2]?.name?.trim() || "",
+        ajudante3Cpf: helperMembers[2]?.cpf?.trim() || "",
+        ajudantes: helpersCsv || (helperMembers[0]?.name ? helperMembers[0].name.trim() : "Sem Ajudantes"),
+        crewList: editCrew,
+        quantidadeColaboradores: editCrew.length,
         originalRequest: editingVale.originalRequest ? {
           ...editingVale.originalRequest,
           faltaMotorista: cleanDriverName,
           faltaMotoristaCpf: cleanDriverCpf,
-          faltaAjudante1: editAjudante1Name.trim(),
-          faltaAjudante1Cpf: editAjudante1Cpf.trim(),
-          faltaAjudante2: editAjudante2Name.trim(),
-          faltaAjudante2Cpf: editAjudante2Cpf.trim(),
+          faltaAjudante1: helperMembers[0]?.name?.trim() || "",
+          faltaAjudante1Cpf: helperMembers[0]?.cpf?.trim() || "",
+          faltaAjudante2: helperMembers[1]?.name?.trim() || "",
+          faltaAjudante2Cpf: helperMembers[1]?.cpf?.trim() || "",
+          faltaAjudante3: helperMembers[2]?.name?.trim() || "",
+          faltaAjudante3Cpf: helperMembers[2]?.cpf?.trim() || "",
+          faltaAjudantes: helpersCsv,
+          faltaCrewList: editCrew,
+          faltaQtdColaboradores: editCrew.length,
           motorista: cleanDriverName,
           motoristaCpf: cleanDriverCpf,
-          ajudante1: editAjudante1Name.trim(),
-          ajudante1Cpf: editAjudante1Cpf.trim(),
-          ajudante2: editAjudante2Name.trim(),
-          ajudante2Cpf: editAjudante2Cpf.trim(),
+          ajudante1: helperMembers[0]?.name?.trim() || "",
+          ajudante1Cpf: helperMembers[0]?.cpf?.trim() || "",
+          ajudante2: helperMembers[1]?.name?.trim() || "",
+          ajudante2Cpf: helperMembers[1]?.cpf?.trim() || "",
           ajudantes: helpersCsv
         } : undefined
       };
@@ -307,10 +434,15 @@ export default function ValesHistoryDashboard({
           ...matchingReq,
           faltaMotorista: cleanDriverName,
           faltaMotoristaCpf: cleanDriverCpf,
-          faltaAjudante1: editAjudante1Name.trim(),
-          faltaAjudante1Cpf: editAjudante1Cpf.trim(),
-          faltaAjudante2: editAjudante2Name.trim(),
-          faltaAjudante2Cpf: editAjudante2Cpf.trim()
+          faltaAjudante1: helperMembers[0]?.name?.trim() || "",
+          faltaAjudante1Cpf: helperMembers[0]?.cpf?.trim() || "",
+          faltaAjudante2: helperMembers[1]?.name?.trim() || "",
+          faltaAjudante2Cpf: helperMembers[1]?.cpf?.trim() || "",
+          faltaAjudante3: helperMembers[2]?.name?.trim() || "",
+          faltaAjudante3Cpf: helperMembers[2]?.cpf?.trim() || "",
+          faltaAjudantes: helpersCsv,
+          faltaCrewList: editCrew,
+          faltaQtdColaboradores: editCrew.length
         };
         await savePendingRequest(updatedReq);
       }
@@ -1373,10 +1505,11 @@ export default function ValesHistoryDashboard({
                         <button
                           type="button"
                           onClick={() => handleOpenEditDriverModal(vale)}
-                          className="p-1.5 bg-slate-800 hover:bg-amber-950 hover:text-amber-300 text-slate-300 border border-slate-750 hover:border-amber-800 rounded-lg cursor-pointer transition-colors"
-                          title="Corrigir Motorista / Ajudantes deste Vale"
+                          className="px-2 py-1.5 bg-slate-800 hover:bg-amber-950 hover:text-amber-300 text-slate-300 border border-slate-750 hover:border-amber-800 rounded-lg cursor-pointer transition-colors flex items-center gap-1 text-[11px] font-bold"
+                          title="Editar equipe e rateio deste vale no novo modelo"
                         >
-                          <Edit3 className="w-3.5 h-3.5" />
+                          <Edit3 className="w-3.5 h-3.5 text-amber-400" />
+                          <span className="hidden sm:inline font-mono">Editar Rateio</span>
                         </button>
 
                         {/* Inspect Request Button */}
@@ -1472,7 +1605,7 @@ export default function ValesHistoryDashboard({
           onClick={() => !isSavingDriverEdit && setIsEditDriverModalOpen(false)}
         >
           <div 
-            className="bg-slate-900 border border-slate-800 w-full max-w-xl rounded-3xl shadow-2xl overflow-hidden text-left"
+            className="bg-slate-900 border border-slate-800 w-full max-w-4xl lg:max-w-5xl max-h-[94vh] rounded-3xl shadow-2xl overflow-hidden text-left flex flex-col"
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-800 bg-slate-950">
@@ -1498,176 +1631,222 @@ export default function ValesHistoryDashboard({
               </button>
             </div>
 
-            <div className="p-5 space-y-4">
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-amber-400 font-mono uppercase flex items-center gap-1.5">
-                    <User className="w-4 h-4" /> Motorista / Condutor *
-                  </label>
-                  {isDriverX(editMotoristaName) && (
-                    <span className="px-2 py-0.5 bg-purple-950 border border-purple-800 text-purple-300 text-[10px] font-bold rounded-md font-mono">
-                      MOTORISTA X (ISENTO)
+            <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+              {/* QUANTITY OF COLLABORATORS SELECTOR */}
+              <div className="bg-slate-950 p-3.5 sm:p-4 rounded-2xl border border-slate-800 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div>
+                    <span className="text-xs font-bold text-slate-200 uppercase font-mono flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5 text-amber-400" />
+                      Quantidade de Colaboradores Envolvidos:
                     </span>
-                  )}
-                </div>
-
-                <select
-                  value={editMotoristaName}
-                  onChange={(e) => {
-                    const sel = e.target.value;
-                    setEditMotoristaName(sel);
-                    if (isDriverX(sel)) {
-                      setEditMotoristaCpf("000.000.000-00");
-                    } else {
-                      const crewMatch = getCrewDetailByName(sel);
-                      if (crewMatch?.cpf) setEditMotoristaCpf(crewMatch.cpf);
-                    }
-                  }}
-                  className="w-full bg-slate-900 border border-slate-750 rounded-xl px-3 h-10 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-                >
-                  <option value="">-- Selecionar Motorista da Base --</option>
-                  {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA")).map((m) => (
-                    <option key={m.nome} value={m.nome}>{m.nome}</option>
-                  ))}
-                </select>
-
-                <div className="grid grid-cols-2 gap-2 pt-1">
-                  <input
-                    type="text"
-                    placeholder="Nome Motorista"
-                    value={editMotoristaName}
-                    onChange={(e) => setEditMotoristaName(e.target.value.toUpperCase())}
-                    className="w-full bg-slate-900 border border-slate-750 rounded-xl px-3 h-8 text-[11px] text-white font-mono uppercase focus:border-amber-500 focus:outline-none"
-                  />
-                  <input
-                    type="text"
-                    placeholder="CPF Motorista"
-                    value={editMotoristaCpf}
-                    onChange={(e) => setEditMotoristaCpf(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-750 rounded-xl px-3 h-8 text-[11px] text-slate-300 font-mono focus:border-amber-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* Helpers */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Ajudante 1 */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-300 font-mono uppercase block">
-                    Ajudante 1 (Obrigatório p/ Condutor X)
-                  </label>
-                  <select
-                    value={editAjudante1Name}
-                    onChange={(e) => {
-                      const sel = e.target.value;
-                      setEditAjudante1Name(sel);
-                      const crewMatch = getCrewDetailByName(sel);
-                      if (crewMatch?.cpf) setEditAjudante1Cpf(crewMatch.cpf);
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none mb-1"
-                  >
-                    <option value="">-- Selecionar da Equipe --</option>
-                    {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map((a) => (
-                      <option key={a.nome} value={a.nome}>{a.nome}</option>
-                    ))}
-                  </select>
-                  <input
-                    type="text"
-                    placeholder="Nome Ajudante 1"
-                    value={editAjudante1Name}
-                    onChange={(e) => setEditAjudante1Name(e.target.value.toUpperCase())}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-8 text-[11px] text-white font-mono uppercase focus:border-amber-500 focus:outline-none"
-                  />
-                  <input
-                    type="text"
-                    placeholder="CPF Ajudante 1"
-                    value={editAjudante1Cpf}
-                    onChange={(e) => setEditAjudante1Cpf(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-8 text-[11px] text-slate-400 font-mono focus:border-amber-500 focus:outline-none"
-                  />
-                </div>
-
-                {/* Ajudante 2 */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-300 font-mono uppercase block">
-                    Ajudante 2 (Opcional)
-                  </label>
-                  <select
-                    value={editAjudante2Name}
-                    onChange={(e) => {
-                      const sel = e.target.value;
-                      setEditAjudante2Name(sel);
-                      const crewMatch = getCrewDetailByName(sel);
-                      if (crewMatch?.cpf) setEditAjudante2Cpf(crewMatch.cpf);
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none mb-1"
-                  >
-                    <option value="">-- Selecionar da Equipe --</option>
-                    {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map((a) => (
-                      <option key={a.nome} value={a.nome}>{a.nome}</option>
-                    ))}
-                  </select>
-                  <input
-                    type="text"
-                    placeholder="Nome Ajudante 2"
-                    value={editAjudante2Name}
-                    onChange={(e) => setEditAjudante2Name(e.target.value.toUpperCase())}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-8 text-[11px] text-white font-mono uppercase focus:border-amber-500 focus:outline-none"
-                  />
-                  <input
-                    type="text"
-                    placeholder="CPF Ajudante 2"
-                    value={editAjudante2Cpf}
-                    onChange={(e) => setEditAjudante2Cpf(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-8 text-[11px] text-slate-400 font-mono focus:border-amber-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* LIVE RATEIO PREVIEW */}
-              {(() => {
-                const totalVal = editingVale.valorTotal || 0;
-                const isX = isDriverX(editMotoristaName);
-                const rateio = calculateValeRateio(
-                  totalVal,
-                  editMotoristaName,
-                  editMotoristaCpf,
-                  editAjudante1Name,
-                  editAjudante1Cpf,
-                  editAjudante2Name,
-                  editAjudante2Cpf
-                );
-
-                return (
-                  <div className={`p-3 rounded-2xl border ${
-                    isX 
-                      ? "bg-purple-950/40 border-purple-800/60 text-purple-200" 
-                      : "bg-slate-950 border-slate-800 text-slate-300"
-                  }`}>
-                    <div className="flex items-center justify-between font-mono text-[10px] font-bold border-b border-slate-800/80 pb-1.5 mb-2">
-                      <span className="uppercase flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                        {isX ? "Regra Especial: Motorista X (Isento de Cobrança)" : "Rateio Padrão entre Integrantes"}
-                      </span>
-                      <span className="text-emerald-400 font-bold">Total: {formatCurrency(totalVal)}</span>
-                    </div>
-
-                    {isX ? (
-                      <div className="space-y-1 text-[11px]">
-                        <p className="text-purple-300 font-sans">
-                          ✓ O condutor <strong>X</strong> não participa do desconto. O valor integral de <strong>{formatCurrency(totalVal)}</strong> será rateado exclusivamente entre os <strong>{rateio.count} ajudante(s)</strong> cadastrados ({formatCurrency(rateio.individualValue)} cada).
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-1 text-[11px]">
-                        <p className="text-slate-400 font-sans">
-                          Divisão igualitária entre <strong>{rateio.count} integrante(s)</strong> (Condutor + Ajudantes): <strong>{formatCurrency(rateio.individualValue)}</strong> por pessoa.
-                        </p>
-                      </div>
-                    )}
+                    <p className="text-[10px] text-slate-400 font-sans mt-0.5">
+                      Defina o número de integrantes para calcular automaticamente o rateio e a divisão dos valores.
+                    </p>
                   </div>
-                );
-              })()}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {[1, 2, 3, 4].map(num => (
+                      <button
+                        key={`edit_q_${num}`}
+                        type="button"
+                        onClick={() => handleSetEditCrewQuantity(num)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                          editCrew.length === num
+                            ? "bg-amber-500 text-slate-950 shadow-md ring-2 ring-amber-400 scale-105 font-black"
+                            : "bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800"
+                        }`}
+                      >
+                        {num} {num === 1 ? "Colaborador" : "Colaboradores"}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => handleSetEditCrewQuantity(editCrew.length + 1)}
+                      className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-amber-400 hover:text-amber-300 border border-dashed border-amber-500/50 rounded-lg text-xs font-mono font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Adicionar mais um colaborador"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>+1</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* LIVE RATEIO PREVIEW */}
+                {(() => {
+                  const totalVal = editingVale.valorTotal || 0;
+                  const rateio = calculateValeRateio(
+                    totalVal,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    editCrew
+                  );
+                  const payingCount = rateio.crew.filter(c => !c.isExempt).length;
+
+                  return (
+                    <div className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-mono ${
+                      rateio.isDriverX 
+                        ? "bg-purple-950/40 border-purple-800/70 text-purple-200" 
+                        : "bg-slate-900 border-slate-800 text-slate-200"
+                    }`}>
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold uppercase text-amber-400">Total a Ratear: {formatCurrency(totalVal)}</span>
+                          <span className="text-[10px] text-slate-400 font-sans">({rateio.count} envolvido(s) • {payingCount} pagante(s))</span>
+                        </div>
+                        <p className="text-[11px] text-slate-300">
+                          {rateio.isDriverX
+                            ? `⭐ Regra Motorista X: Motorista Isento. R$ ${formatCurrency(rateio.individualValue)} para cada ajudante.`
+                            : `Divisão igualitária de ${formatCurrency(rateio.individualValue)} por colaborador pagante.`}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {rateio.crew.map((member, mIdx) => (
+                          <span 
+                            key={`rateio_m_${mIdx}`} 
+                            className={`px-2 py-1 rounded-lg text-[10px] border ${
+                              member.isExempt 
+                                ? "bg-purple-900/60 border-purple-700 text-purple-300 italic" 
+                                : "bg-rose-950/60 border-rose-800/80 text-rose-300 font-bold"
+                            }`}
+                          >
+                            {member.role}: {formatCurrency(member.value)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* COLLABORATORS LIST AND ROLES */}
+              <div className="space-y-2.5">
+                <div className="flex justify-between items-center text-[11px] text-slate-400 font-mono">
+                  <span className="font-bold uppercase text-slate-300">Responsáveis Envolvidos ({editCrew.length}):</span>
+                  <span>Selecione da base ou digite para atualizar nome e CPF</span>
+                </div>
+
+                {editCrew.map((member, index) => {
+                  const isDriver = member.role.toLowerCase().includes("motorista");
+                  const isX = isDriverX(member.name) || !!member.isExempt;
+
+                  return (
+                    <div 
+                      key={member.id || `edit_crew_${index}`}
+                      className={`p-3 rounded-xl border text-xs space-y-2 transition-all ${
+                        isX 
+                          ? "bg-purple-950/20 border-purple-800/60" 
+                          : isDriver 
+                            ? "bg-slate-950 border-amber-900/50" 
+                            : "bg-slate-950 border-slate-800"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-bold text-amber-400 text-xs">
+                            #{index + 1}
+                          </span>
+                          <select
+                            value={member.role}
+                            onChange={(e) => handleUpdateEditCrewMember(index, "role", e.target.value)}
+                            className="bg-slate-900 border border-slate-750 text-white font-mono font-bold text-xs rounded-lg px-2 py-1 focus:border-amber-500 focus:outline-none cursor-pointer"
+                          >
+                            <option value="Motorista">🚚 Motorista</option>
+                            <option value="Ajudante 1">👥 Ajudante 1</option>
+                            <option value="Ajudante 2">👥 Ajudante 2</option>
+                            <option value="Ajudante 3">👥 Ajudante 3</option>
+                            <option value="Ajudante 4">👥 Ajudante 4</option>
+                            <option value="Ajudante">👥 Ajudante</option>
+                            <option value="Auxiliar">🤝 Auxiliar</option>
+                          </select>
+                          {isX && (
+                            <span className="px-2 py-0.5 bg-purple-900/80 border border-purple-700 text-purple-200 text-[9.5px] font-bold rounded font-mono">
+                              ISENTO DE COBRANÇA
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <label className="flex items-center gap-1.5 text-[10.5px] font-mono text-slate-400 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={!!member.isExempt}
+                              onChange={(e) => handleUpdateEditCrewMember(index, "isExempt", e.target.checked)}
+                              className="rounded border-slate-700 text-purple-600 focus:ring-purple-500 cursor-pointer"
+                            />
+                            <span className={member.isExempt ? "text-purple-300 font-bold" : ""}>Isento (Regra Motorista X)</span>
+                          </label>
+                          {editCrew.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditCrew(prev => prev.filter((_, i) => i !== index));
+                              }}
+                              className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition-colors cursor-pointer"
+                              title="Remover este colaborador"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center pt-1">
+                        {/* Quick Select from Crew database */}
+                        <div className="sm:col-span-4">
+                          <select
+                            value=""
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (!val) return;
+                              handleUpdateEditCrewMember(index, "name", val);
+                            }}
+                            className="w-full bg-slate-900 border-2 border-indigo-900 hover:border-indigo-600 text-indigo-200 rounded-xl px-3 h-11 text-xs font-mono focus:border-indigo-400 focus:outline-none cursor-pointer transition-colors shadow-sm"
+                          >
+                            <option value="">🔍 Buscar na Equipe Pau Brasil...</option>
+                            <optgroup label="🚚 Motoristas de Distribuição">
+                              {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA")).map((m, mIdx) => (
+                                <option key={`em_drv_${m.cpf || m.nome}_${mIdx}`} value={m.nome}>{m.nome} ({m.cargo})</option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="👥 Ajudantes de Distribuição">
+                              {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map((a, aIdx) => (
+                                <option key={`em_aj_${a.cpf || a.nome}_${aIdx}`} value={a.nome}>{a.nome} ({a.cargo})</option>
+                              ))}
+                            </optgroup>
+                          </select>
+                        </div>
+
+                        {/* Name input */}
+                        <div className="sm:col-span-5">
+                          <input
+                            type="text"
+                            placeholder="NOME COMPLETO DO COLABORADOR"
+                            value={member.name}
+                            onChange={(e) => handleUpdateEditCrewMember(index, "name", e.target.value)}
+                            className="w-full bg-slate-900 border-2 border-slate-700 text-white uppercase font-sans font-black rounded-xl px-3.5 h-11 text-xs sm:text-sm focus:border-amber-400 focus:outline-none transition-colors shadow-inner"
+                          />
+                        </div>
+
+                        {/* CPF input */}
+                        <div className="sm:col-span-3">
+                          <input
+                            type="text"
+                            placeholder="CPF (000.000.000-00)"
+                            value={member.cpf}
+                            onChange={(e) => handleUpdateEditCrewMember(index, "cpf", e.target.value)}
+                            className="w-full bg-slate-900 border-2 border-slate-700 text-amber-300 font-mono font-bold rounded-xl px-3.5 h-11 text-xs sm:text-sm focus:border-amber-400 focus:outline-none transition-colors shadow-inner"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
 
               {driverEditFeedback && (
                 <div className="p-3 bg-emerald-950/80 border border-emerald-800 rounded-xl text-emerald-300 font-mono text-[11px] flex items-center gap-2">
@@ -1759,10 +1938,17 @@ export default function ValesHistoryDashboard({
                   setAvulsoError("Informe uma quantidade válida.");
                   return;
                 }
-                if (!avulsoMotorista.trim()) {
-                  setAvulsoError("Informe o Nome do Motorista.");
+
+                const driverMember = avulsoCrew.find(c => c.role.toLowerCase().includes("motorista")) || avulsoCrew[0];
+                const helperMembers = avulsoCrew.filter(c => c !== driverMember);
+                const finalDriverName = (driverMember?.name || avulsoMotorista || "").trim();
+
+                if (!finalDriverName) {
+                  setAvulsoError("Informe ou selecione o Motorista responsável na equipe.");
                   return;
                 }
+
+                const finalHelpersCsv = helperMembers.map(h => h.name.trim()).filter(Boolean).join(", ") || (avulsoAjudantes || "").trim();
 
                 if (onCreateAvulsoVale) {
                   onCreateAvulsoVale({
@@ -1772,9 +1958,11 @@ export default function ValesHistoryDashboard({
                     data: avulsoData,
                     quantidade: q,
                     unidadeMedida: avulsoUnidade,
-                    motorista: avulsoMotorista.trim(),
-                    ajudantes: avulsoAjudantes.trim(),
-                    observacao: avulsoObs.trim()
+                    motorista: finalDriverName,
+                    ajudantes: finalHelpersCsv,
+                    observacao: avulsoObs.trim(),
+                    crewList: avulsoCrew,
+                    quantidadeColaboradores: avulsoCrew.length
                   });
                 }
 
@@ -1785,10 +1973,14 @@ export default function ValesHistoryDashboard({
                 setAvulsoQuantidade("1");
                 setAvulsoMotorista("");
                 setAvulsoAjudantes("");
+                setAvulsoCrew([
+                  { role: "Motorista", name: "", cpf: "", isExempt: false },
+                  { role: "Ajudante 1", name: "", cpf: "", isExempt: false }
+                ]);
                 setAvulsoObs("");
                 setAvulsoError(null);
               }}
-              className="p-5 space-y-4"
+              className="p-5 space-y-4 max-h-[80vh] overflow-y-auto"
             >
               {avulsoError && (
                 <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 font-mono flex items-center gap-2">
@@ -1873,28 +2065,217 @@ export default function ValesHistoryDashboard({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Motorista *</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Nome do motorista"
-                    value={avulsoMotorista}
-                    onChange={(e) => setAvulsoMotorista(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-                  />
+              {/* SELEÇÃO INTERATIVA DE COLABORADORES E RATEIO */}
+              <div className="bg-slate-950 p-3 sm:p-4 rounded-2xl border border-slate-800 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div>
+                    <span className="text-xs font-bold text-slate-200 uppercase font-mono flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5 text-amber-400" />
+                      Quantidade de Colaboradores Envolvidos:
+                    </span>
+                    <p className="text-[10px] text-slate-400 font-sans mt-0.5">
+                      Defina motorista(s) e ajudante(s) responsáveis para cálculo do rateio e assinatura.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {[1, 2, 3, 4].map(num => (
+                      <button
+                        key={`avulso_q_${num}`}
+                        type="button"
+                        onClick={() => handleSetAvulsoCrewQuantity(num)}
+                        className={`px-3 py-1 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                          avulsoCrew.length === num
+                            ? "bg-amber-500 text-slate-950 shadow-md ring-2 ring-amber-400 scale-105 font-black"
+                            : "bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800"
+                        }`}
+                      >
+                        {num} {num === 1 ? "Colaborador" : "Colaboradores"}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => handleSetAvulsoCrewQuantity(avulsoCrew.length + 1)}
+                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-amber-400 hover:text-amber-300 border border-dashed border-amber-500/50 rounded-lg text-xs font-mono font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Adicionar mais um colaborador"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>+1</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 font-mono uppercase block">Ajudantes</label>
-                  <input
-                    type="text"
-                    placeholder="Nomes separados por vírgula"
-                    value={avulsoAjudantes}
-                    onChange={(e) => setAvulsoAjudantes(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-9 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
-                  />
+                {/* RATEIO PREVIEW */}
+                {(() => {
+                  const qty = parseInt(avulsoQuantidade, 10) || 1;
+                  const dbProd = PRODUCT_DATABASE.find(p => p.codigo === avulsoItemCode || p.codigo === avulsoItemCode.replace(/^0+/, ""));
+                  const emb = dbProd?.fator || 12;
+                  const boxPrice = dbProd?.valor || 98.50;
+                  const unitPrice = avulsoUnidade === "und" ? (boxPrice / emb) : boxPrice;
+                  const estimatedTotal = Number((qty * unitPrice).toFixed(2));
+
+                  const rateio = calculateValeRateio(
+                    estimatedTotal,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    avulsoCrew
+                  );
+                  const payingCount = rateio.crew.filter(c => !c.isExempt).length;
+
+                  return (
+                    <div className={`p-2.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs font-mono ${
+                      rateio.isDriverX 
+                        ? "bg-purple-950/40 border-purple-800/70 text-purple-200" 
+                        : "bg-slate-900 border-slate-800 text-slate-200"
+                    }`}>
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold uppercase text-amber-400">Total Previsto: {formatCurrency(estimatedTotal)}</span>
+                          <span className="text-[10px] text-slate-400 font-sans">({rateio.count} envolvido(s) • {payingCount} pagante(s))</span>
+                        </div>
+                        <p className="text-[10.5px] text-slate-300">
+                          {rateio.isDriverX
+                            ? `⭐ Regra Motorista X: Motorista Isento. R$ ${formatCurrency(rateio.individualValue)} para cada ajudante.`
+                            : `Divisão igualitária de ${formatCurrency(rateio.individualValue)} por colaborador pagante.`}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {rateio.crew.map((member, mIdx) => (
+                          <span 
+                            key={`av_rateio_${mIdx}`} 
+                            className={`px-2 py-0.5 rounded-lg text-[9.5px] border ${
+                              member.isExempt 
+                                ? "bg-purple-900/60 border-purple-700 text-purple-300 italic" 
+                                : "bg-rose-950/60 border-rose-800/80 text-rose-300 font-bold"
+                            }`}
+                          >
+                            {member.role}: {formatCurrency(member.value)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* CREW MEMBER CARDS */}
+                <div className="space-y-2">
+                  {avulsoCrew.map((member, index) => {
+                    const isDriver = member.role.toLowerCase().includes("motorista");
+                    const isX = isDriverX(member.name) || !!member.isExempt;
+
+                    return (
+                      <div 
+                        key={`av_crew_${index}`}
+                        className={`p-2.5 rounded-xl border text-xs space-y-2 transition-all ${
+                          isX 
+                            ? "bg-purple-950/20 border-purple-800/60" 
+                            : isDriver 
+                              ? "bg-slate-900 border-amber-900/50" 
+                              : "bg-slate-900 border-slate-800"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-amber-400 text-xs">
+                              #{index + 1}
+                            </span>
+                            <select
+                              value={member.role}
+                              onChange={(e) => handleUpdateAvulsoCrewMember(index, "role", e.target.value)}
+                              className="bg-slate-950 border border-slate-750 text-white font-mono font-bold text-xs rounded-lg px-2 py-1 focus:border-amber-500 focus:outline-none cursor-pointer"
+                            >
+                              <option value="Motorista">🚚 Motorista</option>
+                              <option value="Ajudante 1">👥 Ajudante 1</option>
+                              <option value="Ajudante 2">👥 Ajudante 2</option>
+                              <option value="Ajudante 3">👥 Ajudante 3</option>
+                              <option value="Ajudante 4">👥 Ajudante 4</option>
+                              <option value="Ajudante">👥 Ajudante</option>
+                              <option value="Auxiliar">🤝 Auxiliar</option>
+                            </select>
+                            {isX && (
+                              <span className="px-2 py-0.5 bg-purple-900/80 border border-purple-700 text-purple-200 text-[9px] font-bold rounded font-mono">
+                                ISENTO
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <label className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={!!member.isExempt}
+                                onChange={(e) => handleUpdateAvulsoCrewMember(index, "isExempt", e.target.checked)}
+                                className="rounded border-slate-700 text-purple-600 focus:ring-purple-500 cursor-pointer"
+                              />
+                              <span className={member.isExempt ? "text-purple-300 font-bold" : ""}>Isento (Regra Motorista X)</span>
+                            </label>
+                            {avulsoCrew.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAvulsoCrew(prev => prev.filter((_, i) => i !== index));
+                                }}
+                                className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition-colors cursor-pointer"
+                                title="Remover este colaborador"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                          <div className="sm:col-span-5">
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (!val) return;
+                                handleUpdateAvulsoCrewMember(index, "name", val);
+                              }}
+                              className="w-full bg-slate-950 border border-slate-750 text-slate-300 rounded-lg px-2 py-1 text-xs font-mono focus:border-amber-500 focus:outline-none cursor-pointer"
+                            >
+                              <option value="">-- Selecionar da Equipe Pau Brasil --</option>
+                              <optgroup label="🚚 Motoristas de Distribuição">
+                                {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA")).map((m, mIdx) => (
+                                  <option key={`av_m_${m.cpf || m.nome}_${mIdx}`} value={m.nome}>{m.nome}</option>
+                                ))}
+                              </optgroup>
+                              <optgroup label="👥 Ajudantes de Distribuição">
+                                {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map((a, aIdx) => (
+                                  <option key={`av_a_${a.cpf || a.nome}_${aIdx}`} value={a.nome}>{a.nome}</option>
+                                ))}
+                              </optgroup>
+                            </select>
+                          </div>
+
+                          <div className="sm:col-span-4">
+                            <input
+                              type="text"
+                              placeholder="Nome do colaborador"
+                              value={member.name}
+                              onChange={(e) => handleUpdateAvulsoCrewMember(index, "name", e.target.value)}
+                              className="w-full bg-slate-950 border border-slate-750 text-white uppercase font-sans font-bold rounded-lg px-2 py-1 text-xs focus:border-amber-500 focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="sm:col-span-3">
+                            <input
+                              type="text"
+                              placeholder="CPF"
+                              value={member.cpf}
+                              onChange={(e) => handleUpdateAvulsoCrewMember(index, "cpf", e.target.value)}
+                              className="w-full bg-slate-950 border border-slate-750 text-slate-300 font-mono rounded-lg px-2 py-1 text-xs focus:border-amber-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 

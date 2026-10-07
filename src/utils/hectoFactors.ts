@@ -478,23 +478,113 @@ export function getRecordHL(r: {
 }
 
 /**
- * Checks if a record represents an approved request.
+ * Checks if a record represents a genuinely approved request in Promax 03.18.05.
+ * Strictly excludes unapproved statuses (pendente, aguardando, em análise, cancelada, reprovada, solicitada, etc.).
  */
 export function isRecordApproved(r: { status?: string; statusPromax?: string }): boolean {
+  if (!r) return false;
   const s = (r.status || "").toLowerCase().trim();
   const sp = (r.statusPromax || "").toLowerCase().trim();
 
-  if (s.includes("reprov") || s.includes("cancela") || s.includes("pendent") || s.includes("recus") || s.includes("corrig")) {
+  // 1. Explicit non-approved / pending statuses in Promax 03.18.05
+  if (
+    s.includes("reprov") || 
+    s.includes("cancela") || 
+    s.includes("pend") || 
+    s.includes("recus") || 
+    s.includes("corrig") ||
+    s.includes("abert") ||
+    s.includes("solicitad") ||
+    s.includes("analis") ||
+    s.includes("aguard")
+  ) {
     return false;
   }
-  if (sp === "reprovado" || sp === "corrigir" || sp === "pendente") {
+  if (sp === "reprovado" || sp === "corrigir" || sp === "pendente" || sp === "em_aberto") {
     return false;
   }
 
-  if (s.includes("aprov") || s.includes("cadastrad") || s.includes("faturad") || s.includes("concluid") || s === "atendido" || sp === "cadastrado" || sp === "concluido") {
+  // 2. Official approved statuses in Promax 03.18.05
+  if (
+    s.includes("aprov") || 
+    s.includes("faturad") || 
+    s.includes("concluid") || 
+    s === "atendido" || 
+    sp === "aprovado" || 
+    sp === "concluido" || 
+    sp === "faturado"
+  ) {
     return true;
   }
 
-  return s !== "" && !s.includes("pend") && !s.includes("reprov") && !s.includes("cancela");
+  return false;
 }
+
+/**
+ * METAS ORÇAMENTÁRIAS CORPORATIVAS DA OPERAÇÃO SSTR (PAU BRASIL)
+ * Conforme parâmetros corporativos:
+ * - Mês 1 a Mês 7 (Janeiro a Julho): Meta de R$ 7.800,00 por mês (Total Jan-Jul: R$ 54.600,00).
+ * - Mês 8 em diante (Agosto a Dezembro): Meta de R$ 12.000,00 por mês (Total Ago-Dez: R$ 60.000,00).
+ * - 1º Semestre (Janeiro a Junho): R$ 46.800,00 (6 x R$ 7.800,00).
+ * - 2º Semestre (Julho a Dezembro): R$ 67.800,00 (1 x R$ 7.800 + 5 x R$ 12.000).
+ * - Meta Anual Financeira: R$ 114.600,00 (R$ 46.800 + R$ 67.800).
+ */
+export const META_VALOR_BY_MONTH: Record<string, number> = {
+  "01": 7800,  // JANEIRO: R$ 7.800,00
+  "02": 7800,  // FEVEREIRO: R$ 7.800,00
+  "03": 7800,  // MARÇO: R$ 7.800,00
+  "04": 7800,  // ABRIL: R$ 7.800,00
+  "05": 7800,  // MAIO: R$ 7.800,00
+  "06": 7800,  // JUNHO: R$ 7.800,00
+  "07": 7800,  // JULHO: R$ 7.800,00
+  "08": 12000, // AGOSTO: R$ 12.000,00
+  "09": 12000, // SETEMBRO: R$ 12.000,00
+  "10": 12000, // OUTUBRO: R$ 12.000,00
+  "11": 12000, // NOVEMBRO: R$ 12.000,00
+  "12": 12000, // DEZEMBRO: R$ 12.000,00
+};
+
+/**
+ * METAS DE VOLUME EM HECTOLITROS (HL) POR MÊS
+ * 1º Semestre (Jan-Jun): 58,42 HL
+ * 2º Semestre (Jul-Dez): 70,99 HL
+ * Anual Total: 129,41 HL
+ */
+export const META_HL_BY_MONTH: Record<string, number> = {
+  "01": 5.61,  // JANEIRO
+  "02": 12.02, // FEVEREIRO
+  "03": 7.03,  // MARÇO
+  "04": 8.44,  // ABRIL
+  "05": 9.88,  // MAIO
+  "06": 15.44, // JUNHO
+  "07": 10.02, // JULHO
+  "08": 8.27,  // AGOSTO
+  "09": 13.80, // SETEMBRO
+  "10": 15.30, // OUTUBRO
+  "11": 10.70, // NOVEMBRO
+  "12": 12.90, // DEZEMBRO
+};
+
+export const META_FINANCEIRA_SEMESTRE_1 = 46800; // 6 x R$ 7.800,00 = R$ 46.800,00
+export const META_FINANCEIRA_SEMESTRE_2 = 67800; // (1 x R$ 7.800) + (5 x R$ 12.000) = R$ 67.800,00
+export const META_FINANCEIRA_ANUAL = 114600;     // (7 x R$ 7.800) + (5 x R$ 12.000) = R$ 114.600,00
+
+export const META_HL_SEMESTRE_1 = 58.42;
+export const META_HL_SEMESTRE_2 = 70.99;
+export const META_HL_ANUAL = 129.41;
+
+export function getMonthlyMetaValor(monthStrOrNum?: string | number): number {
+  if (!monthStrOrNum) return 12000;
+  const raw = String(monthStrOrNum).trim();
+  const m = raw.includes("/") ? raw.split("/")[0].padStart(2, "0") : (raw.includes("-") ? raw.split("-")[1].padStart(2, "0") : raw.padStart(2, "0"));
+  return META_VALOR_BY_MONTH[m] || 12000;
+}
+
+export function getMonthlyMetaHL(monthStrOrNum?: string | number): number {
+  if (!monthStrOrNum) return 10.0;
+  const raw = String(monthStrOrNum).trim();
+  const m = raw.includes("/") ? raw.split("/")[0].padStart(2, "0") : (raw.includes("-") ? raw.split("-")[1].padStart(2, "0") : raw.padStart(2, "0"));
+  return META_HL_BY_MONTH[m] || 10.0;
+}
+
 

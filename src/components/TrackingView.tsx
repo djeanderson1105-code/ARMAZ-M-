@@ -2,7 +2,7 @@ import React, { useState, useMemo } from "react";
 import { ExchangeRecord, PendingRequest, REPRESENTATIVOS_SETOR } from "../types";
 import { Search, Eye, Filter, CheckCircle2, AlertCircle, HelpCircle, X, ExternalLink, RefreshCw, UserCheck, Calendar, AlertTriangle, Layers, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, DollarSign, ClipboardList, Percent, TrendingUp, Package, Tag, FileText, Download, Loader2 } from "lucide-react";
 import { getRecordHL } from "../utils/hectoFactors";
-import { isRecordReposicao, isRecordTroca } from "../utils/processTypes";
+import { isRecordReposicao, isRecordTroca, isCustomerOrigin, isPromaxOrigin } from "../utils/processTypes";
 import { exportAuditTrackingPdf } from "../utils/auditPdfGenerator";
 import { exportAuditTrackingExcel } from "../utils/auditExcelGenerator";
 
@@ -13,6 +13,110 @@ interface TrackingViewProps {
   filteredSector?: string;
   onClearSectorFilter?: () => void;
 }
+
+// Helper to perform strict, direct NB (customer code) matching
+// Supports exact match ("21" === "21") or prefix match ("21045".startsWith("21")),
+// also handling leading zeros normalization ("0021" vs "21").
+// Never matches arbitrary middle/trailing substrings (e.g. "12104" or "921").
+export const matchNbCode = (codigoCliente: string | undefined | null, searchInput: string): boolean => {
+  if (!codigoCliente) return false;
+  const rawCode = String(codigoCliente).trim().toLowerCase();
+  const rawSearch = searchInput.trim().toLowerCase();
+  if (!rawSearch) return true;
+
+  // 1. Direct exact match
+  if (rawCode === rawSearch) return true;
+
+  // 2. Direct prefix match: starts with (e.g. "21" matches "2104", "21458")
+  if (rawCode.startsWith(rawSearch)) return true;
+
+  // 3. Normalized without leading zeros (e.g. "00021" vs "21", or "00215" vs "21")
+  const strippedCode = rawCode.replace(/^0+/, "");
+  const strippedSearch = rawSearch.replace(/^0+/, "");
+  if (strippedCode && strippedSearch) {
+    if (strippedCode === strippedSearch) return true;
+    if (strippedCode.startsWith(strippedSearch)) return true;
+  }
+
+  return false;
+};
+
+// Helper for record search matching across all searchField options
+export const checkRecordSearchMatch = (r: ExchangeRecord, searchTerm: string, searchField: string): boolean => {
+  if (!searchTerm || !searchTerm.trim()) return true;
+  const normSearch = searchTerm.trim().toLowerCase();
+  const isOnlyDigits = /^\d+$/.test(normSearch);
+
+  if (searchField === "nb") {
+    // Strictly filter by customer NB code (starts with or exact match)
+    return matchNbCode(r.codigoCliente, normSearch);
+  }
+
+  if (searchField === "cliente_nome") {
+    return (r.nomeCliente || "").toLowerCase().includes(normSearch);
+  }
+
+  if (searchField === "cliente") {
+    // If user provided a numeric code (e.g. "21"), match NB strictly (starts with or exact)
+    if (isOnlyDigits) {
+      const nbMatch = matchNbCode(r.codigoCliente, normSearch);
+      if (nbMatch) return true;
+      // Match client name only if it contains the number as a standalone word (e.g. "BAR 21"),
+      // not as an arbitrary internal substring of names or addresses
+      const nameWordRegex = new RegExp(`(^|\\D)${normSearch}(\\D|$)`, "i");
+      return nameWordRegex.test(r.nomeCliente || "");
+    }
+    return (r.nomeCliente || "").toLowerCase().includes(normSearch) || matchNbCode(r.codigoCliente, normSearch);
+  }
+
+  if (searchField === "setor") {
+    return (r.setorVenda || "").toLowerCase().includes(normSearch);
+  }
+
+  if (searchField === "nf") {
+    return (r.nf || "").toLowerCase().includes(normSearch);
+  }
+
+  if (searchField === "motorista") {
+    return !!r.nomeMotorista && r.nomeMotorista.toLowerCase().includes(normSearch);
+  }
+
+  if (searchField === "mapa") {
+    return !!r.mapa && r.mapa.includes(normSearch);
+  }
+
+  if (searchField === "solicitacao") {
+    return (r.solicitacao || "").includes(normSearch);
+  }
+
+  if (searchField === "item") {
+    return (r.produto || "").includes(normSearch) || (r.descricaoProduto || "").toLowerCase().includes(normSearch);
+  }
+
+  // searchField === "todos"
+  if (isOnlyDigits) {
+    const nbMatch = matchNbCode(r.codigoCliente, normSearch);
+    const solMatch = (r.solicitacao || "").includes(normSearch);
+    const nfMatch = (r.nf || "").toLowerCase().includes(normSearch);
+    const mapaMatch = !!r.mapa && r.mapa.includes(normSearch);
+    const prodMatch = (r.produto || "").includes(normSearch) || (r.descricaoProduto || "").toLowerCase().includes(normSearch);
+    const motMatch = !!r.nomeMotorista && r.nomeMotorista.toLowerCase().includes(normSearch);
+    const nameWordRegex = new RegExp(`(^|\\D)${normSearch}(\\D|$)`, "i");
+    const nameMatch = nameWordRegex.test(r.nomeCliente || "");
+    return nbMatch || nameMatch || solMatch || nfMatch || mapaMatch || prodMatch || motMatch;
+  }
+
+  return (
+    (r.nomeCliente || "").toLowerCase().includes(normSearch) ||
+    matchNbCode(r.codigoCliente, normSearch) ||
+    (r.solicitacao || "").includes(normSearch) ||
+    (r.descricaoProduto || "").toLowerCase().includes(normSearch) ||
+    (r.produto || "").includes(normSearch) ||
+    (r.nf || "").toLowerCase().includes(normSearch) ||
+    (!!r.nomeMotorista && r.nomeMotorista.toLowerCase().includes(normSearch)) ||
+    (!!r.mapa && r.mapa.includes(normSearch))
+  );
+};
 
 export default function TrackingView({ records, pendingRequests = [], onUpdateRecordStatus, filteredSector, onClearSectorFilter }: TrackingViewProps) {
   const [localSearchTerm, setLocalSearchTerm] = useState("");
@@ -35,6 +139,7 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
   const [viewMode, setViewMode] = useState<"individual" | "grouped" | "duplicates">("grouped");
   const isGroupedView = viewMode === "grouped";
   const [activeGroupedSol, setActiveGroupedSol] = useState<any | null>(null);
+  const [duplicatesSubFilter, setDuplicatesSubFilter] = useState<"all" | "customer" | "promax" | "pendentes">("all");
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -249,35 +354,9 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
   const filteredRecords = useMemo(() => {
     const list = records.filter(r => {
       // 1. Search term match with searchField support
-      const normSearch = searchTerm.toLowerCase();
       let matchSearch = true;
       if (searchTerm) {
-        if (searchField === "cliente") {
-          matchSearch = r.nomeCliente.toLowerCase().includes(normSearch) || r.codigoCliente.includes(normSearch);
-        } else if (searchField === "setor") {
-          matchSearch = r.setorVenda.toLowerCase().includes(normSearch);
-        } else if (searchField === "nf") {
-          matchSearch = r.nf.toLowerCase().includes(normSearch);
-        } else if (searchField === "motorista") {
-          matchSearch = !!r.nomeMotorista && r.nomeMotorista.toLowerCase().includes(normSearch);
-        } else if (searchField === "mapa") {
-          matchSearch = !!r.mapa && r.mapa.includes(normSearch);
-        } else if (searchField === "solicitacao") {
-          matchSearch = r.solicitacao.includes(normSearch);
-        } else if (searchField === "item") {
-          matchSearch = r.produto.includes(normSearch) || r.descricaoProduto.toLowerCase().includes(normSearch);
-        } else {
-          // searchField === "todos"
-          matchSearch = 
-            r.nomeCliente.toLowerCase().includes(normSearch) ||
-            r.codigoCliente.includes(normSearch) ||
-            r.solicitacao.includes(normSearch) ||
-            r.descricaoProduto.toLowerCase().includes(normSearch) ||
-            r.produto.includes(normSearch) ||
-            r.nf.toLowerCase().includes(normSearch) ||
-            (r.nomeMotorista && r.nomeMotorista.toLowerCase().includes(normSearch)) ||
-            (r.mapa && r.mapa.includes(normSearch));
-        }
+        matchSearch = checkRecordSearchMatch(r, searchTerm, searchField);
       }
 
       // 2. Status match
@@ -404,6 +483,9 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
         || (first.mapaOrigem && first.mapaOrigem !== "0" ? first.mapaOrigem : "")
         || (first.mapa && first.mapa !== "0" && first.mapa.toLowerCase() !== "falta" ? first.mapa : "");
 
+      const isCustomer = recs.some(r => isCustomerOrigin(r.sistemaOrigem));
+      const sisOrigemResolved = isCustomer ? "Customer" : (recs.find(r => r.sistemaOrigem)?.sistemaOrigem || first.sistemaOrigem || "Promax");
+
       return {
         id: sol,
         solicitacao: sol,
@@ -416,6 +498,8 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
         mapaOrigem: first.mapaOrigem || "",
         mapaReposicao: first.mapaReposicao || "",
         observacao: first.observacao || "",
+        sistemaOrigem: sisOrigemResolved,
+        isCustomerOrigin: isCustomer,
         records: recs,
         productsKey,
         totalValue: recs.reduce((sum, r) => sum + r.valorTotal, 0),
@@ -782,34 +866,9 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
 
     // Compute status distribution based on active search/filters EXCEPT the status filter
     records.forEach(r => {
-      const normSearch = searchTerm.toLowerCase();
       let matchSearch = true;
       if (searchTerm) {
-        if (searchField === "cliente") {
-          matchSearch = r.nomeCliente.toLowerCase().includes(normSearch) || r.codigoCliente.includes(normSearch);
-        } else if (searchField === "setor") {
-          matchSearch = r.setorVenda.toLowerCase().includes(normSearch);
-        } else if (searchField === "nf") {
-          matchSearch = r.nf.toLowerCase().includes(normSearch);
-        } else if (searchField === "motorista") {
-          matchSearch = !!r.nomeMotorista && r.nomeMotorista.toLowerCase().includes(normSearch);
-        } else if (searchField === "mapa") {
-          matchSearch = !!r.mapa && r.mapa.includes(normSearch);
-        } else if (searchField === "solicitacao") {
-          matchSearch = r.solicitacao.includes(normSearch);
-        } else if (searchField === "item") {
-          matchSearch = r.produto.includes(normSearch) || r.descricaoProduto.toLowerCase().includes(normSearch);
-        } else {
-          matchSearch = 
-            r.nomeCliente.toLowerCase().includes(normSearch) ||
-            r.codigoCliente.includes(normSearch) ||
-            r.solicitacao.includes(normSearch) ||
-            r.descricaoProduto.toLowerCase().includes(normSearch) ||
-            r.produto.includes(normSearch) ||
-            r.nf.toLowerCase().includes(normSearch) ||
-            (r.nomeMotorista && r.nomeMotorista.toLowerCase().includes(normSearch)) ||
-            (r.mapa && r.mapa.includes(normSearch));
-        }
+        matchSearch = checkRecordSearchMatch(r, searchTerm, searchField);
       }
 
       let matchSector = true;
@@ -1048,6 +1107,9 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
         .sort()
         .join("|");
 
+      const isCustomer = recs.some(r => isCustomerOrigin(r.sistemaOrigem));
+      const sisOrigemResolved = isCustomer ? "Customer" : (recs.find(r => r.sistemaOrigem)?.sistemaOrigem || first.sistemaOrigem || "Promax");
+
       return {
         solicitacao: sol,
         codigoCliente: (first.codigoCliente || "").trim(),
@@ -1059,7 +1121,9 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
         nf: first.nf || "",
         records: recs,
         productsKey,
-        origem: first.sistemaOrigem || "Base Importada Promax (03.18.05)",
+        origem: isCustomer ? "Customer" : (first.sistemaOrigem || "Base Importada Promax (03.18.05)"),
+        sistemaOrigem: sisOrigemResolved,
+        isCustomerOrigin: isCustomer,
         totalValue: recs.reduce((sum, r) => sum + r.valorTotal, 0)
       };
     });
@@ -1190,6 +1254,7 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
 
     // 4. Cluster duplicates by 30-day date interval and filter by current month
     const list: any[] = [];
+    const includedCustomerSolIds = new Set<string>();
 
     Object.entries(candidates).forEach(([candKey, poolSols]) => {
       if (poolSols.length <= 1) return;
@@ -1228,6 +1293,10 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
       const validClusters = clusters.filter(cluster => {
         if (cluster.length <= 1) return false;
 
+        // If the cluster contains any solicitation originated from Customer (Coluna BK), ALWAYS keep it!
+        const hasCustomerSol = cluster.some(sol => sol.isCustomerOrigin);
+        if (hasCustomerSol) return true;
+
         const pendingCount = cluster.filter(sol => sol.status.toLowerCase().includes("pend")).length;
         const approvedCount = cluster.filter(sol => sol.status.toLowerCase().includes("aprov")).length;
         // Se houver apenas uma solicitação pendente e nenhuma aprovada (ou seja, as demais estão reprovadas),
@@ -1249,6 +1318,7 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
       // Map valid clusters to duplicate group format
       validClusters.forEach((cluster, clusterIdx) => {
         const hasApproved = cluster.some(sol => sol.status.toLowerCase().includes("aprov"));
+        const hasCustomerInCluster = cluster.some(s => s.isCustomerOrigin);
         // Sort pending solicitations to find the oldest pending to keep
         const pendingSols = cluster.filter(sol => sol.status.toLowerCase().includes("pend"));
         const recommendedKeepSol = hasApproved ? null : pendingSols[0];
@@ -1259,7 +1329,36 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
           let adviceText = "";
           let adviceColor = "";
 
-          if (statusClean.includes("aprov")) {
+          if (sol.isCustomerOrigin) {
+            includedCustomerSolIds.add(sol.solicitacao);
+            if (statusClean.includes("reprov")) {
+              adviceType = "already_reproved";
+              adviceText = "❌ JÁ REPROVADA: Esta solicitação Customer já foi resolvida e reprovada no Promax.";
+              adviceColor = "border-slate-800 bg-slate-950/40 text-slate-500 opacity-80";
+            } else if (statusClean.includes("aprov")) {
+              adviceType = "keep_approved";
+              adviceText = "✔️ MANTER APROVADA: Solicitação Customer já aprovada no sistema.";
+              adviceColor = "border-emerald-600/40 bg-emerald-950/20 text-emerald-400";
+            } else {
+              adviceType = "reject_duplicate_pending";
+              adviceText = "⚠️ REPROVAR NO PROMAX (ORIGEM CUSTOMER - COLUNA BK): Duplicata enviada via canal Customer. Reprove no Promax e mantenha o registro Promax oficial.";
+              adviceColor = "border-purple-600/60 bg-purple-950/30 text-purple-300 font-bold shadow-xs";
+            }
+          } else if (hasCustomerInCluster && !sol.isCustomerOrigin) {
+            if (statusClean.includes("aprov")) {
+              adviceType = "keep_approved";
+              adviceText = "✔️ MANTER APROVADA: Registro oficial Promax (Coluna BK) aprovado.";
+              adviceColor = "border-emerald-600/40 bg-emerald-950/20 text-emerald-400";
+            } else if (statusClean.includes("reprov")) {
+              adviceType = "already_reproved";
+              adviceText = "❌ JÁ REPROVADA: Registro Promax já reprovado.";
+              adviceColor = "border-slate-800 bg-slate-950/40 text-slate-500 opacity-80";
+            } else {
+              adviceType = "approve_recommended";
+              adviceText = "⭐ REGISTRO OFICIAL PROMAX (COLUNA BK): Mantenha este registro Promax e reprove a duplicata aberta pelo Customer.";
+              adviceColor = "border-emerald-500/50 bg-emerald-950/30 text-emerald-300 font-bold";
+            }
+          } else if (statusClean.includes("aprov")) {
             adviceType = "keep_approved";
             adviceText = "✔️ MANTER APROVADA: Esta solicitação já foi aprovada no sistema.";
             adviceColor = "border-emerald-600/40 bg-emerald-950/20 text-emerald-400";
@@ -1284,7 +1383,7 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
           }
 
           // Assign advice to each individual item record inside the solicitation for display
-          const recordsWithAdvice = sol.records.map(r => ({
+          const recordsWithAdvice = sol.records.map((r: any) => ({
             ...r,
             adviceType,
             adviceText,
@@ -1313,6 +1412,69 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
       });
     });
 
+    // 5. Ensure ALL solicitations with origin "Customer" / "Costumer" in Column BK (03.18.05) appear in duplicate audit
+    const remainingCustomerSols = solsList.filter(sol => sol.isCustomerOrigin && !includedCustomerSolIds.has(sol.solicitacao));
+
+    // Group remaining customer solicitations by client NB
+    const customerByClient: Record<string, typeof solsList> = {};
+    remainingCustomerSols.forEach(sol => {
+      const clientKey = sol.codigoCliente || sol.solicitacao;
+      if (!customerByClient[clientKey]) {
+        customerByClient[clientKey] = [];
+      }
+      customerByClient[clientKey].push(sol);
+    });
+
+    Object.entries(customerByClient).forEach(([clientKey, custSols], idx) => {
+      const mappedSols = custSols.map(sol => {
+        const statusClean = sol.status.toLowerCase().trim();
+        let adviceType: "keep_approved" | "already_reproved" | "reject_duplicate_approved" | "approve_recommended" | "reject_duplicate_pending" = "reject_duplicate_pending";
+        let adviceText = "";
+        let adviceColor = "";
+
+        if (statusClean.includes("reprov")) {
+          adviceType = "already_reproved";
+          adviceText = "❌ JÁ REPROVADA: Esta solicitação Customer já foi resolvida e reprovada no Promax.";
+          adviceColor = "border-slate-800 bg-slate-950/40 text-slate-500 opacity-80";
+        } else if (statusClean.includes("aprov")) {
+          adviceType = "keep_approved";
+          adviceText = "✔️ MANTER APROVADA: Solicitação Customer validada e aprovada.";
+          adviceColor = "border-emerald-600/40 bg-emerald-950/20 text-emerald-400";
+        } else {
+          adviceType = "reject_duplicate_pending";
+          adviceText = "⚠️ SOLICITAÇÃO ORIGEM CUSTOMER (COLUNA BK 03.18.05): Lançamento externo do canal Customer. Audite se for duplicata ou indevida e reprove no Promax.";
+          adviceColor = "border-purple-600/60 bg-purple-950/30 text-purple-300 font-bold shadow-xs";
+        }
+
+        const recordsWithAdvice = sol.records.map((r: any) => ({
+          ...r,
+          adviceType,
+          adviceText,
+          adviceColor
+        }));
+
+        return {
+          ...sol,
+          records: recordsWithAdvice,
+          adviceType,
+          adviceText,
+          adviceColor
+        };
+      });
+
+      const firstSol = mappedSols[0];
+      const flatGroupRecords = mappedSols.flatMap(sol => sol.records);
+
+      list.push({
+        key: `customer_audit_${clientKey}_${idx}`,
+        codigoCliente: firstSol.codigoCliente,
+        nomeCliente: firstSol.nomeCliente,
+        isCustomerAudit: true,
+        records: flatGroupRecords,
+        solicitations: mappedSols
+      });
+    });
+
     // Sort the duplicate groups by the number of pending solicitations inside them
     list.sort((a, b) => {
       const aPendCount = a.solicitations.filter((sol: any) => sol.status.toLowerCase().includes("pend")).length;
@@ -1321,29 +1483,64 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
     });
 
     return list;
-  }, [records]);
+  }, [records, pendingRequests]);
 
   // Filter duplicate groups based on dropdown/search filters
   const filteredDuplicateGroups = useMemo(() => {
     return allDuplicateGroups.filter(g => {
+      // Sub-filter inside duplicates view
+      if (duplicatesSubFilter === "customer") {
+        const hasCust = g.isCustomerAudit || g.solicitations.some((s: any) => s.isCustomerOrigin);
+        if (!hasCust) return false;
+      } else if (duplicatesSubFilter === "promax") {
+        const onlyPromax = !g.isCustomerAudit && g.solicitations.every((s: any) => !s.isCustomerOrigin);
+        if (!onlyPromax) return false;
+      } else if (duplicatesSubFilter === "pendentes") {
+        const hasPending = g.solicitations.some((s: any) => s.status.toLowerCase().includes("pend"));
+        if (!hasPending) return false;
+      }
+
       // Search text match
       if (searchTerm) {
-        const norm = searchTerm.toLowerCase();
+        const norm = searchTerm.trim().toLowerCase();
+        const isOnlyDigits = /^\d+$/.test(norm);
         let match = false;
-        if (searchField === "cliente") {
-          match = g.nomeCliente.toLowerCase().includes(norm) || g.codigoCliente.toLowerCase().includes(norm);
+        if (searchField === "nb") {
+          match = matchNbCode(g.codigoCliente, norm);
+        } else if (searchField === "cliente_nome") {
+          match = (g.nomeCliente || "").toLowerCase().includes(norm);
+        } else if (searchField === "cliente") {
+          if (isOnlyDigits) {
+            match = matchNbCode(g.codigoCliente, norm) || new RegExp(`(^|\\D)${norm}(\\D|$)`, "i").test(g.nomeCliente || "");
+          } else {
+            match = (g.nomeCliente || "").toLowerCase().includes(norm) || matchNbCode(g.codigoCliente, norm);
+          }
         } else if (searchField === "item") {
           match = g.records.some((r: any) => 
             (r.produto || "").toLowerCase().includes(norm) || 
             (r.descricaoProduto || "").toLowerCase().includes(norm)
           );
         } else {
-          match = g.nomeCliente.toLowerCase().includes(norm) ||
-            g.codigoCliente.toLowerCase().includes(norm) ||
+          const nameMatch = isOnlyDigits 
+            ? new RegExp(`(^|\\D)${norm}(\\D|$)`, "i").test(g.nomeCliente || "")
+            : (g.nomeCliente || "").toLowerCase().includes(norm);
+
+          match = nameMatch ||
+            matchNbCode(g.codigoCliente, norm) ||
             g.records.some((r: any) => 
               (r.produto || "").toLowerCase().includes(norm) || 
-              (r.descricaoProduto || "").toLowerCase().includes(norm)
+              (r.descricaoProduto || "").toLowerCase().includes(norm) ||
+              (r.sistemaOrigem || "").toLowerCase().includes(norm)
             );
+
+          if (norm.includes("costumer") || norm.includes("customer")) {
+            const hasCustomer = g.isCustomerAudit || g.solicitations.some((s: any) => s.isCustomerOrigin) || g.records.some((r: any) => isCustomerOrigin(r.sistemaOrigem));
+            if (hasCustomer) match = true;
+          }
+          if (norm.includes("promax")) {
+            const hasPromax = g.solicitations.some((s: any) => !s.isCustomerOrigin) || g.records.some((r: any) => isPromaxOrigin(r.sistemaOrigem));
+            if (hasPromax) match = true;
+          }
         }
         if (!match) return false;
       }
@@ -1368,7 +1565,41 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
 
       return true;
     });
-  }, [allDuplicateGroups, searchTerm, searchField, selectedSector, startDate, endDate]);
+  }, [allDuplicateGroups, duplicatesSubFilter, searchTerm, searchField, selectedSector, startDate, endDate]);
+
+  // Statistics for Duplicates view tabs and quick actions
+  const duplicateStats = useMemo(() => {
+    let totalCustomerGroups = 0;
+    let totalCustomerPendingSols = 0;
+    let totalPromaxGroups = 0;
+    let pendingReproveCount = 0;
+
+    allDuplicateGroups.forEach(g => {
+      const isCust = g.isCustomerAudit || g.solicitations.some((s: any) => s.isCustomerOrigin);
+      if (isCust) {
+        totalCustomerGroups++;
+      } else {
+        totalPromaxGroups++;
+      }
+
+      g.solicitations.forEach((s: any) => {
+        const isPend = s.status.toLowerCase().includes("pend");
+        if (isPend) {
+          pendingReproveCount++;
+          if (s.isCustomerOrigin) {
+            totalCustomerPendingSols++;
+          }
+        }
+      });
+    });
+
+    return {
+      totalCustomerGroups,
+      totalCustomerPendingSols,
+      totalPromaxGroups,
+      pendingReproveCount
+    };
+  }, [allDuplicateGroups]);
 
   // Sync back to old set for list highlights
   const duplicateSolicitationIds = useMemo(() => {
@@ -1589,6 +1820,8 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                 className="w-full pl-3 pr-8 py-3 bg-slate-950 border border-slate-850 rounded-xl text-xs font-bold text-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-600 font-mono cursor-pointer transition-all shadow-md appearance-none"
               >
                 <option value="todos">🔍 Todos os Campos</option>
+                <option value="nb">🔢 Código Cliente (NB)</option>
+                <option value="cliente_nome">👤 Nome / Razão Social</option>
                 <option value="cliente">👤 Cliente (Nome ou NB)</option>
                 <option value="setor">📍 Setor de Venda</option>
                 <option value="nf">📄 Nota Fiscal (NF-e)</option>
@@ -1611,7 +1844,9 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                 type="text"
                 placeholder={
                   searchField === "todos" ? "Buscar por cliente, produto, NF, motorista, mapa, solicitação..." :
-                  searchField === "cliente" ? "Cliente: Digite o Nome ou NB..." :
+                  searchField === "nb" ? "NB: Digite o Código do Cliente (ex: 21 ou início)..." :
+                  searchField === "cliente_nome" ? "Cliente: Digite o Nome ou Razão Social..." :
+                  searchField === "cliente" ? "Cliente: Digite o Nome ou NB (ex: 21)..." :
                   searchField === "setor" ? "Setor: Digite o Setor de Venda..." :
                   searchField === "nf" ? "NF: Digite o número da NF-e..." :
                   searchField === "motorista" ? "Motorista: Digite o nome do motorista..." :
@@ -2422,21 +2657,110 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
         <div className={`space-y-4 ${ (viewMode !== "duplicates" && (isGroupedView ? activeGroupedSol : activeDetailRecord)) ? "lg:col-span-7" : "lg:col-span-12"}`}>
           {viewMode === "duplicates" ? (
             <div className="space-y-6">
+              {/* Duplicates Sub-Filter & Bulk Actions Bar */}
+              <div className="bg-slate-900/90 p-3.5 rounded-2xl border border-slate-800 shadow-xl flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] font-mono uppercase font-bold text-slate-400 mr-1 flex items-center gap-1">
+                    <Filter className="w-3 h-3 text-slate-400" />
+                    <span>Filtrar:</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setDuplicatesSubFilter("all")}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                      duplicatesSubFilter === "all"
+                        ? "bg-amber-600 text-white shadow-sm"
+                        : "bg-slate-950 text-slate-400 hover:text-white border border-slate-800"
+                    }`}
+                  >
+                    🌐 Todos ({allDuplicateGroups.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDuplicatesSubFilter("customer")}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer flex items-center gap-1.5 ${
+                      duplicatesSubFilter === "customer"
+                        ? "bg-purple-600 text-white shadow-sm"
+                        : "bg-slate-950 text-purple-300 hover:text-white border border-purple-900/60"
+                    }`}
+                  >
+                    <span>👤 Origem Customer (Coluna BK) ({duplicateStats.totalCustomerGroups})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDuplicatesSubFilter("promax")}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer flex items-center gap-1.5 ${
+                      duplicatesSubFilter === "promax"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "bg-slate-950 text-blue-300 hover:text-white border border-blue-900/60"
+                    }`}
+                  >
+                    <span>🏢 Duplicatas Promax ({duplicateStats.totalPromaxGroups})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDuplicatesSubFilter("pendentes")}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer flex items-center gap-1.5 ${
+                      duplicatesSubFilter === "pendentes"
+                        ? "bg-rose-600 text-white shadow-sm"
+                        : "bg-slate-950 text-rose-300 hover:text-white border border-rose-900/60"
+                    }`}
+                  >
+                    <span>⏳ Pendentes ({duplicateStats.pendingReproveCount})</span>
+                  </button>
+                </div>
+
+                {duplicateStats.totalCustomerPendingSols > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm(`Deseja reprovar no Promax todas as ${duplicateStats.totalCustomerPendingSols} solicitações pendentes identificadas com origem Customer (Coluna BK 03.18.05)?`)) {
+                        filteredDuplicateGroups.forEach(g => {
+                          g.solicitations.forEach((s: any) => {
+                            if (s.isCustomerOrigin && s.status.toLowerCase().includes("pend")) {
+                              s.records.forEach((rec: any) => {
+                                if (rec.status.toLowerCase().includes("pend")) {
+                                  onUpdateRecordStatus(rec.id, "Reprovada", "Solicitação Customer (Coluna BK 03.18.05) reprovada no Promax via auditoria de duplicatas");
+                                }
+                              });
+                            }
+                          });
+                        });
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-gradient-to-r from-purple-900 to-rose-900 hover:from-purple-800 hover:to-rose-800 text-white font-mono text-xs font-bold rounded-xl border border-purple-700/80 shadow-md flex items-center gap-1.5 cursor-pointer transition-all ml-auto"
+                    title="Reprovar todas as solicitações pendentes abertas via canal Customer (Coluna BK)"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5 text-purple-300" />
+                    <span>Reprovar {duplicateStats.totalCustomerPendingSols} Customer no Promax</span>
+                  </button>
+                )}
+              </div>
+
               {filteredDuplicateGroups.length === 0 ? (
                 <div className="bg-slate-900/90 text-center py-16 rounded-2xl border border-slate-850 text-slate-400 font-mono text-xs">
-                  Nenhum conflito de duplicidade encontrado para os filtros selecionados.
+                  Nenhum conflito de duplicidade ou solicitação Customer encontrado para os filtros selecionados.
                 </div>
               ) : (
                 filteredDuplicateGroups.map((g, gIdx) => {
+                  const hasCustomerInGroup = g.isCustomerAudit || g.solicitations.some((s: any) => s.isCustomerOrigin);
                   return (
-                  <div key={g.key} className="bg-slate-900/90 rounded-2xl border border-slate-800 p-6 space-y-4 shadow-2xl animate-fade-in">
+                  <div key={`${g.key || 'dup_grp'}_${gIdx}`} className={`bg-slate-900/90 rounded-2xl border p-6 space-y-4 shadow-2xl animate-fade-in ${
+                    hasCustomerInGroup ? "border-purple-800/70" : "border-slate-800"
+                  }`}>
                     {/* Duplicate Group Header */}
                     <div className="flex flex-col md:flex-row md:items-start justify-between border-b border-slate-800 pb-3 gap-3">
                       <div className="space-y-1">
                         <div className="flex items-center space-x-2">
-                          <span className="px-2 py-0.5 bg-amber-950/80 text-amber-400 text-[10px] font-bold rounded border border-amber-900/40">
-                            CONFLITO #{gIdx + 1}
-                          </span>
+                          {hasCustomerInGroup ? (
+                            <span className="px-2 py-0.5 bg-purple-950/90 text-purple-300 text-[10px] font-bold rounded border border-purple-800/60 shadow-xs flex items-center gap-1">
+                              <span>👤 ORIGEM CUSTOMER (COLUNA BK 03.18.05)</span>
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-amber-950/80 text-amber-400 text-[10px] font-bold rounded border border-amber-900/40">
+                              CONFLITO #{gIdx + 1}
+                            </span>
+                          )}
                           <span className="text-xs font-mono text-slate-400">
                             Cód. Cliente (NB): <strong className="text-white">{g.codigoCliente}</strong>
                           </span>
@@ -2447,21 +2771,26 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                       </div>
                       <div className="text-left md:text-right">
                         <span className="px-2.5 py-1 bg-blue-950/80 border border-blue-900/40 text-blue-400 text-xs font-mono font-semibold rounded-lg">
-                          {g.solicitations.length} solicitações idênticas em um período de 30 dias
+                          {g.solicitations.length > 1
+                            ? `${g.solicitations.length} solicitações em conflito`
+                            : "Solicitação Customer (Coluna BK 03.18.05)"}
                         </span>
                       </div>
                     </div>
 
                     {/* Side-by-Side Cards Grid */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {g.solicitations.map((sol: any) => {
+                    <div className={`grid grid-cols-1 ${g.solicitations.length > 1 ? "md:grid-cols-2" : "max-w-2xl"} gap-4`}>
+                      {g.solicitations.map((sol: any, solIdx: number) => {
                         const statusLower = sol.status.toLowerCase().trim();
+                        const uniqueSolKey = `${sol.solicitacao}_${sol.records?.[0]?.id || solIdx}_${solIdx}`;
                         return (
-                          <div key={sol.solicitacao} className={`bg-slate-950 p-4 rounded-xl border flex flex-col justify-between space-y-4 transition-all duration-200 ${
+                          <div key={uniqueSolKey} className={`bg-slate-950 p-4 rounded-xl border flex flex-col justify-between space-y-4 transition-all duration-200 ${
                             statusLower.includes("aprov") 
                               ? "border-emerald-900 bg-emerald-950/5 shadow-md" 
                               : statusLower.includes("reprov")
                               ? "border-slate-900 opacity-60 bg-slate-950/20"
+                              : sol.isCustomerOrigin
+                              ? "border-purple-800/80 bg-purple-950/10 hover:border-purple-700"
                               : "border-slate-800 hover:border-slate-700"
                           }`}>
                             {/* Request details */}
@@ -2483,13 +2812,19 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                                         </span>
                                       )
                                     )}
-                                    <span className={`px-2 py-0.5 text-[9.5px] font-bold rounded font-mono border ${
-                                      sol.origem === "Cadastro Direto na Plataforma"
-                                        ? "bg-amber-950 text-amber-300 border-amber-800/80"
-                                        : "bg-blue-950 text-blue-300 border-blue-800/80"
-                                    }`}>
-                                      {sol.origem === "Cadastro Direto na Plataforma" ? "📲 Cadastro Direto Plataforma" : "📊 Base Importada 03.18.05"}
-                                    </span>
+                                    {sol.isCustomerOrigin ? (
+                                      <span className="px-2 py-0.5 text-[9.5px] font-bold rounded font-mono border bg-purple-950/90 text-purple-300 border-purple-800/80 flex items-center gap-1 shadow-xs">
+                                        👤 Coluna BK: Customer (03.18.05)
+                                      </span>
+                                    ) : sol.origem === "Cadastro Direto na Plataforma" ? (
+                                      <span className="px-2 py-0.5 text-[9.5px] font-bold rounded font-mono border bg-amber-950 text-amber-300 border-amber-800/80">
+                                        📲 Cadastro Direto Plataforma
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 text-[9.5px] font-bold rounded font-mono border bg-blue-950 text-blue-300 border-blue-800/80 flex items-center gap-1 shadow-xs">
+                                        🏢 Coluna BK: Promax (03.18.05)
+                                      </span>
+                                    )}
                                   </div>
                                   <p className="text-[10px] text-slate-500 font-mono mt-1">
                                     Data: {sol.dataSolicitacao}
@@ -2558,7 +2893,13 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                                     onClick={() => {
                                       sol.records.forEach((rec: any) => {
                                         if (!rec.status.toLowerCase().includes("reprov")) {
-                                          onUpdateRecordStatus(rec.id, "Reprovada", "Duplicata reprovada no Promax");
+                                          onUpdateRecordStatus(
+                                            rec.id, 
+                                            "Reprovada", 
+                                            sol.isCustomerOrigin 
+                                              ? "Solicitação Customer (Coluna BK 03.18.05) reprovada no Promax via auditoria de duplicatas"
+                                              : "Duplicata reprovada no Promax"
+                                          );
                                         }
                                       });
                                     }}
@@ -2591,13 +2932,13 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                     Nenhuma solicitação encontrada para os filtros selecionados.
                   </div>
                 ) : (
-                  paginatedGroupedSolicitations.map((g) => {
+                  paginatedGroupedSolicitations.map((g, gIdx) => {
                     const isSelected = activeGroupedSol?.solicitacao === g.solicitacao;
                     const isDuplicate = duplicateSolicitationIds.has(g.solicitacao);
                     const firstRec = g.records[0] || {};
                     return (
                       <div
-                        key={g.solicitacao}
+                        key={g.id || `${g.solicitacao}_${gIdx}`}
                         onClick={() => openGroupedDetails(g)}
                         className={`bg-slate-900/95 p-5 rounded-2xl border transition-all duration-200 cursor-pointer hover:shadow-xl hover:-translate-y-0.5 @container ${
                           isSelected
@@ -2629,6 +2970,15 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                                         🔁 Troca (Outros)
                                       </span>
                                     )
+                                  )}
+                                  {g.isCustomerOrigin ? (
+                                    <span className="px-2 py-0.5 bg-purple-950/90 text-purple-300 text-[10px] font-bold rounded font-mono border border-purple-800/60 flex items-center space-x-1 shrink-0">
+                                      <span>👤 Coluna BK: Customer</span>
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 bg-blue-950/80 text-blue-300 text-[10px] font-bold rounded font-mono border border-blue-900/40 flex items-center space-x-1 shrink-0">
+                                      <span>🏢 Coluna BK: Promax</span>
+                                    </span>
                                   )}
                                   {isDuplicate && (
                                     <span className="px-2 py-0.5 bg-red-950/80 text-red-400 text-[10px] font-bold rounded font-mono border border-red-900/40 animate-pulse flex items-center space-x-1 shrink-0">
@@ -2764,6 +3114,15 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
                                   <span className="px-2 py-0.5 bg-slate-950 text-blue-400 text-[10px] font-bold rounded font-mono border border-slate-850 shrink-0">
                                     SETOR {r.setorVenda}
                                   </span>
+                                  {isCustomerOrigin(r.sistemaOrigem) ? (
+                                    <span className="px-2 py-0.5 bg-purple-950/90 text-purple-300 text-[10px] font-bold rounded font-mono border border-purple-800/60 shrink-0">
+                                      👤 Coluna BK: Customer
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 bg-blue-950/80 text-blue-300 text-[10px] font-bold rounded font-mono border border-blue-900/40 shrink-0">
+                                      🏢 Coluna BK: Promax
+                                    </span>
+                                  )}
                                   {isDuplicate && (
                                     <span className="px-2 py-0.5 bg-red-950/80 text-red-400 text-[10px] font-bold rounded font-mono border border-red-900/40 shrink-0">
                                       Duplicata
@@ -2985,13 +3344,22 @@ export default function TrackingView({ records, pendingRequests = [], onUpdateRe
               {/* Status and Actions taken by staff */}
               <div className="space-y-1.5 pt-3 border-t border-slate-850">
                 <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block font-mono">Status e Resolução</span>
-                <div className="flex items-center space-x-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {getStatusBadge(isGroupedView ? activeGroupedSol?.status : (activeDetailRecord?.status || ""))}
                   <span className="text-[10px] text-slate-400 font-mono">
                     NF/Série: <span className="font-semibold text-slate-200">
                       {isGroupedView ? activeGroupedSol?.records[0]?.nf || "Não Gerada" : activeDetailRecord?.nf || "Não Gerada"}
                     </span>
                   </span>
+                  {(isGroupedView ? activeGroupedSol?.isCustomerOrigin : isCustomerOrigin(activeDetailRecord?.sistemaOrigem)) ? (
+                    <span className="px-2 py-0.5 bg-purple-950/90 text-purple-300 text-[9.5px] font-bold rounded font-mono border border-purple-800/60 shadow-xs">
+                      👤 Coluna BK: Customer
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 bg-blue-950/80 text-blue-300 text-[9.5px] font-bold rounded font-mono border border-blue-900/40 shadow-xs">
+                      🏢 Coluna BK: Promax
+                    </span>
+                  )}
                 </div>
                 {(isGroupedView ? activeGroupedSol?.records[0]?.usuarioAcao : activeDetailRecord?.usuarioAcao) && (
                   <div className="bg-slate-950 p-2.5 rounded-lg text-[10px] text-slate-400 font-mono space-y-1">

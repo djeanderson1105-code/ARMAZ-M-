@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { ExchangeRecord } from "../types";
 import { getRecordHL } from "../utils/hectoFactors";
+import { isOfficial031805Record } from "../utils/processTypes";
 import { 
   Award, 
   MapPin, 
@@ -30,8 +31,8 @@ interface RankingsViewProps {
 }
 
 export default function RankingsView({ records: rawRecords }: RankingsViewProps) {
-  // Option to filter out representative manual input or show all
-  const [filterSource, setFilterSource] = useState<"all" | "promax">("all");
+  // Option to filter out representative manual input or show all (defaults to official Promax 03.18.05)
+  const [filterSource, setFilterSource] = useState<"all" | "promax">("promax");
   const [rankingMetric, setRankingMetric] = useState<"spent" | "count" | "hl">("spent");
   const [activeSubTab, setActiveSubTab] = useState<"motoristas" | "clientes" | "motivos">("motoristas");
 
@@ -53,9 +54,9 @@ export default function RankingsView({ records: rawRecords }: RankingsViewProps)
   // Filter records based on source filter
   const records = useMemo(() => {
     if (filterSource === "promax") {
-      return rawRecords.filter(r => r.sistemaOrigem !== "Portal de Campo SSTR");
+      return (rawRecords || []).filter(isOfficial031805Record);
     }
-    return rawRecords;
+    return rawRecords || [];
   }, [rawRecords, filterSource]);
 
   // List of all unique driver names for filter selectors

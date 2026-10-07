@@ -4,7 +4,7 @@ import { useSstrData } from "../context/SstrDataContext";
 import { getApiUrl } from "../utils/apiUrl";
 import { parseSectorAnalytics } from "../utils/csvParser";
 import { getRecordHL, getHectoFactor, isRecordApproved } from "../utils/hectoFactors";
-import { isRecordReposicao, isRecordTroca, getUnifiedOfficialRecords } from "../utils/processTypes";
+import { isRecordReposicao, isRecordTroca, isOfficial031805Record } from "../utils/processTypes";
 import ConsolidatedView from "./ConsolidatedView";
 import { 
   TrendingUp, 
@@ -33,6 +33,18 @@ import {
   Clock,
   PieChart
 } from "lucide-react";
+import { 
+  META_VALOR_BY_MONTH, 
+  META_HL_BY_MONTH, 
+  META_FINANCEIRA_SEMESTRE_1, 
+  META_FINANCEIRA_SEMESTRE_2, 
+  META_FINANCEIRA_ANUAL, 
+  META_HL_SEMESTRE_1, 
+  META_HL_SEMESTRE_2, 
+  META_HL_ANUAL, 
+  getMonthlyMetaValor, 
+  getMonthlyMetaHL 
+} from "../utils/hectoFactors";
 
 interface DashboardViewProps {
   records: ExchangeRecord[];
@@ -40,20 +52,6 @@ interface DashboardViewProps {
 }
 
 // Helper to convert Brazilian date "DD/MM/YYYY" to Date object
-const META_HL_BY_MONTH: Record<string, number> = {
-  "01": 5.61,  // JANEIRO
-  "02": 12.02, // FEVEREIRO
-  "03": 7.03,  // MARÇO
-  "04": 8.44,  // ABRIL
-  "05": 9.88,  // MAIO
-  "06": 15.44, // JUNHO
-  "07": 10.02, // JULHO
-  "08": 8.27,  // AGOSTO
-  "09": 13.80, // SETEMBRO
-  "10": 15.30, // OUTUBRO
-  "11": 10.70, // NOVEMBRO
-  "12": 12.90, // DEZEMBRO
-};
 
 const parseToDate = (ptDateStr: string): Date | null => {
   if (!ptDateStr) return null;
@@ -81,12 +79,10 @@ const formatCurrency = (val: number) => {
 };
 
 export default function DashboardView({ records: rawRecords, onSelectSector }: DashboardViewProps) {
-  const { pendingRequests } = useSstrData();
-
-  // Combine 03.18.05 Promax records with all platform-sent reposições that were BAIXADAS
+  // Strictly consider only official 03.18.05 Promax imported records (excluding items registered via platform)
   const records = useMemo(() => {
-    return getUnifiedOfficialRecords(rawRecords, pendingRequests);
-  }, [rawRecords, pendingRequests]);
+    return (rawRecords || []).filter(isOfficial031805Record);
+  }, [rawRecords]);
 
   const [selectedSector, setSelectedSector] = useState<string>("");
   const [sectorChartMetric, setSectorChartMetric] = useState<"valor" | "hl" | "unidades">("valor");
@@ -146,8 +142,8 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
   }, [semesterFilter]);
 
   // Constant Meta Values
-  const META_MENSAL = 12000; // R$ 12.000,00
-  const META_ANUAL = META_MENSAL * 12; // R$ 144.000,00
+  const META_MENSAL = 12000; // R$ 12.000,00 (Valor de referência a partir de Agosto)
+  const META_ANUAL = META_FINANCEIRA_ANUAL; // R$ 114.600,00 (Jan-Jul: 7x7.800=54.600 + Ago-Dez: 5x12.000=60.000)
 
   // 1. Extract unique Months/Years found in the CSV records
   const uniqueMonths = useMemo(() => {
@@ -261,6 +257,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
           if (endDateStr && recDate > new Date(endDateStr + "T23:59:59")) return;
         }
       }
+
+      // Only approved requests for official troca and reposicao volume and value
+      if (!isRecordApproved(r)) return;
 
       const hl = getRecordHL(r);
 
@@ -551,9 +550,12 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
 
   const activeGoal = useMemo(() => {
     if (filterMode === "mes") {
-      if (selectedMonthYear !== "todos") return META_MENSAL;
-      // If month is "todos", scale the meta dynamically by the number of months with actual records
-      return META_MENSAL * distinctMonthsCount;
+      if (selectedMonthYear !== "todos") {
+        return getMonthlyMetaValor(selectedMonthYear);
+      }
+      if (semesterFilter === "1H") return META_FINANCEIRA_SEMESTRE_1; // R$ 43.200 (6x7.200)
+      if (semesterFilter === "2H") return META_FINANCEIRA_SEMESTRE_2; // R$ 72.000 (6x12.000)
+      return META_FINANCEIRA_ANUAL; // R$ 115.200
     } else {
       // filterMode === "dias"
       if (startDateStr && endDateStr) {
@@ -561,15 +563,20 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
         const end = new Date(endDateStr + "T23:59:59");
         const diffTime = Math.abs(end.getTime() - start.getTime());
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
-        return Number((diffDays * (META_MENSAL / 30.41)).toFixed(2)); // Dynamic daily-weighted goal
+        const currentMonthNum = start.getMonth() + 1;
+        const currentMonthMeta = getMonthlyMetaValor(currentMonthNum);
+        return Number((diffDays * (currentMonthMeta / 30.41)).toFixed(2));
       } else if (startDateStr || endDateStr) {
-        // Just one day
-        const dayCount = 1;
-        return Number((dayCount * (META_MENSAL / 30.41)).toFixed(2));
+        const d = new Date((startDateStr || endDateStr) + "T00:00:00");
+        const currentMonthNum = d.getMonth() + 1;
+        const currentMonthMeta = getMonthlyMetaValor(currentMonthNum);
+        return Number((1 * (currentMonthMeta / 30.41)).toFixed(2));
       }
-      return META_MENSAL * distinctMonthsCount;
+      if (semesterFilter === "1H") return META_FINANCEIRA_SEMESTRE_1;
+      if (semesterFilter === "2H") return META_FINANCEIRA_SEMESTRE_2;
+      return META_FINANCEIRA_ANUAL;
     }
-  }, [filterMode, selectedMonthYear, distinctMonthsCount, startDateStr, endDateStr, META_MENSAL]);
+  }, [filterMode, selectedMonthYear, semesterFilter, startDateStr, endDateStr]);
 
   const activeGoalName = useMemo(() => {
     if (filterMode === "mes") {
@@ -610,23 +617,22 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
   const activeGoalHL = useMemo(() => {
     if (filterMode === "mes") {
       if (selectedMonthYear !== "todos") {
-        const mStr = selectedMonthYear.split("/")[0];
-        return META_HL_BY_MONTH[mStr] || 10.0;
+        return getMonthlyMetaHL(selectedMonthYear);
       }
-      if (semesterFilter === "1H") return 58.42;
-      if (semesterFilter === "2H") return 70.99;
-      return 129.41;
+      if (semesterFilter === "1H") return META_HL_SEMESTRE_1;
+      if (semesterFilter === "2H") return META_HL_SEMESTRE_2;
+      return META_HL_ANUAL;
     } else {
       if (startDateStr && endDateStr) {
         const start = new Date(startDateStr + "T00:00:00");
         const end = new Date(endDateStr + "T23:59:59");
         const diffTime = Math.abs(end.getTime() - start.getTime());
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
-        return Number((diffDays * (129.41 / 365)).toFixed(2));
+        return Number((diffDays * (META_HL_ANUAL / 365)).toFixed(2));
       }
-      if (semesterFilter === "1H") return 58.42;
-      if (semesterFilter === "2H") return 70.99;
-      return 129.41;
+      if (semesterFilter === "1H") return META_HL_SEMESTRE_1;
+      if (semesterFilter === "2H") return META_HL_SEMESTRE_2;
+      return META_HL_ANUAL;
     }
   }, [filterMode, selectedMonthYear, semesterFilter, startDateStr, endDateStr]);
 
@@ -639,9 +645,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
 
   const annualAtingimento = useMemo(() => {
     if (dashboardMetricView === "hl") {
-      return (annualApprovedAccumulatedHL / 129.41) * 100;
+      return (annualApprovedAccumulatedHL / META_HL_ANUAL) * 100;
     }
-    return (annualApprovedAccumulated / META_ANUAL) * 100;
+    return (annualApprovedAccumulated / META_FINANCEIRA_ANUAL) * 100;
   }, [annualApprovedAccumulated, annualApprovedAccumulatedHL, dashboardMetricView]);
 
   // Filter sector records based on status filter
@@ -832,10 +838,9 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
     const sectorUnitsMap: { [key: string]: number } = {};
     
     filteredRecords.forEach(r => {
-      const statusClean = r.status.toLowerCase().trim();
-      if (statusClean.includes("aprov") && r.setorVenda) {
+      if (isRecordApproved(r) && r.setorVenda) {
         const sec = r.setorVenda.trim();
-        sectorMap[sec] = (sectorMap[sec] || 0) + r.valorTotal;
+        sectorMap[sec] = (sectorMap[sec] || 0) + (r.valorTotal || 0);
         sectorHlMap[sec] = (sectorHlMap[sec] || 0) + getRecordHL(r);
         sectorUnitsMap[sec] = (sectorUnitsMap[sec] || 0) + (r.quantidade || 1);
       }
@@ -843,8 +848,10 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
 
     const sortedSectors = Object.entries(sectorMap)
       .map(([sector, approvedSum]) => {
-        const percentOfMeta = activeGoal > 0 ? (approvedSum / activeGoal) * 100 : 0;
         const approvedHl = sectorHlMap[sector] || 0;
+        const percentOfMeta = dashboardMetricView === "hl"
+          ? (activeGoalHL > 0 ? (approvedHl / activeGoalHL) * 100 : 0)
+          : (activeGoal > 0 ? (approvedSum / activeGoal) * 100 : 0);
         const approvedUnits = sectorUnitsMap[sector] || 0;
         return {
           sector,
@@ -854,10 +861,10 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
           approvedUnits
         };
       })
-      .sort((a, b) => b.approvedSum - a.approvedSum);
+      .sort((a, b) => dashboardMetricView === "hl" ? b.approvedHl - a.approvedHl : b.approvedSum - a.approvedSum);
 
     return sortedSectors;
-  }, [filteredRecords, activeGoal]);
+  }, [filteredRecords, activeGoal, activeGoalHL, dashboardMetricView]);
 
   // Rich context summary of the database compiled for the Gemini Model
   const chatContextSummary = useMemo(() => {
@@ -1475,16 +1482,16 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
           </div>
           <div>
             <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest font-mono">
-              {dashboardMetricView === "hl" ? "Volume Lançado (Geral)" : "Total Lançado (Geral)"}
+              {dashboardMetricView === "hl" ? "Volume Aprovado (Período)" : "Total Aprovado (Período)"}
             </p>
             <h3 className="text-xl font-bold font-mono text-white tracking-tight mt-0.5">
               {dashboardMetricView === "hl"
-                ? `${stats.totalHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
-                : formatCurrency(stats.totalValue)}
+                ? `${stats.approvedHL.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} HL`
+                : formatCurrency(stats.approvedValue)}
             </h3>
             <p className="text-[10px] text-slate-400 mt-1 flex items-center font-mono">
               <TrendingUp className="w-3.5 h-3.5 text-blue-400 mr-1" />
-              {stats.totalCount} Solicitações
+              {stats.approvedCount} Trocas e Reposições Aprovadas
             </p>
           </div>
         </div>
@@ -1555,7 +1562,7 @@ export default function DashboardView({ records: rawRecords, onSelectSector }: D
         <div>
           <h3 className="text-lg font-bold font-display text-white flex items-center gap-2">
             <BarChart2 className="w-5 h-5 text-blue-400" />
-            Consumo da Meta de {formatCurrency(activeGoal)} por Setor de Venda
+            Consumo da Meta de {dashboardMetricView === "hl" ? `${activeGoalHL.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} HL` : formatCurrency(activeGoal)} por Setor de Venda
           </h3>
           <p className="text-sm text-slate-400">Classificação ordenada por consumo de cada setor em relação ao limite estipulado nas solicitações aprovadas</p>
         </div>

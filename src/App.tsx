@@ -3,7 +3,7 @@ import { ExchangeRecord, ImportBatch } from "./types";
 import { parseCSVToRecords } from "./utils/csvParser";
 import { RAW_SAMPLE_DATA } from "./sampleData";
 import { initializeSync, startPolling } from "./utils/apiSync";
-import { getUnifiedOfficialRecords } from "./utils/processTypes";
+import { isOfficial031805Record } from "./utils/processTypes";
 
 // Components
 import DashboardView from "./components/DashboardView";
@@ -64,10 +64,10 @@ function MainApp() {
     setShiftMode
   } = useSstrData();
 
-  // Official unified dataset combining 03.18.05 Promax records with all platform-sent reposições that were BAIXADAS
-  const unifiedOfficialRecords = useMemo(() => {
-    return getUnifiedOfficialRecords(records, pendingRequests);
-  }, [records, pendingRequests]);
+  // Official dataset strictly considering records imported from the 03.18.05 report (excluding items created via the platform)
+  const officialPromaxRecords = useMemo(() => {
+    return (records || []).filter(isOfficial031805Record);
+  }, [records]);
 
   const [activePortal, setActivePortal] = useState<"gestor" | "representante">("representante");
   const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "import" | "export" | "pending" | "faltas" | "managers" | "rankings" | "dados">("dashboard");
@@ -507,7 +507,7 @@ function MainApp() {
             <div>
               {activeTab === "dashboard" && (
                 <DashboardView 
-                  records={unifiedOfficialRecords} 
+                  records={officialPromaxRecords} 
                   onSelectSector={handleSelectSectorFromDashboard} 
                 />
               )}
@@ -535,7 +535,7 @@ function MainApp() {
               )}
 
               {activeTab === "export" && (
-                <ReportView records={unifiedOfficialRecords} />
+                <ReportView records={officialPromaxRecords} />
               )}
 
               {activeTab === "pending" && (
@@ -547,7 +547,7 @@ function MainApp() {
               )}
 
               {activeTab === "rankings" && (
-                <RankingsView records={unifiedOfficialRecords} />
+                <RankingsView records={officialPromaxRecords} />
               )}
 
               {activeTab === "managers" && (
@@ -575,7 +575,7 @@ function MainApp() {
       </footer>
 
       {/* Floating Operational Standard Manual and AI Assistant */}
-      <SstrOperationalAssistant records={unifiedOfficialRecords} />
+      <SstrOperationalAssistant records={officialPromaxRecords} />
 
     </div>
   );

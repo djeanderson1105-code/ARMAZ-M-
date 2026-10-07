@@ -14,6 +14,9 @@ export interface ProductInfo {
   fator: number; // Embalagem / itens por caixa (ex: 12, 23, 24, 6, 1)
   valor: number; // Preço em R$ por CAIXA
   fatorHecto: number; // Volume em Hectolitros por CAIXA
+  fatorHectoSku?: number; // Volume em Hectolitros por SKU / CAIXA
+  fatorHectoUnidade?: number; // Volume em Hectolitros por UNIDADE física
+  valorUnidade?: number; // Preço em R$ por UNIDADE física
   embalagem?: number;
 }
 
@@ -24,7 +27,7 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "34608", descricao: "SKOL LATA 350ML SH C/12 NPAL MULTIPACK", fator: 12, valor: 39.00, fatorHecto: 0.042 },
   { codigo: "33820", descricao: "BRAHMA CHOPP LATA 350ML SH C/12 NPAL MULTIPACK .", fator: 12, valor: 34.90, fatorHecto: 0.042 },
   { codigo: "28164", descricao: "BRAHMA DUPLO MALTE LT 350ML SH C/12 NPAL", fator: 12, valor: 37.40, fatorHecto: 0.042 },
-  { codigo: "1804", descricao: "BRAHMA DUPLO MALTE 350ML C24", fator: 24, valor: 37.48, fatorHecto: 0.042 },
+  { codigo: "1804", descricao: "BRAHMA DUPLO MALTE 350ML C24", fator: 24, valor: 74.96, fatorHecto: 0.084 },
   { codigo: "9883", descricao: "SKOL LT 473ML SH C/12 NPAL", fator: 12, valor: 37.84, fatorHecto: 0.05676 },
   { codigo: "13205", descricao: "SKOL GFA VD 300ML CX C/23", fator: 23, valor: 39.14, fatorHecto: 0.069 },
   { codigo: "19164", descricao: "GUARANA CHP ANTARCTICA PET 1L PACK C/2 MULTPACK", fator: 2, valor: 3.90, fatorHecto: 0.02 },
@@ -435,7 +438,26 @@ const DEFAULT_PRODUCT_DATABASE: ProductInfo[] = [
   { codigo: "38406", descricao: "CORONA CERO SUNBREW N LN 330ML SIX-PACK", fator: 6, valor: 34.14, fatorHecto: 0.0198 },
   { codigo: "38418", descricao: "HALLS BLUEBERRY ENVELOPE 28G CX C/21", fator: 21, valor: 26.77, fatorHecto: 0.00588 },
   { codigo: "39024", descricao: "STELLA ARTOIS PURE GOLD LN 330ML SIXPACK", fator: 6, valor: 30.64, fatorHecto: 0.0198 },
-  { codigo: "39025", descricao: "MICHELOB ULTRA N LN 330ML SIXPACK", fator: 6, valor: 28.24, fatorHecto: 0.0198 }
+  { codigo: "39025", descricao: "MICHELOB ULTRA N LN 330ML SIXPACK", fator: 6, valor: 28.24, fatorHecto: 0.0198 },
+  // Complementary Pau Brasil & Ambev Beverage Items
+  { codigo: "33821", descricao: "BRAHMA CHOPP 300ML RETORNAVEL CX C/23", fator: 23, valor: 39.14, fatorHecto: 0.069 },
+  { codigo: "21632", descricao: "SPATEN N LN 355ML SIXPACK SH C/24", fator: 24, valor: 79.80, fatorHecto: 0.0852 },
+  { codigo: "30045", descricao: "RED BULL BR LATA 473ML CX C 12", fator: 12, valor: 131.88, fatorHecto: 0.05676 },
+  { codigo: "24256", descricao: "PETROPOLIS AGUA MIN SEM GAS PET 1,5L FD C/6", fator: 6, valor: 14.88, fatorHecto: 0.09 },
+  { codigo: "9091", descricao: "TONICA ANTARCTICA LATA 350ML SH C/12 NPAL", fator: 12, valor: 28.50, fatorHecto: 0.042 },
+  { codigo: "38407", descricao: "CHOPP SPATEN BARRIL KEG 50L", fator: 1, valor: 650.00, fatorHecto: 0.50 },
+  { codigo: "38408", descricao: "CHOPP SPATEN BARRIL KEG 30L", fator: 1, valor: 420.00, fatorHecto: 0.30 },
+  { codigo: "38409", descricao: "CHOPP STELLA ARTOIS BARRIL KEG 30L", fator: 1, valor: 450.00, fatorHecto: 0.30 },
+  { codigo: "38410", descricao: "CHOPP BRAHMA CLARO BARRIL KEG 30L", fator: 1, valor: 390.00, fatorHecto: 0.30 },
+  { codigo: "38411", descricao: "CORONITA EXTRA OW 210ML CX C/24", fator: 24, valor: 89.90, fatorHecto: 0.0504 },
+  { codigo: "38412", descricao: "BECKS LT 350ML CX C/12 NPAL", fator: 12, valor: 44.50, fatorHecto: 0.042 },
+  { codigo: "38413", descricao: "BECKS 600ML CX C/12", fator: 12, valor: 68.90, fatorHecto: 0.072 },
+  { codigo: "38414", descricao: "COLORADO APPIA 600ML CX C/12", fator: 12, valor: 98.40, fatorHecto: 0.072 },
+  { codigo: "38415", descricao: "COLORADO RIBEIRAO LAGER 355ML LN CX C/24", fator: 24, valor: 96.00, fatorHecto: 0.0852 },
+  { codigo: "38416", descricao: "MIKES HARD LEMONADE LATA 269ML SH C/12", fator: 12, valor: 54.00, fatorHecto: 0.03228 },
+  { codigo: "38417", descricao: "BEATS TROPICAL LATA 269ML SH C/12", fator: 12, valor: 52.80, fatorHecto: 0.03228 },
+  { codigo: "38419", descricao: "FUSION ENERGY DRINK PET 1L CX C/6", fator: 6, valor: 48.00, fatorHecto: 0.06 },
+  { codigo: "38420", descricao: "GUARANA ANTARCTICA ZERO LATA 350ML SH C/12", fator: 12, valor: 22.33, fatorHecto: 0.042 },
 ];
 
 let cachedProducts: ProductInfo[] | null = null;
@@ -469,12 +491,44 @@ export function extractFatorFromDescricao(descricao: string): number {
   return 12; // Standard default
 }
 
-export const CATALOG_VERSION = "2026_09_24_v2";
+export const CATALOG_VERSION = "2026_10_07_v3";
+
+// Helper to normalize and enrich product with accurate unit and box hectoliters and prices
+export function normalizeProductInfo(p: ProductInfo): ProductInfo {
+  const fator = p.fator && p.fator > 0 ? p.fator : extractFatorFromDescricao(p.descricao || "");
+  const valor = p.valor && p.valor > 0 ? p.valor : 0;
+  const fatorHectoSku = p.fatorHectoSku !== undefined && p.fatorHectoSku > 0 ? p.fatorHectoSku : (p.fatorHecto || 0.042);
+  
+  // Calculate unit hectoliter: check extractUnitHlFromDescription or divide box by package factor
+  let fatorHectoUnidade = p.fatorHectoUnidade;
+  if (!fatorHectoUnidade || fatorHectoUnidade <= 0) {
+    const fromDesc = extractUnitHlFromDescription(p.descricao);
+    fatorHectoUnidade = fromDesc !== null && fromDesc > 0
+      ? fromDesc
+      : Number((fatorHectoSku / Math.max(1, fator)).toFixed(6));
+  }
+
+  // Calculate unit price: check valorUnidade or divide box price by package factor
+  let valorUnidade = p.valorUnidade;
+  if (!valorUnidade || valorUnidade <= 0) {
+    valorUnidade = Number((valor / Math.max(1, fator)).toFixed(2));
+  }
+
+  return {
+    ...p,
+    fator,
+    valor,
+    fatorHecto: fatorHectoSku,
+    fatorHectoSku,
+    fatorHectoUnidade,
+    valorUnidade
+  };
+}
 
 export const getProductsDatabase = (): ProductInfo[] => {
   if (cachedProducts) return cachedProducts;
   if (typeof window === "undefined") {
-    return DEFAULT_PRODUCT_DATABASE;
+    return DEFAULT_PRODUCT_DATABASE.map(normalizeProductInfo);
   }
   const currentVersion = localStorage.getItem("sstr_products_catalog_version");
   const isOutdated = currentVersion !== CATALOG_VERSION;
@@ -486,31 +540,26 @@ export const getProductsDatabase = (): ProductInfo[] => {
       if (Array.isArray(parsed) && parsed.length > 0) {
         // Merge defaults to ensure catalog updates take effect while custom products are preserved
         const mergedMap = new Map<string, ProductInfo>();
-        DEFAULT_PRODUCT_DATABASE.forEach(p => mergedMap.set(p.codigo, p));
+        DEFAULT_PRODUCT_DATABASE.forEach(p => mergedMap.set(p.codigo, normalizeProductInfo(p)));
         parsed.forEach(p => {
           if (p && p.codigo) {
             const defaultItem = mergedMap.get(p.codigo);
             if (defaultItem) {
-              // If catalog updated, use official defaultItem valor; otherwise keep custom if set
               const finalVal = isOutdated 
                 ? defaultItem.valor 
                 : (p.valor && p.valor > 0 ? p.valor : defaultItem.valor);
-              mergedMap.set(p.codigo, {
+              const finalItem: ProductInfo = {
                 ...defaultItem,
                 ...p,
                 valor: finalVal,
                 descricao: defaultItem.descricao || p.descricao,
                 fator: p.fator && p.fator > 0 ? p.fator : defaultItem.fator,
-                fatorHecto: p.fatorHecto && p.fatorHecto > 0 ? p.fatorHecto : defaultItem.fatorHecto
-              });
+                fatorHecto: defaultItem.fatorHectoSku || p.fatorHecto || defaultItem.fatorHecto
+              };
+              mergedMap.set(p.codigo, normalizeProductInfo(finalItem));
             } else {
               // Custom user-created product
-              mergedMap.set(p.codigo, {
-                ...p,
-                fator: p.fator && p.fator > 0 ? p.fator : extractFatorFromDescricao(p.descricao || ""),
-                valor: p.valor || 0,
-                fatorHecto: p.fatorHecto || 0.04
-              });
+              mergedMap.set(p.codigo, normalizeProductInfo(p));
             }
           }
         });
@@ -529,12 +578,13 @@ export const getProductsDatabase = (): ProductInfo[] => {
     }
   }
   
-  safeSaveProducts("sstr_products_database", JSON.stringify(DEFAULT_PRODUCT_DATABASE));
+  const normalizedDefaults = DEFAULT_PRODUCT_DATABASE.map(normalizeProductInfo);
+  safeSaveProducts("sstr_products_database", JSON.stringify(normalizedDefaults));
   try {
     localStorage.setItem("sstr_products_catalog_version", CATALOG_VERSION);
   } catch (e) {}
-  cachedProducts = DEFAULT_PRODUCT_DATABASE;
-  return DEFAULT_PRODUCT_DATABASE;
+  cachedProducts = normalizedDefaults;
+  return normalizedDefaults;
 };
 
 export const PRODUCT_DATABASE: ProductInfo[] = new Proxy([] as ProductInfo[], {
@@ -628,9 +678,9 @@ export function extractUnitHlFromDescription(desc?: string): number | null {
   if (d.includes("50L") || d.includes("50 L")) return 0.5;
   if (d.includes("3,3L") || d.includes("3.3L") || d.includes("3,3 L") || d.includes("3.3 L")) return 0.033;
   if (d.includes("2,5L") || d.includes("2.5L") || d.includes("2,5 L") || d.includes("2.5 L")) return 0.025;
-  if (d.includes("2L") || d.includes("2 L") || d.includes("2000ML")) return 0.02;
-  if (d.includes("1,5L") || d.includes("1.5L") || d.includes("1,5 L") || d.includes("1.5 L") || d.includes("1500ML")) return 0.015;
-  if (d.includes("1L") || d.includes("1 L") || d.includes("1000ML")) return 0.01;
+  if (/\b2\s*L\b|2000ML/i.test(d)) return 0.02;
+  if (/\b1[.,]5\s*L\b|1500ML/i.test(d)) return 0.015;
+  if (/\b1\s*L\b|1000ML/i.test(d) && !d.includes("51 L") && !d.includes("51L")) return 0.01;
   if (d.includes("900ML") || d.includes("900 ML")) return 0.009;
   if (d.includes("750ML") || d.includes("750 ML")) return 0.0075;
   if (d.includes("600ML") || d.includes("600 ML")) return 0.006;
@@ -696,19 +746,29 @@ export function calculateItemHL(item: {
   const isDozen = um === "dz" || um === "duzia" || um === "dúzia";
 
   if (isIndividualUnit) {
-    // Check if we can get unit volume directly from product description (e.g. 350ML -> 0.0035 HL)
-    const unitFromDesc = extractUnitHlFromDescription(desc || prod?.descricao);
-    const unitHl = unitFromDesc !== null && unitFromDesc > 0
-      ? unitFromDesc
-      : boxFactorHecto / Math.max(1, itemsPerBox);
+    // Check if product has explicit unit hectoliter defined
+    let unitHl = prod?.fatorHectoUnidade;
+    if (!unitHl || unitHl <= 0) {
+      const unitFromDesc = extractUnitHlFromDescription(desc || prod?.descricao);
+      unitHl = unitFromDesc !== null && unitFromDesc > 0
+        ? unitFromDesc
+        : boxFactorHecto / Math.max(1, itemsPerBox);
+    }
     return Number((qty * unitHl).toFixed(4));
   } else if (isDozen) {
-    const unitHl = (boxFactorHecto / Math.max(1, itemsPerBox)) * 12;
-    return Number((qty * unitHl).toFixed(4));
+    let unitHl = prod?.fatorHectoUnidade;
+    if (!unitHl || unitHl <= 0) {
+      const unitFromDesc = extractUnitHlFromDescription(desc || prod?.descricao);
+      unitHl = unitFromDesc !== null && unitFromDesc > 0
+        ? unitFromDesc
+        : boxFactorHecto / Math.max(1, itemsPerBox);
+    }
+    return Number((qty * unitHl * 12).toFixed(4));
   }
 
   // Otherwise treat as full box / pack / shrink / fardo (CX, SH, FD, PCT)
-  return Number((qty * boxFactorHecto).toFixed(4));
+  const boxHl = prod?.fatorHectoSku ?? prod?.fatorHecto ?? boxFactorHecto;
+  return Number((qty * boxHl).toFixed(4));
 }
 
 // Calculate accurate Financial Value (R$) for single item
@@ -737,13 +797,15 @@ export function calculateItemValue(item: {
 
   // 1. PRIMARY AUTHORITY: Official registered price in product catalog (Guia de Cadastros de Produto)
   if (prod && prod.valor && prod.valor > 0) {
+    const unitPrice = prod.valorUnidade && prod.valorUnidade > 0 
+      ? prod.valorUnidade 
+      : prod.valor / Math.max(1, itemsPerBox);
+
     if (isIndividualUnit) {
-      const unitPrice = prod.valor / Math.max(1, itemsPerBox);
       return Number((unitPrice * qty).toFixed(2));
     }
     if (isDozen) {
-      const unitPrice = (prod.valor / Math.max(1, itemsPerBox)) * 12;
-      return Number((unitPrice * qty).toFixed(2));
+      return Number((unitPrice * 12 * qty).toFixed(2));
     }
     return Number((prod.valor * qty).toFixed(2));
   }

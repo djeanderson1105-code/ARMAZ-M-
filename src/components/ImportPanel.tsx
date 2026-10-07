@@ -1,6 +1,7 @@
 import React, { useState, useRef, useMemo } from "react";
 import { ExchangeRecord } from "../types";
 import { parseCSVToRecords } from "../utils/csvParser";
+import { isCustomerOrigin } from "../utils/processTypes";
 import * as XLSX from "xlsx";
 import { 
   HISTORICAL_CUTOFF_DATE, 
@@ -45,6 +46,8 @@ interface GroupedSolicitation {
   mapa: string;
   data: string;
   observacao: string;
+  sistemaOrigem?: string;
+  isCustomerOrigin?: boolean;
   records: ExchangeRecord[];
   productsKey: string;
   totalValue: number;
@@ -226,6 +229,9 @@ export default function ImportPanel({
         .sort()
         .join("|");
 
+      const isCustomer = recs.some(r => isCustomerOrigin(r.sistemaOrigem));
+      const sisOrigemResolved = isCustomer ? "Customer" : (recs.find(r => r.sistemaOrigem)?.sistemaOrigem || first.sistemaOrigem || "Promax");
+
       return {
         solicitacao: sol,
         codigoCliente: first.codigoCliente || "S/C",
@@ -233,6 +239,8 @@ export default function ImportPanel({
         mapa: first.mapa || "",
         data: first.dataSolicitacao || first.dataAcao || "Sem Data",
         observacao: first.observacao || "",
+        sistemaOrigem: sisOrigemResolved,
+        isCustomerOrigin: isCustomer,
         records: recs,
         productsKey,
         totalValue: recs.reduce((sum, r) => sum + r.valorTotal, 0)
@@ -702,13 +710,13 @@ export default function ImportPanel({
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {filteredGroups.map((g) => {
+              {filteredGroups.map((g, gIdx) => {
                 const isIdenticalDup = analysisData.duplicateSolIds.has(g.solicitacao);
                 const isObsDup = analysisData.duplicateObsSolIds.has(g.solicitacao);
 
                 return (
                   <div 
-                    key={g.solicitacao} 
+                    key={`${g.solicitacao}_${gIdx}`} 
                     className={`bg-slate-900/95 rounded-2xl border shadow-lg transition-all overflow-hidden flex flex-col justify-between ${
                       isIdenticalDup
                         ? "border-red-500 shadow-red-950/20 bg-gradient-to-b from-slate-900 to-red-950/15"
@@ -720,9 +728,20 @@ export default function ImportPanel({
                     <div className="p-4 bg-slate-950/80 border-b border-slate-850 flex justify-between items-start">
                       <div className="space-y-0.5">
                         <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Solicitação Reposição (Col E)</span>
-                        <h4 className="text-base font-bold text-white font-mono flex items-center">
-                          <Layers className="w-4 h-4 text-blue-400 mr-2" />
-                          {g.solicitacao}
+                        <h4 className="text-base font-bold text-white font-mono flex flex-wrap items-center gap-2">
+                          <span className="flex items-center">
+                            <Layers className="w-4 h-4 text-blue-400 mr-2" />
+                            {g.solicitacao}
+                          </span>
+                          {g.isCustomerOrigin ? (
+                            <span className="px-2 py-0.5 bg-purple-950/90 text-purple-300 text-[9.5px] font-bold rounded font-mono border border-purple-800/60 shadow-xs">
+                              👤 Coluna BK: Customer
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-blue-950/80 text-blue-300 text-[9.5px] font-bold rounded font-mono border border-blue-900/40 shadow-xs">
+                              🏢 Coluna BK: Promax
+                            </span>
+                          )}
                         </h4>
                       </div>
                       <div className="text-right space-y-0.5 font-mono text-[10px]">

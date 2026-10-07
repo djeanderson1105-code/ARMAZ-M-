@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback, useDeferredValue } from "react";
-import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, getDisplayCadastroUser, getCreatorRole, isFaltaOrInversaoReq, isAllowedInPending, isInversaoOrSwapReq, calculateValeRateio, isDriverX } from "../types";
+import { PendingRequest, REPRESENTATIVOS_SETOR, ExchangeRecord, RequestItem, MOTORISTAS_ROTAS, LISTA_CREW, DEFAULT_LISTA_CREW, getCrewDetailByName, getRepresentativosSetor, clearRepresentativosCache, getMotoristasRotas, clearMotoristasRotasCache, getDisplayCadastroUser, getCreatorRole, isFaltaOrInversaoReq, isAllowedInPending, isInversaoOrSwapReq, calculateValeRateio, isDriverX } from "../types";
 import AvariasPackagingChart from "./AvariasPackagingChart";
 import { getApiUrl } from "../utils/apiUrl";
 import { safeSetItem } from "../utils/apiSync";
@@ -46,7 +46,9 @@ import {
   Sliders,
   RotateCcw,
   Undo2,
-  Download
+  Download,
+  Maximize2,
+  Minimize2
 } from "lucide-react";
 
 // Helper to check if a request or any of its items is a "Falta de SKU Fechado / Completo"
@@ -532,6 +534,8 @@ export default function PendingRequestsTab() {
   const [onlyContingenciaFilter, setOnlyContingenciaFilter] = useState(false);
   const [zoomPhoto, setZoomPhoto] = useState<string | null>(null);
   const [inspectRequest, setInspectRequest] = useState<PendingRequest | null>(null);
+  const [openAvulsoTrigger, setOpenAvulsoTrigger] = useState<number>(0);
+  const [isEditFaltaMaximized, setIsEditFaltaMaximized] = useState(true);
 
   // Pagination state for ultra-fast rendering & zero tab-switching lag
   const [currentPage, setCurrentPage] = useState(1);
@@ -700,6 +704,47 @@ export default function PendingRequestsTab() {
   const [editFaltaDataEntrega, setEditFaltaDataEntrega] = useState("");
   const [editFaltaObservacao, setEditFaltaObservacao] = useState("");
   const [editFaltaCidade, setEditFaltaCidade] = useState("");
+
+  // Dynamic Crew & Rateio state for editing lack/anomalia in Classification Modal
+  const [editFaltaCrew, setEditFaltaCrew] = useState<Array<{ id: string; role: string; name: string; cpf: string; isExempt?: boolean }>>([
+    { id: "1", role: "Motorista", name: "", cpf: "", isExempt: false },
+    { id: "2", role: "Ajudante 1", name: "", cpf: "", isExempt: false }
+  ]);
+
+  const handleSetEditFaltaCrewQuantity = (qty: number) => {
+    if (qty < 1) return;
+    setEditFaltaCrew(prev => {
+      if (qty === prev.length) return prev;
+      if (qty < prev.length) return prev.slice(0, qty);
+      const next = [...prev];
+      for (let i = prev.length; i < qty; i++) {
+        const role = i === 0 ? "Motorista" : `Ajudante ${i > 1 ? i : ""}`.trim();
+        next.push({ id: `ef_crew_${Date.now()}_${i}`, role: role || `Ajudante ${i}`, name: "", cpf: "", isExempt: false });
+      }
+      return next;
+    });
+  };
+
+  const handleUpdateEditFaltaCrewMember = (index: number, field: "role" | "name" | "cpf" | "isExempt", val: any) => {
+    setEditFaltaCrew(prev => {
+      const next = [...prev];
+      if (!next[index]) return prev;
+      if (field === "name") {
+        const clean = String(val).toUpperCase();
+        const match = getCrewDetailByName(clean);
+        const isX = isDriverX(clean);
+        next[index] = {
+          ...next[index],
+          name: clean,
+          cpf: match?.cpf ? match.cpf : (isX ? "000.000.000-00" : next[index].cpf),
+          isExempt: isX ? true : next[index].isExempt
+        };
+      } else {
+        next[index] = { ...next[index], [field]: val };
+      }
+      return next;
+    });
+  };
 
   // Document print state
   const [selectedPrintDoc, setSelectedPrintDoc] = useState<{
@@ -903,6 +948,15 @@ export default function PendingRequestsTab() {
   // Editable state for Items inside the Reimprimir / Print Modal
   const [printDocItems, setPrintDocItems] = useState<any[]>([]);
 
+  // Editable state for Crew / Collaborators inside the Vale Print Modal
+  const [printValeCrew, setPrintValeCrew] = useState<Array<{
+    id: string;
+    role: string;
+    name: string;
+    cpf: string;
+    isExempt?: boolean;
+  }>>([]);
+
   // Initialize printDocItems when selectedPrintDoc changes
   useEffect(() => {
     if (selectedPrintDoc) {
@@ -979,10 +1033,173 @@ export default function PendingRequestsTab() {
           customUnitPrice: Number(displayPrice.toFixed(2))
         };
       }));
+
+      // Initialize Vale Crew if this is a Vale document
+      if (selectedPrintDoc.type === "vale") {
+        const cast = req as any;
+        const reqSetor = req.setor || "";
+        const rotasDb = getMotoristasRotas ? getMotoristasRotas() : {};
+        const routeDefault = rotasDb[reqSetor];
+
+        let crew: Array<{ id: string; role: string; name: string; cpf: string; isExempt?: boolean }> = [];
+
+        if (cast.faltaCrewList && Array.isArray(cast.faltaCrewList) && cast.faltaCrewList.length > 0) {
+          crew = cast.faltaCrewList.map((m: any, idx: number) => ({
+            id: m.id || `crew_${idx}`,
+            role: m.role || (idx === 0 ? "Motorista" : `Ajudante ${idx}`),
+            name: (m.name || "").trim().toUpperCase(),
+            cpf: m.cpf || "",
+            isExempt: !!m.isExempt || isDriverX(m.name)
+          }));
+        } else {
+          const rawDriver = cast.faltaMotorista || (cast.motorista && cast.motorista !== "Não Declarado" ? cast.motorista : "") || routeDefault?.nome || "";
+          const driverName = (rawDriver || "").trim().toUpperCase();
+          const driverCpf = cast.faltaMotoristaCpf || (cast.motoristaCpf || "") || (routeDefault as any)?.cpf || "";
+
+          let h1Name = (cast.faltaAjudante1 || cast.ajudante1 || "").trim().toUpperCase();
+          let h1Cpf = cast.faltaAjudante1Cpf || cast.ajudante1Cpf || "";
+          let h2Name = (cast.faltaAjudante2 || cast.ajudante2 || "").trim().toUpperCase();
+          let h2Cpf = cast.faltaAjudante2Cpf || cast.ajudante2Cpf || "";
+          let h3Name = (cast.faltaAjudante3 || cast.ajudante3 || "").trim().toUpperCase();
+          let h3Cpf = cast.faltaAjudante3Cpf || cast.ajudante3Cpf || "";
+
+          const csvHelpers = cast.faltaAjudantes || cast.ajudantes;
+          if (!h1Name && csvHelpers && csvHelpers.trim() && csvHelpers.toUpperCase() !== "NÃO DECLARADOS") {
+            const parts = csvHelpers.split(",").map((s: string) => s.trim().toUpperCase()).filter(Boolean);
+            if (parts[0]) h1Name = parts[0];
+            if (parts[1]) h2Name = parts[1];
+            if (parts[2]) h3Name = parts[2];
+          }
+
+          crew.push({
+            id: `crew_0`,
+            role: "Motorista",
+            name: driverName,
+            cpf: driverCpf || (getCrewDetailByName(driverName)?.cpf || ""),
+            isExempt: isDriverX(driverName)
+          });
+
+          if (h1Name) {
+            crew.push({
+              id: `crew_1`,
+              role: "Ajudante 1",
+              name: h1Name,
+              cpf: h1Cpf || (getCrewDetailByName(h1Name)?.cpf || ""),
+              isExempt: false
+            });
+          }
+
+          if (h2Name) {
+            crew.push({
+              id: `crew_2`,
+              role: "Ajudante 2",
+              name: h2Name,
+              cpf: h2Cpf || (getCrewDetailByName(h2Name)?.cpf || ""),
+              isExempt: false
+            });
+          }
+
+          if (h3Name) {
+            crew.push({
+              id: `crew_3`,
+              role: "Ajudante 3",
+              name: h3Name,
+              cpf: h3Cpf || (getCrewDetailByName(h3Name)?.cpf || ""),
+              isExempt: false
+            });
+          }
+
+          if (crew.length === 1) {
+            crew.push({
+              id: `crew_1`,
+              role: "Ajudante 1",
+              name: "",
+              cpf: "",
+              isExempt: false
+            });
+          }
+        }
+        setPrintValeCrew(crew);
+      } else {
+        setPrintValeCrew([]);
+      }
     } else {
       setPrintDocItems([]);
+      setPrintValeCrew([]);
     }
   }, [selectedPrintDoc, promaxRecords]);
+
+  // Handlers for dynamic collaborator selection and quantity in Vale print modal
+  const handleSetPrintValeCrewQuantity = (qty: number) => {
+    if (qty < 1) return;
+    setPrintValeCrew(prev => {
+      if (qty === prev.length) return prev;
+      if (qty < prev.length) {
+        return prev.slice(0, qty);
+      }
+      const next = [...prev];
+      for (let i = prev.length; i < qty; i++) {
+        const role = i === 0 ? "Motorista" : `Ajudante ${i > 1 ? i : ""}`.trim();
+        next.push({
+          id: `crew_${Date.now()}_${i}`,
+          role: role || `Ajudante ${i}`,
+          name: "",
+          cpf: "",
+          isExempt: false
+        });
+      }
+      return next;
+    });
+  };
+
+  const handleUpdatePrintValeCrewMember = (
+    index: number,
+    field: "role" | "name" | "cpf" | "isExempt",
+    value: any
+  ) => {
+    setPrintValeCrew(prev => {
+      const updated = [...prev];
+      if (!updated[index]) return prev;
+
+      if (field === "name") {
+        const cleanVal = String(value).toUpperCase();
+        const match = getCrewDetailByName(cleanVal);
+        const isX = isDriverX(cleanVal);
+        updated[index] = {
+          ...updated[index],
+          name: cleanVal,
+          cpf: match?.cpf ? match.cpf : (isX ? "000.000.000-00" : updated[index].cpf),
+          isExempt: isX ? true : updated[index].isExempt
+        };
+      } else {
+        updated[index] = {
+          ...updated[index],
+          [field]: value
+        };
+      }
+      return updated;
+    });
+  };
+
+  const handleAddPrintValeCrewMember = () => {
+    setPrintValeCrew(prev => [
+      ...prev,
+      {
+        id: `crew_${Date.now()}_${prev.length}`,
+        role: `Ajudante ${prev.length > 1 ? prev.length : ""}`.trim() || `Ajudante ${prev.length}`,
+        name: "",
+        cpf: "",
+        isExempt: false
+      }
+    ]);
+  };
+
+  const handleRemovePrintValeCrewMember = (index: number) => {
+    setPrintValeCrew(prev => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((_, i) => i !== index);
+    });
+  };
 
   // Handle live updating of quantity, unit, or unit price in print modal
   const handleUpdatePrintDocItem = (index: number, field: string, value: any) => {
@@ -1085,13 +1302,30 @@ export default function PendingRequestsTab() {
     const totalHl = updatedItems.reduce((acc, it) => acc + (Number(it.hectolitros) || 0), 0);
 
     // 2. Build updated request object and calculate correct valorTotal & hectolitros
-    const intermediateReq = {
+    const intermediateReq: any = {
       ...req,
       items: updatedItems,
       quantidade: totalQty,
       hectolitros: totalHl,
       unidadeMedida: updatedItems[0]?.unidadeMedida || req.unidadeMedida || "cx"
     };
+
+    if (selectedPrintDoc.type === "vale" && printValeCrew.length > 0) {
+      const driverMember = printValeCrew.find(c => c.role.toLowerCase().includes("motorista")) || printValeCrew[0];
+      const helperMembers = printValeCrew.filter(c => c !== driverMember);
+
+      intermediateReq.faltaCrewList = printValeCrew;
+      intermediateReq.faltaQtdColaboradores = printValeCrew.length;
+      intermediateReq.faltaMotorista = driverMember?.name || "";
+      intermediateReq.faltaMotoristaCpf = driverMember?.cpf || "";
+      intermediateReq.faltaAjudante1 = helperMembers[0]?.name || "";
+      intermediateReq.faltaAjudante1Cpf = helperMembers[0]?.cpf || "";
+      intermediateReq.faltaAjudante2 = helperMembers[1]?.name || "";
+      intermediateReq.faltaAjudante2Cpf = helperMembers[1]?.cpf || "";
+      intermediateReq.faltaAjudante3 = helperMembers[2]?.name || "";
+      intermediateReq.faltaAjudante3Cpf = helperMembers[2]?.cpf || "";
+      intermediateReq.faltaAjudantes = helperMembers.map(h => h.name).filter(Boolean).join(", ");
+    }
 
     const { valorTotal: newCalcValue, hectolitros: newCalcHl } = calculateRequestValueAndHL(intermediateReq, promaxRecords);
 
@@ -1120,11 +1354,25 @@ export default function PendingRequestsTab() {
     );
 
     if (targetVale) {
+      const driverMember = printValeCrew.length > 0 ? (printValeCrew.find(c => c.role.toLowerCase().includes("motorista")) || printValeCrew[0]) : null;
+      const helperMembers = printValeCrew.length > 0 ? printValeCrew.filter(c => c !== driverMember) : [];
+
       const updatedVale: ValeEntry = {
         ...targetVale,
         valorTotal: newCalcValue,
         hectolitros: newCalcHl,
         itemsCount: totalQty,
+        ...(selectedPrintDoc.type === "vale" && printValeCrew.length > 0 ? {
+          motorista: driverMember?.name || targetVale.motorista,
+          motoristaCpf: driverMember?.cpf || targetVale.motoristaCpf,
+          ajudante1: helperMembers[0]?.name || "",
+          ajudante1Cpf: helperMembers[0]?.cpf || "",
+          ajudante2: helperMembers[1]?.name || "",
+          ajudante2Cpf: helperMembers[1]?.cpf || "",
+          ajudantes: helperMembers.map(h => h.name).filter(Boolean).join(", "),
+          crewList: printValeCrew,
+          quantidadeColaboradores: printValeCrew.length
+        } : {}),
         originalRequest: {
           ...(targetVale.originalRequest || {}),
           ...updatedRequest
@@ -1135,23 +1383,28 @@ export default function PendingRequestsTab() {
       // Create new vale entry if missing
       const cast = updatedRequest as any;
       const deterministicId = `vale_${reqId}`;
+      const driverMember = printValeCrew.find(c => c.role.toLowerCase().includes("motorista")) || printValeCrew[0];
+      const helperMembers = printValeCrew.filter(c => c !== driverMember);
+
       const newValeEntry: ValeEntry = {
         id: deterministicId,
         requestId: reqId,
         nf: req.nf || "N0-NF",
         rota: req.setor || "R00",
         dataEmissao: cast.dataEntregaRecibo || new Date().toLocaleDateString("pt-BR"),
-        motorista: cast.faltaMotorista || "Não Declarado",
-        motoristaCpf: cast.faltaMotoristaCpf || "",
-        ajudantes: cast.faltaAjudantes || "",
-        ajudante1: cast.faltaAjudante1 || "",
-        ajudante1Cpf: cast.faltaAjudante1Cpf || "",
-        ajudante2: cast.faltaAjudante2 || "",
-        ajudante2Cpf: cast.faltaAjudante2Cpf || "",
+        motorista: driverMember?.name || cast.faltaMotorista || "Não Declarado",
+        motoristaCpf: driverMember?.cpf || cast.faltaMotoristaCpf || "",
+        ajudantes: helperMembers.map(h => h.name).filter(Boolean).join(", ") || cast.faltaAjudantes || "",
+        ajudante1: helperMembers[0]?.name || cast.faltaAjudante1 || "",
+        ajudante1Cpf: helperMembers[0]?.cpf || cast.faltaAjudante1Cpf || "",
+        ajudante2: helperMembers[1]?.name || cast.faltaAjudante2 || "",
+        ajudante2Cpf: helperMembers[1]?.cpf || cast.faltaAjudante2Cpf || "",
         hectolitros: newCalcHl,
         valorTotal: newCalcValue,
         itemsCount: totalQty,
         status: "emitido",
+        crewList: printValeCrew,
+        quantidadeColaboradores: printValeCrew.length,
         originalRequest: updatedRequest
       };
       await saveValeEntry(newValeEntry);
@@ -1165,7 +1418,7 @@ export default function PendingRequestsTab() {
     });
 
     window.dispatchEvent(new Event("storage"));
-    alert(`Alterações salvas com sucesso!\nNovo Valor Total: R$ ${newCalcValue.toFixed(2).replace(".", ",")}\nTotal HL: ${newCalcHl.toFixed(4)} HL`);
+    alert(`Alterações salvas com sucesso!\nNovo Valor Total: R$ ${newCalcValue.toFixed(2).replace(".", ",")}\nTotal HL: ${newCalcHl.toFixed(4)} HL\nEquipe: ${printValeCrew.length > 0 ? `${printValeCrew.length} colaboradores configurados` : "Salva"}`);
   };
 
   // Handler for creating an ad-hoc voucher (Vale Avulso)
@@ -1179,6 +1432,8 @@ export default function PendingRequestsTab() {
     motorista: string;
     ajudantes: string;
     observacao: string;
+    crewList?: Array<{ role: string; name: string; cpf?: string; isExempt?: boolean }>;
+    quantidadeColaboradores?: number;
   }) => {
     const code = data.itemCode.trim();
     const cleanCode = code.replace(/^0+/, "");
@@ -1204,6 +1459,19 @@ export default function PendingRequestsTab() {
     const valeId = `vale_avulso_${Date.now()}`;
     const loggedUser = sessionStorage.getItem("sstr_current_manager_name") || "Gestor";
 
+    const driverMember = data.crewList && data.crewList.length > 0 
+      ? (data.crewList.find(c => c.role.toLowerCase().includes("motorista")) || data.crewList[0]) 
+      : null;
+    const helperMembers = data.crewList && data.crewList.length > 0 
+      ? data.crewList.filter(c => c !== driverMember) 
+      : [];
+
+    const effectiveMotorista = driverMember?.name || data.motorista || "Não Declarado";
+    const effectiveMotoristaCpf = driverMember?.cpf || (getCrewDetailByName(effectiveMotorista)?.cpf || "");
+    const effectiveAjudantes = helperMembers.length > 0 
+      ? helperMembers.map(h => h.name).filter(Boolean).join(", ") 
+      : data.ajudantes;
+
     const newRequest: PendingRequest = {
       id: reqId,
       timestamp: Date.now(),
@@ -1213,15 +1481,28 @@ export default function PendingRequestsTab() {
       nb: "000000",
       nf: `VALE-${data.mapa.trim() || Date.now().toString().slice(-4)}`,
       fotoUrl: "",
-      observacao: `[VALE AVULSO] Motorista: ${data.motorista} | Ajudante: ${data.ajudantes}${data.observacao ? ` | Obs: ${data.observacao}` : ""}`,
+      observacao: `[VALE AVULSO] Motorista: ${effectiveMotorista} | Ajudante: ${effectiveAjudantes}${data.observacao ? ` | Obs: ${data.observacao}` : ""}`,
       statusPromax: "cadastrado",
       notified: true,
+      reviewedByControle: true,
+      faltaTipoErro: "entrega",
       cadastroUser: loggedUser,
       cadastroDate: new Date().toLocaleDateString("pt-BR") + " " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
       quantidade: data.quantidade,
       hectolitros: hl,
       valorTotal: totalPrice,
       unidadeMedida: data.unidadeMedida || "cx",
+      faltaMotorista: effectiveMotorista,
+      faltaMotoristaCpf: effectiveMotoristaCpf,
+      faltaAjudantes: effectiveAjudantes,
+      faltaAjudante1: helperMembers[0]?.name || (effectiveAjudantes.split(",")[0]?.trim() || ""),
+      faltaAjudante1Cpf: helperMembers[0]?.cpf || "",
+      faltaAjudante2: helperMembers[1]?.name || (effectiveAjudantes.split(",")[1]?.trim() || ""),
+      faltaAjudante2Cpf: helperMembers[1]?.cpf || "",
+      faltaAjudante3: helperMembers[2]?.name || (effectiveAjudantes.split(",")[2]?.trim() || ""),
+      faltaAjudante3Cpf: helperMembers[2]?.cpf || "",
+      faltaCrewList: data.crewList,
+      faltaQtdColaboradores: data.crewList?.length || (effectiveAjudantes ? 2 : 1),
       items: [
         {
           id: `item_avulso_1`,
@@ -1246,17 +1527,21 @@ export default function PendingRequestsTab() {
       nf: newRequest.nf,
       rota: "AVULSO",
       dataEmissao: data.data || new Date().toLocaleDateString("pt-BR"),
-      motorista: data.motorista,
-      motoristaCpf: "",
-      ajudantes: data.ajudantes,
-      ajudante1: data.ajudantes,
-      ajudante1Cpf: "",
-      ajudante2: "",
-      ajudante2Cpf: "",
+      motorista: effectiveMotorista,
+      motoristaCpf: effectiveMotoristaCpf,
+      ajudantes: effectiveAjudantes,
+      ajudante1: helperMembers[0]?.name || (effectiveAjudantes.split(",")[0]?.trim() || ""),
+      ajudante1Cpf: helperMembers[0]?.cpf || "",
+      ajudante2: helperMembers[1]?.name || (effectiveAjudantes.split(",")[1]?.trim() || ""),
+      ajudante2Cpf: helperMembers[1]?.cpf || "",
+      ajudante3: helperMembers[2]?.name || (effectiveAjudantes.split(",")[2]?.trim() || ""),
+      ajudante3Cpf: helperMembers[2]?.cpf || "",
       hectolitros: hl,
       valorTotal: totalPrice,
       itemsCount: 1,
       status: "emitido",
+      crewList: data.crewList,
+      quantidadeColaboradores: data.crewList?.length || (effectiveAjudantes ? 2 : 1),
       originalRequest: newRequest
     };
 
@@ -1829,38 +2114,53 @@ export default function PendingRequestsTab() {
 
     const { valorTotal: calculatedValTotal, hectolitros: calculatedHl } = calculateRequestValueAndHL(req, promaxRecords);
 
-    const deterministicId = `vale_${req.id}`;
+    const existingVale = valesHistorico.find(v => 
+      v.requestId === req.id || 
+      v.originalRequest?.id === req.id || 
+      v.id === `vale_${req.id}` ||
+      (v.nf && v.nf !== "N0-NF" && v.nf === req.nf && v.originalRequest?.mapa === req.mapa)
+    );
+    const deterministicId = existingVale ? existingVale.id : `vale_${req.id}`;
+    const driverMember = (req as any).faltaCrewList?.find((c: any) => c.role.toLowerCase().includes("motorista")) || (req as any).faltaCrewList?.[0];
+    const helperMembers = (req as any).faltaCrewList?.filter((c: any) => c !== driverMember) || [];
+
     const newValeEntry: ValeEntry = {
       id: deterministicId,
       requestId: req.id,
       nf: req.nf || "N0-NF",
       rota: req.setor || "R00",
       dataEmissao: cast.dataEntregaRecibo || new Date().toLocaleDateString("pt-BR"),
-      motorista: cast.faltaMotorista || "Não Declarado",
-      motoristaCpf: cast.faltaMotoristaCpf || "",
-      ajudantes: cast.faltaAjudantes || "",
-      ajudante1: cast.faltaAjudante1 || "",
-      ajudante1Cpf: cast.faltaAjudante1Cpf || "",
-      ajudante2: cast.faltaAjudante2 || "",
-      ajudante2Cpf: cast.faltaAjudante2Cpf || "",
+      motorista: driverMember?.name || cast.faltaMotorista || "Não Declarado",
+      motoristaCpf: driverMember?.cpf || cast.faltaMotoristaCpf || "",
+      ajudantes: helperMembers.length > 0 ? helperMembers.map((h: any) => h.name).filter(Boolean).join(", ") : (cast.faltaAjudantes || ""),
+      ajudante1: helperMembers[0]?.name || cast.faltaAjudante1 || "",
+      ajudante1Cpf: helperMembers[0]?.cpf || cast.faltaAjudante1Cpf || "",
+      ajudante2: helperMembers[1]?.name || cast.faltaAjudante2 || "",
+      ajudante2Cpf: helperMembers[1]?.cpf || cast.faltaAjudante2Cpf || "",
+      ajudante3: helperMembers[2]?.name || cast.faltaAjudante3 || "",
+      ajudante3Cpf: helperMembers[2]?.cpf || cast.faltaAjudante3Cpf || "",
       hectolitros: calculatedHl || req.hectolitros || printableItems.reduce((s: any, c: any) => s + (c.hectolitros || 0), 0),
       valorTotal: calculatedValTotal,
       itemsCount: printableItems.reduce((s: any, c: any) => s + (c.quantidade || 1), 0),
-      status: "emitido",
+      status: existingVale?.status || "emitido",
+      crewList: (req as any).faltaCrewList || undefined,
+      quantidadeColaboradores: (req as any).faltaQtdColaboradores || (req as any).faltaCrewList?.length || undefined,
       originalRequest: { ...req }
     };
 
     saveValeEntry(newValeEntry);
-  }, [promaxRecords, saveValeEntry, deleteValeEntry]);
+  }, [promaxRecords, valesHistorico, saveValeEntry, deleteValeEntry]);
 
-  // Filter vales displayed in tab to ONLY those whose request was reviewed and classified as "entrega" (Erro de Descarregamento) and NOT inversion
+  // Filter vales displayed in tab to ONLY those whose request was reviewed and classified as "entrega" (Erro de Descarregamento) or avulso and NOT inversion
   const displayVales = useMemo(() => {
     const reqMap = new Map(requests.map(r => [r.id, r]));
     return valesHistorico.filter(v => {
       if (isInversaoOrSwapReq(v)) return false;
+      if (v.id?.startsWith("vale_avulso_") || v.rota === "AVULSO" || (v.originalRequest as any)?.setor === "AVULSO") return true;
       const targetReq = reqMap.get(v.requestId || v.originalRequest?.id) || v.originalRequest;
       if (targetReq) {
         if (isSwapRequest(targetReq) || isInversaoOrSwapReq(targetReq)) return false;
+        if ((targetReq as any).setor === "AVULSO" || (targetReq as any).faltaTipoErro === "entrega") return true;
         return (targetReq as any).reviewedByControle === true && (targetReq as any).faltaTipoErro === "entrega";
       }
       return (v.originalRequest as any)?.reviewedByControle === true && (v.originalRequest as any)?.faltaTipoErro === "entrega";
@@ -2765,8 +3065,12 @@ export default function PendingRequestsTab() {
       // 3. Search term filter if applied
       if (searchTerm.trim()) {
         const term = searchTerm.toLowerCase().trim();
+        const isNumericTerm = /^\d+$/.test(term);
         const nfMatch = (r.nf || "").toLowerCase().includes(term);
-        const nbMatch = (r.nb || "").toLowerCase().includes(term);
+        const nbRaw = (r.nb || "").toLowerCase().trim();
+        const nbMatch = isNumericTerm
+          ? (nbRaw === term || nbRaw.startsWith(term) || nbRaw.replace(/^0+/, "") === term.replace(/^0+/, "") || nbRaw.replace(/^0+/, "").startsWith(term.replace(/^0+/, "")))
+          : nbRaw.includes(term);
         const mapMatch = (r.mapa || "").toLowerCase().includes(term);
         const obsMatch = (r.observacao || "").toLowerCase().includes(term);
         const idMatch = (r.id || "").toLowerCase().includes(term);
@@ -2970,10 +3274,19 @@ export default function PendingRequestsTab() {
 
   // Open Edit Shortage sliding details editor
   const handleOpenEditFalta = (req: PendingRequest) => {
+    setIsEditFaltaMaximized(true);
     const cast = req as any;
     setEditingFalta(req);
     setEditFaltaErrorType(cast.faltaTipoErro || "");
     
+    // Check if an existing Vale is already linked to this request in valesHistorico
+    const matchingVale = valesHistorico.find(v => 
+      v.requestId === req.id || 
+      v.originalRequest?.id === req.id || 
+      v.id === `vale_${req.id}` || 
+      (v.nf && v.nf !== "N0-NF" && v.nf === req.nf)
+    );
+
     // Guess default driver from Promax records if empty
     let inferredDriver = "";
     if (promaxRecords.length > 0) {
@@ -2983,8 +3296,8 @@ export default function PendingRequestsTab() {
       }
     }
 
-    let defaultMotorista = cast.faltaMotorista || "";
-    if (!defaultMotorista) {
+    let defaultMotorista = cast.faltaMotorista || cast.motorista || matchingVale?.motorista || "";
+    if (!defaultMotorista || defaultMotorista === "Não Declarado") {
       const sectorKey = req.setor ? req.setor.replace("ROTA - ", "").trim() : "";
       const routeDriver = motoristasList[sectorKey];
       if (routeDriver) {
@@ -2994,7 +3307,7 @@ export default function PendingRequestsTab() {
       }
     }
 
-    let defaultMotoristaCpf = cast.faltaMotoristaCpf || "";
+    let defaultMotoristaCpf = cast.faltaMotoristaCpf || cast.motoristaCpf || matchingVale?.motoristaCpf || "";
     if (defaultMotorista && !defaultMotoristaCpf) {
       const detail = getCrewDetailByName(defaultMotorista);
       if (detail) {
@@ -3004,10 +3317,10 @@ export default function PendingRequestsTab() {
 
     setEditFaltaMotorista(defaultMotorista);
     setEditFaltaMotoristaCpf(defaultMotoristaCpf);
-    setEditFaltaAjudantes(cast.faltaAjudantes || "");
+    setEditFaltaAjudantes(cast.faltaAjudantes || cast.ajudantes || matchingVale?.ajudantes || "");
     
-    let defaultAjudante1 = cast.faltaAjudante1 || (cast.faltaAjudantes ? cast.faltaAjudantes.split(",")[0] || "" : "");
-    let defaultAjudante1Cpf = cast.faltaAjudante1Cpf || "";
+    let defaultAjudante1 = cast.faltaAjudante1 || cast.ajudante1 || matchingVale?.ajudante1 || (cast.faltaAjudantes ? cast.faltaAjudantes.split(",")[0]?.trim() || "" : (cast.ajudantes ? cast.ajudantes.split(",")[0]?.trim() || "" : (matchingVale?.ajudantes ? matchingVale.ajudantes.split(",")[0]?.trim() || "" : "")));
+    let defaultAjudante1Cpf = cast.faltaAjudante1Cpf || cast.ajudante1Cpf || matchingVale?.ajudante1Cpf || "";
     if (defaultAjudante1 && !defaultAjudante1Cpf) {
       const detail = getCrewDetailByName(defaultAjudante1);
       if (detail) {
@@ -3015,8 +3328,8 @@ export default function PendingRequestsTab() {
       }
     }
 
-    let defaultAjudante2 = cast.faltaAjudante2 || (cast.faltaAjudantes ? cast.faltaAjudantes.split(",")[1] || "" : "");
-    let defaultAjudante2Cpf = cast.faltaAjudante2Cpf || "";
+    let defaultAjudante2 = cast.faltaAjudante2 || cast.ajudante2 || matchingVale?.ajudante2 || (cast.faltaAjudantes ? cast.faltaAjudantes.split(",")[1]?.trim() || "" : (cast.ajudantes ? cast.ajudantes.split(",")[1]?.trim() || "" : (matchingVale?.ajudantes ? matchingVale.ajudantes.split(",")[1]?.trim() || "" : "")));
+    let defaultAjudante2Cpf = cast.faltaAjudante2Cpf || cast.ajudante2Cpf || matchingVale?.ajudante2Cpf || "";
     if (defaultAjudante2 && !defaultAjudante2Cpf) {
       const detail = getCrewDetailByName(defaultAjudante2);
       if (detail) {
@@ -3035,30 +3348,90 @@ export default function PendingRequestsTab() {
     const pdvDb = getPdvDatabase();
     const clientInfo = getClientDetails(req.nb, pdvDb, promaxRecords);
     setEditFaltaCidade(cast.municipioRecibo || clientInfo.municipio || "");
+
+    // Initialize dynamic crew model for classification & rateio from source request or matching vale
+    const sourceCrew = (cast.faltaCrewList && Array.isArray(cast.faltaCrewList) && cast.faltaCrewList.length > 0)
+      ? cast.faltaCrewList
+      : (matchingVale?.crewList && Array.isArray(matchingVale.crewList) && matchingVale.crewList.length > 0)
+        ? matchingVale.crewList
+        : null;
+
+    if (sourceCrew) {
+      setEditFaltaCrew(sourceCrew.map((m: any, idx: number) => ({
+        id: m.id || `ef_crew_${idx}`,
+        role: m.role || (idx === 0 ? "Motorista" : `Ajudante ${idx}`),
+        name: (m.name || "").trim().toUpperCase(),
+        cpf: m.cpf || "",
+        isExempt: !!m.isExempt || isDriverX(m.name)
+      })));
+    } else {
+      const initialCrew: Array<{ id: string; role: string; name: string; cpf: string; isExempt?: boolean }> = [
+        {
+          id: "1",
+          role: "Motorista",
+          name: (defaultMotorista || "").trim().toUpperCase(),
+          cpf: defaultMotoristaCpf,
+          isExempt: isDriverX(defaultMotorista)
+        }
+      ];
+      if (defaultAjudante1.trim()) {
+        initialCrew.push({
+          id: "2",
+          role: "Ajudante 1",
+          name: defaultAjudante1.trim().toUpperCase(),
+          cpf: defaultAjudante1Cpf,
+          isExempt: false
+        });
+      }
+      if (defaultAjudante2.trim()) {
+        initialCrew.push({
+          id: "3",
+          role: "Ajudante 2",
+          name: defaultAjudante2.trim().toUpperCase(),
+          cpf: defaultAjudante2Cpf,
+          isExempt: false
+        });
+      }
+      if (initialCrew.length === 1) {
+        initialCrew.push({
+          id: "2",
+          role: "Ajudante 1",
+          name: "",
+          cpf: "",
+          isExempt: false
+        });
+      }
+      setEditFaltaCrew(initialCrew);
+    }
   };
 
   // Save customized shortage parameters
-  const handleSaveFaltaDetails = () => {
+  const handleSaveFaltaDetails = async (openVale = false) => {
     if (!editingFalta) return;
 
-    const targetReq = requests.find(r => r.id === editingFalta.id);
+    const targetReq = requests.find(r => r.id === editingFalta.id) || editingFalta;
     if (targetReq) {
-      const helpersList: string[] = [];
-      if (editFaltaAjudante1.trim()) helpersList.push(editFaltaAjudante1.trim());
-      if (editFaltaAjudante2.trim()) helpersList.push(editFaltaAjudante2.trim());
-      const combinedHelpers = helpersList.join(", ");
+      const driverMember = editFaltaCrew.find(c => c.role.toLowerCase().includes("motorista")) || editFaltaCrew[0];
+      const helperMembers = editFaltaCrew.filter(c => c !== driverMember);
+      const cleanDriverName = (driverMember?.name || editFaltaMotorista || "").trim().toUpperCase();
+      const cleanDriverCpf = isDriverX(cleanDriverName) ? "000.000.000-00" : (driverMember?.cpf || editFaltaMotoristaCpf || "").trim();
+      const combinedHelpers = helperMembers.map(h => h.name.trim()).filter(Boolean).join(", ");
 
       const updatedReq = {
         ...targetReq,
-        faltaTipoErro: editFaltaErrorType || undefined,
+        faltaTipoErro: editFaltaErrorType || (openVale ? "entrega" : (targetReq as any).faltaTipoErro),
         reviewedByControle: true,
-        ...(editFaltaMotorista.trim() ? { faltaMotorista: editFaltaMotorista.trim() } : {}),
-        ...(editFaltaMotoristaCpf.trim() ? { faltaMotoristaCpf: editFaltaMotoristaCpf.trim() } : {}),
-        ...((combinedHelpers || editFaltaAjudantes.trim()) ? { faltaAjudantes: combinedHelpers || editFaltaAjudantes.trim() } : {}),
-        ...(editFaltaAjudante1.trim() ? { faltaAjudante1: editFaltaAjudante1.trim() } : {}),
-        ...(editFaltaAjudante1Cpf.trim() ? { faltaAjudante1Cpf: editFaltaAjudante1Cpf.trim() } : {}),
-        ...(editFaltaAjudante2.trim() ? { faltaAjudante2: editFaltaAjudante2.trim() } : {}),
-        ...(editFaltaAjudante2Cpf.trim() ? { faltaAjudante2Cpf: editFaltaAjudante2Cpf.trim() } : {}),
+        faltaCrewList: editFaltaCrew,
+        faltaQtdColaboradores: editFaltaCrew.length,
+        ...(cleanDriverName ? { faltaMotorista: cleanDriverName, motorista: cleanDriverName } : {}),
+        ...(cleanDriverCpf ? { faltaMotoristaCpf: cleanDriverCpf, motoristaCpf: cleanDriverCpf } : {}),
+        ...(combinedHelpers ? { faltaAjudantes: combinedHelpers, ajudantes: combinedHelpers } : {}),
+        ...(helperMembers[0]?.name ? { faltaAjudante1: helperMembers[0].name.trim().toUpperCase(), ajudante1: helperMembers[0].name.trim().toUpperCase() } : {}),
+        ...(helperMembers[0]?.cpf ? { faltaAjudante1Cpf: helperMembers[0].cpf.trim() } : {}),
+        ...(helperMembers[1]?.name ? { faltaAjudante2: helperMembers[1].name.trim().toUpperCase(), ajudante2: helperMembers[1].name.trim().toUpperCase() } : {}),
+        ...(helperMembers[1]?.cpf ? { faltaAjudante2Cpf: helperMembers[1].cpf.trim() } : {}),
+        ...(helperMembers[2]?.name ? { faltaAjudante3: helperMembers[2].name.trim().toUpperCase(), ajudante3: helperMembers[2].name.trim().toUpperCase() } : {}),
+        ...(helperMembers[2]?.cpf ? { faltaAjudante3Cpf: helperMembers[2].cpf.trim() } : {}),
         ...(editFaltaDataAnomalia.trim() ? { mapaDataAnomalia: editFaltaDataAnomalia.trim() } : {}),
         ...(editFaltaDataEntrega.trim() ? { dataEntregaRecibo: editFaltaDataEntrega.trim() } : {}),
         ...(editFaltaObservacao.trim() ? { observacaoRecibo: editFaltaObservacao.trim() } : {}),
@@ -3066,18 +3439,22 @@ export default function PendingRequestsTab() {
         ...(editFaltaPhoto ? { fotoUrl: editFaltaPhoto } : {}),
       } as PendingRequest;
 
-      savePendingRequest(updatedReq);
+      await savePendingRequest(updatedReq);
 
-      if (editFaltaErrorType === "entrega") {
-        createAndSaveVale(updatedReq);
-      } else {
+      if (editFaltaErrorType === "carregamento") {
         const existingVale = valesHistorico.find(v => v.requestId === updatedReq.id || v.originalRequest?.id === updatedReq.id || v.id === `vale_${updatedReq.id}`);
         if (existingVale) {
-          deleteValeEntry(existingVale.id);
+          await deleteValeEntry(existingVale.id);
         }
+      } else if (editFaltaErrorType === "entrega" || openVale || valesHistorico.some(v => v.requestId === updatedReq.id || v.originalRequest?.id === updatedReq.id || v.id === `vale_${updatedReq.id}`)) {
+        await createAndSaveVale(updatedReq);
       }
 
       setEditingFalta(null);
+
+      if (openVale) {
+        setSelectedPrintDoc({ type: "vale", request: updatedReq });
+      }
     }
   };
 
@@ -3949,6 +4326,31 @@ export default function PendingRequestsTab() {
         </button>
       </div>
 
+      {/* Quick Action Bar for Gerar Vale Avulso & Rateio */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/80 p-3.5 rounded-2xl border border-slate-800 shadow-md no-print">
+        <div className="flex items-center gap-2.5 text-xs text-slate-300">
+          <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 font-bold border border-amber-500/30">
+            <PlusCircle className="w-4 h-4" />
+          </div>
+          <div>
+            <span className="font-mono font-bold text-white uppercase text-[11px] block">Gestão de Vales e Rateio:</span>
+            <span className="text-[10px] text-slate-400">Classifique faltas de entrega ou emita vales avulsos diretamente com cálculo de rateio entre motorista e ajudantes.</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab("historico_vales");
+            setOpenAvulsoTrigger(Date.now());
+          }}
+          className="px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-xl text-xs font-mono flex items-center justify-center gap-1.5 shadow-lg shadow-amber-950/40 cursor-pointer transition-all shrink-0 hover:scale-[1.02]"
+          title="Abrir modal para gerar vale avulso com seleção de colaboradores e rateio automático"
+        >
+          <PlusCircle className="w-4 h-4" />
+          <span>+ Gerar Vale Avulso</span>
+        </button>
+      </div>
+
       {/* Main Grid: Filters & Lists */}
       <div className="space-y-4">
         
@@ -4674,8 +5076,8 @@ export default function PendingRequestsTab() {
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 h-10 text-xs font-semibold text-slate-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
                   >
                     <option value="">-- Selecione o Motorista --</option>
-                    {LISTA_CREW.filter(c => c.cargo.toLowerCase().includes("motorista")).map(c => (
-                      <option key={c.cpf} value={c.nome}>
+                    {LISTA_CREW.filter(c => c.cargo.toLowerCase().includes("motorista")).map((c, cIdx) => (
+                      <option key={`drv_${c.cpf || c.nome}_${cIdx}`} value={c.nome}>
                         {c.nome} ({c.cargo})
                       </option>
                     ))}
@@ -4692,8 +5094,8 @@ export default function PendingRequestsTab() {
                   >
                     <option value="">-- Selecione o Ajudante 1 --</option>
                     <option value="Não possui">Não possui</option>
-                    {LISTA_CREW.filter(c => c.cargo.toLowerCase().includes("ajudante") || c.cargo.toLowerCase().includes("auxiliar")).map(c => (
-                      <option key={c.cpf} value={c.nome}>
+                    {LISTA_CREW.filter(c => c.cargo.toLowerCase().includes("ajudante") || c.cargo.toLowerCase().includes("auxiliar")).map((c, cIdx) => (
+                      <option key={`aj_${c.cpf || c.nome}_${cIdx}`} value={c.nome}>
                         {c.nome}
                       </option>
                     ))}
@@ -5276,6 +5678,7 @@ export default function PendingRequestsTab() {
               onDeleteSingleVale={handleDeleteSingleVale}
               onUpdateValeStatus={handleUpdateValeStatus}
               onCreateAvulsoVale={handleCreateAvulsoVale}
+              openAvulsoTrigger={openAvulsoTrigger}
               onInspectRequest={(vale) => {
                 const req = vale.originalRequest || requests.find(r => r.id === vale.requestId || (r.nf && r.nf !== "N0-NF" && r.nf === vale.nf));
                 if (req) {
@@ -5764,7 +6167,7 @@ export default function PendingRequestsTab() {
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {displayedRequests.map((req) => {
+              {displayedRequests.map((req, idx) => {
                 const repInfo = repsList[req.setor.trim()];
                 const rotInfo = motoristasList[req.setor.trim()];
                 const isShortage = isFaltaOrInversao(req);
@@ -5789,7 +6192,7 @@ export default function PendingRequestsTab() {
 
               return (
                 <div 
-                  key={req.id} 
+                  key={`${req.id || 'req'}_${idx}`} 
                   className={`bg-slate-900 border rounded-2xl p-4 flex flex-col justify-between space-y-4 shadow-xl transition-all ${
                     isBaixadoCard
                       ? "border-emerald-500/70 bg-emerald-950/20 shadow-emerald-950/20" 
@@ -5892,14 +6295,26 @@ export default function PendingRequestsTab() {
 
                       {/* Tipo Erro Badge */}
                       {cast.faltaTipoErro === "carregamento" ? (
-                        <span className="text-[8px] uppercase font-bold font-mono text-blue-300 bg-blue-950/60 px-2 py-0.5 rounded-lg border border-blue-900/40 shrink-0">
+                        <span className="text-[8px] uppercase font-bold font-mono text-blue-300 bg-blue-950/60 px-2 py-0.5 rounded-lg border border-blue-900/40 shrink-0" title="Classificação: Erro de Carregamento / Estoque">
                           📦 Carregamento
                         </span>
                       ) : cast.faltaTipoErro === "entrega" ? (
-                        <span className="text-[8px] uppercase font-bold font-mono text-amber-300 bg-amber-955/50 px-2 py-0.5 rounded-lg border border-amber-900/40 shrink-0">
-                          🚚 Descarregamento
+                        <span className="text-[8px] uppercase font-bold font-mono text-amber-300 bg-amber-955/50 px-2 py-0.5 rounded-lg border border-amber-900/40 shrink-0" title="Classificação: Erro de Entrega / Descarregamento">
+                          🚚 Falta Entrega
+                        </span>
+                      ) : cast.faltaTipoErro === "nao_identificado" ? (
+                        <span className="text-[8px] uppercase font-bold font-mono text-purple-300 bg-purple-950/60 px-2 py-0.5 rounded-lg border border-purple-900/40 shrink-0" title="Classificação: Não Identificado (Sem Culpa Definida)">
+                          ❓ Não Identificado
                         </span>
                       ) : null}
+
+                      {/* Rateio Active Badge */}
+                      {cast.faltaCrewList && Array.isArray(cast.faltaCrewList) && cast.faltaCrewList.length > 0 && (
+                        <span className="text-[8px] uppercase font-bold font-mono text-amber-300 bg-amber-955/60 px-2 py-0.5 rounded-lg border border-amber-700/50 shrink-0 flex items-center gap-1" title="Equipe e Rateio definidos no novo modelo">
+                          <Users className="w-2.5 h-2.5 text-amber-400" />
+                          <span>Rateio ({cast.faltaCrewList.length} colab.)</span>
+                        </span>
+                      )}
 
                       {/* Tipo Processo Badge */}
                       {isReposicaoReq(req) ? (
@@ -6104,14 +6519,55 @@ export default function PendingRequestsTab() {
                         <span className="text-slate-450 text-right">{cast.mapaDataAnomalia || req.data}</span>
                       </div>
 
-                      {/* Display active assigned crew */}
-                      {isShortage && (cast.faltaMotorista || cast.faltaAjudantes) && (
-                        <div className="pt-2 mt-2 border-t border-slate-900 space-y-1 text-[10.5px] font-sans leading-relaxed text-slate-400">
-                          {cast.faltaMotorista && (
-                            <p>🚚 <strong>Motorista:</strong> <span className="font-mono text-xs uppercase text-slate-300 font-bold">{cast.faltaMotorista}</span></p>
-                          )}
-                          {cast.faltaAjudantes && (
-                            <p>👥 <strong>Equipe / Ajudantes:</strong> <span className="text-slate-300 uppercase italic font-medium">{cast.faltaAjudantes}</span></p>
+                      {/* Display active assigned crew & rateio */}
+                      {(cast.faltaCrewList?.length > 0 || cast.faltaMotorista || cast.motorista || cast.faltaAjudantes || cast.ajudantes) && (
+                        <div className="pt-2 mt-2 border-t border-slate-900 space-y-1.5 text-[10.5px] font-sans leading-relaxed text-slate-400">
+                          {cast.faltaCrewList && Array.isArray(cast.faltaCrewList) && cast.faltaCrewList.length > 0 ? (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between text-[9.5px] font-mono text-amber-400 font-bold uppercase">
+                                <span className="flex items-center gap-1">
+                                  <Users className="w-3 h-3 text-amber-400" />
+                                  <span>Equipe & Rateio ({cast.faltaCrewList.length} colab.):</span>
+                                </span>
+                                {(() => {
+                                  const reqTotalVal = getRequestValue(req, promaxRecords);
+                                  const rateio = calculateValeRateio(reqTotalVal, null, null, null, null, null, null, null, cast.faltaCrewList);
+                                  return (
+                                    <span className="text-slate-300 font-bold">
+                                      {rateio.isDriverX ? "⭐ Regra Motorista X" : `${formatCurrency(rateio.individualValue)}/cada`}
+                                    </span>
+                                  );
+                                })()}
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {(() => {
+                                  const reqTotalVal = getRequestValue(req, promaxRecords);
+                                  const rateio = calculateValeRateio(reqTotalVal, null, null, null, null, null, null, null, cast.faltaCrewList);
+                                  return rateio.crew.map((m, mIdx) => (
+                                    <span 
+                                      key={`card_crew_${req.id}_${mIdx}`}
+                                      className={`px-1.5 py-0.5 rounded text-[8.5px] font-mono border ${
+                                        m.isExempt 
+                                          ? "bg-purple-950/60 border-purple-800 text-purple-300 italic" 
+                                          : "bg-slate-900 border-slate-800 text-slate-200"
+                                      }`}
+                                      title={`${m.role}: ${m.name} (${m.cpf || "Sem CPF"}) - ${m.isExempt ? "Isento" : formatCurrency(m.value)}`}
+                                    >
+                                      <strong>{m.role}:</strong> {m.name || "N/D"} {m.isExempt ? "⭐ Isento" : `(${formatCurrency(m.value)})`}
+                                    </span>
+                                  ));
+                                })()}
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              {(cast.faltaMotorista || cast.motorista) && (
+                                <p>🚚 <strong>Motorista:</strong> <span className="font-mono text-xs uppercase text-slate-300 font-bold">{cast.faltaMotorista || cast.motorista}</span></p>
+                              )}
+                              {(cast.faltaAjudantes || cast.ajudantes) && (
+                                <p>👥 <strong>Equipe / Ajudantes:</strong> <span className="text-slate-300 uppercase italic font-medium">{cast.faltaAjudantes || cast.ajudantes}</span></p>
+                              )}
+                            </>
                           )}
                         </div>
                       )}
@@ -6330,10 +6786,11 @@ export default function PendingRequestsTab() {
                         <div className="flex gap-2">
                           <button
                             onClick={() => handleOpenEditFalta(req)}
-                            className="flex-1 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-900/30 text-indigo-400 rounded-lg text-[10px] font-sans font-bold cursor-pointer transition-colors block text-center uppercase"
-                            title="Classificar tipo de erro, motorista, ajudantes e datas"
+                            className="flex-1 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800/60 text-indigo-300 rounded-lg text-[10px] font-sans font-bold cursor-pointer transition-colors flex items-center justify-center gap-1 uppercase"
+                            title="Classificar tipo de erro, motorista, equipe e rateio"
                           >
-                            Classificar Erro
+                            <Users className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Classificar & Rateio</span>
                           </button>
  
                           {/* Low button */}
@@ -6440,6 +6897,17 @@ export default function PendingRequestsTab() {
 
                         {req.statusPromax === "pendente" ? (
                           <div className="flex items-center gap-1.5 flex-grow justify-end">
+                            {/* Classificar & Rateio option */}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditFalta(req)}
+                              className="px-2.5 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 rounded-lg text-[10px] font-sans font-bold cursor-pointer transition-colors flex items-center gap-1 shrink-0"
+                              title="Classificar tipo de erro (Carregamento / Entrega), equipe e rateio"
+                            >
+                              <Users className="w-3.5 h-3.5 text-amber-400" />
+                              <span>Equipe / Rateio</span>
+                            </button>
+
                             {/* Corrigir option */}
                             <button
                               onClick={() => triggerCorrigir(req.id)}
@@ -6472,28 +6940,50 @@ export default function PendingRequestsTab() {
                             <div className="py-1.5 px-3 bg-red-955/10 border border-red-900/20 text-red-400 rounded-lg text-[10px] font-mono shrink-0">
                               Reprovado Definitivo
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenReturnModal(req)}
-                              className="p-1.5 bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/40 hover:border-amber-400 text-amber-400 rounded-lg transition-all cursor-pointer shrink-0 flex items-center justify-center group"
-                              title="Retornar este card para PENDENTE (redefinir data de entrega)"
-                            >
-                              <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditFalta(req)}
+                                className="px-2.5 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 rounded-lg text-[10px] font-bold font-sans flex items-center gap-1 cursor-pointer transition-colors"
+                                title="Editar equipe e rateio no novo modelo"
+                              >
+                                <Users className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Equipe / Rateio</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenReturnModal(req)}
+                                className="p-1.5 bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/40 hover:border-amber-400 text-amber-400 rounded-lg transition-all cursor-pointer shrink-0 flex items-center justify-center group"
+                                title="Retornar este card para PENDENTE (redefinir data de entrega)"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
+                              </button>
+                            </div>
                           </div>
                         ) : req.statusPromax === "corrigir" ? (
                           <div className="flex items-center justify-between gap-2 w-full">
                             <div className="py-1.5 px-3 bg-amber-955/10 border border-amber-900/20 text-amber-405 rounded-lg text-[10px] font-mono shrink-0">
                               Aguardando Correção pelo RN
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenReturnModal(req)}
-                              className="p-1.5 bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/40 hover:border-amber-400 text-amber-400 rounded-lg transition-all cursor-pointer shrink-0 flex items-center justify-center group"
-                              title="Retornar este card para PENDENTE (redefinir data de entrega)"
-                            >
-                              <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditFalta(req)}
+                                className="px-2.5 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 rounded-lg text-[10px] font-bold font-sans flex items-center gap-1 cursor-pointer transition-colors"
+                                title="Editar equipe e rateio no novo modelo"
+                              >
+                                <Users className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Equipe / Rateio</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenReturnModal(req)}
+                                className="p-1.5 bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/40 hover:border-amber-400 text-amber-400 rounded-lg transition-all cursor-pointer shrink-0 flex items-center justify-center group"
+                                title="Retornar este card para PENDENTE (redefinir data de entrega)"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="flex flex-col gap-2 w-full pt-2 border-t border-slate-850/80">
@@ -6518,7 +7008,7 @@ export default function PendingRequestsTab() {
                               )}
                             </div>
 
-                            <div className="flex items-center justify-end gap-2">
+                            <div className="flex items-center justify-end gap-2 flex-wrap">
                               <button
                                 type="button"
                                 onClick={() => handleOpenReturnModal(req)}
@@ -6528,12 +7018,34 @@ export default function PendingRequestsTab() {
                                 <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-90 transition-transform duration-300" />
                               </button>
 
+                              {/* Editar no novo modelo com rateio */}
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditFalta(req)}
+                                className="px-2.5 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 rounded-lg text-[10px] font-bold font-sans flex items-center gap-1 cursor-pointer transition-colors"
+                                title="Editar equipe, motorista, ajudantes e rateio no novo modelo"
+                              >
+                                <Users className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Editar Equipe & Rateio</span>
+                              </button>
+
+                              {/* Emitir / Ver Vale Motorista */}
+                              <button
+                                type="button"
+                                onClick={() => setSelectedPrintDoc({ type: "vale", request: req })}
+                                className="px-2.5 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition-all cursor-pointer shrink-0"
+                                title="Visualizar e imprimir Vale de Cobrança com Rateio da Equipe"
+                              >
+                                <Signature className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Vale Motorista</span>
+                              </button>
+
                               <button
                                 onClick={() => setSelectedPrintDoc({ type: "recibo", request: req })}
-                                className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
+                                className="px-2.5 py-1.5 bg-slate-950 hover:bg-slate-855 border border-slate-800 text-blue-400 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition-all cursor-pointer shrink-0"
                                 title="Gerar Recibo PDV em Contingência para este cadastro aprovado"
                               >
-                                <Printer className="w-3.5 h-3.5 text-amber-400" />
+                                <Printer className="w-3.5 h-3.5 text-blue-400" />
                                 <span>Recibo PDV ⚠️</span>
                               </button>
                             </div>
@@ -7136,277 +7648,502 @@ export default function PendingRequestsTab() {
       {/* SHORTAGE CLASSIFICATION AND DETAILS EDITING SLIDEOVER/MODAL */}
       {editingFalta && (() => {
         return (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-fade-in no-print overflow-y-auto">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl text-left font-sans flex flex-col max-h-[92vh] my-auto overflow-hidden">
+          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-2 sm:p-3 md:p-5 animate-fade-in no-print overflow-y-auto">
+            <div className={`bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl text-left font-sans flex flex-col transition-all duration-300 my-auto overflow-hidden ${
+              isEditFaltaMaximized 
+                ? "w-[99vw] max-w-[1700px] h-[98vh] max-h-[98vh]" 
+                : "w-[96vw] max-w-6xl xl:max-w-7xl max-h-[95vh] h-[93vh]"
+            }`}>
               
-              {/* Fixed Header */}
-              <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-900 rounded-t-2xl">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-                  <Layers className="w-4 h-4 text-indigo-400" />
-                  <span>Classificar e Ajustar Falta Física</span>
-                </h3>
-                <button 
-                  onClick={() => setEditingFalta(null)} 
-                  className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white cursor-pointer transition-colors"
-                  title="Fechar (ESC)"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+              {/* Fixed Header with Maximize Toggle */}
+              <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-900 rounded-t-3xl">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold border border-indigo-500/30 shrink-0">
+                    <Layers className="w-5 h-5 text-indigo-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm sm:text-base font-bold text-white uppercase tracking-wider flex items-center gap-2 flex-wrap">
+                      <span>Classificar e Ajustar Falta Física</span>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10.5px] font-mono bg-indigo-950 border border-indigo-800 text-indigo-300 font-bold">
+                        NF {editingFalta.nf}
+                      </span>
+                      {isEditFaltaMaximized && (
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/10 border border-amber-500/30 text-amber-400 font-bold">
+                          TELA MAXIMIZADA
+                        </span>
+                      )}
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Classifique o tipo de responsabilidade e configure a equipe de responsáveis com rateio automático
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditFaltaMaximized(prev => !prev)}
+                    className="p-2 hover:bg-slate-800 rounded-xl text-slate-400 hover:text-white cursor-pointer transition-colors"
+                    title={isEditFaltaMaximized ? "Restaurar tamanho padrão" : "Maximizar janela (Expandir tela)"}
+                  >
+                    {isEditFaltaMaximized ? <Minimize2 className="w-5 h-5 text-amber-400" /> : <Maximize2 className="w-5 h-5 text-slate-400 hover:text-white" />}
+                  </button>
+                  <button 
+                    onClick={() => setEditingFalta(null)} 
+                    className="p-2 hover:bg-slate-800 rounded-xl text-slate-400 hover:text-white cursor-pointer transition-colors"
+                    title="Fechar (ESC)"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
 
               {/* Scrollable Body with Mouse Wheel Scrollbar */}
-              <div className="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1 custom-scrollbar text-xs">
-                {/* Informative recap */}
-                <div className="bg-slate-950 p-3 rounded-xl border border-slate-850 text-[11px] text-slate-350 grid grid-cols-2 gap-2 font-mono">
-                  <p><strong>Nota Fiscal:</strong> {editingFalta.nf}</p>
-                  <p><strong>Código Client NB:</strong> {editingFalta.nb}</p>
-                  <p><strong>Mapa Carga:</strong> {editingFalta.mapa || "NÃO CONFIGURADO"}</p>
-                  <p><strong>Setor Venda:</strong> {editingFalta.setor}</p>
+              <div className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1 custom-scrollbar text-xs">
+                {/* Informative recap banner */}
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-xs text-slate-300 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 font-mono shadow-inner">
+                  <div>
+                    <span className="text-[10px] text-slate-500 block uppercase font-bold">Nota Fiscal:</span>
+                    <strong className="text-white text-xs">{editingFalta.nf}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block uppercase font-bold">Código Client NB:</span>
+                    <strong className="text-blue-400 text-xs">{editingFalta.nb}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block uppercase font-bold">Mapa Carga:</span>
+                    <strong className="text-amber-400 text-xs">{editingFalta.mapa || "NÃO CONFIGURADO"}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block uppercase font-bold">Setor Venda / Rota:</span>
+                    <strong className="text-emerald-400 text-xs">{editingFalta.setor}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block uppercase font-bold">Valor Ocorrência:</span>
+                    <strong className="text-rose-400 text-xs font-black">{formatCurrency(getRequestValue(editingFalta, promaxRecords))}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block uppercase font-bold">Solicitante:</span>
+                    <strong className="text-indigo-300 text-xs truncate block">{getDisplayCadastroUser(editingFalta, repsList, motoristasList)}</strong>
+                  </div>
                 </div>
 
-                {/* Edit attributes form */}
-                <div className="space-y-3">
-                  {/* 1. Classify err type */}
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">
-                      Classificação do Erro (Responsabilidade):
-                    </label>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setEditFaltaErrorType("carregamento")}
-                        className={`p-2.5 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all flex flex-col items-center justify-center ${
-                          editFaltaErrorType === "carregamento"
-                            ? "bg-blue-900/40 border-blue-500 text-blue-300 ring-1 ring-blue-500/50"
-                            : "bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800 hover:text-slate-300"
-                        }`}
-                      >
-                        <p className="text-xs font-bold">📦 Carregamento</p>
-                        <p className="text-[8.5px] font-medium opacity-80 mt-0.5">Estoque Armazém / Não faturar</p>
-                      </button>
+                {/* 2-Column Responsive Layout for maximum ergonomics */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+                  
+                  {/* Left Column: Classification, Dates, Location, Notes, Photo (5 cols on lg, 4 cols on xl) */}
+                  <div className="lg:col-span-5 xl:col-span-4 space-y-4">
+                    {/* 1. Classify err type */}
+                    <div className="bg-slate-955 p-4 rounded-2xl border border-slate-800 space-y-2.5 shadow-md">
+                      <label className="text-[11px] font-bold text-slate-200 uppercase block font-mono flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>Classificação do Erro (Responsabilidade):</span>
+                      </label>
+                      <div className="grid grid-cols-1 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditFaltaErrorType("carregamento")}
+                          className={`p-3 rounded-xl border text-xs font-bold text-left cursor-pointer transition-all flex items-center justify-between ${
+                            editFaltaErrorType === "carregamento"
+                              ? "bg-blue-900/40 border-blue-500 text-blue-200 ring-2 ring-blue-500/50 shadow-lg shadow-blue-950/40"
+                              : "bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-300"
+                          }`}
+                        >
+                          <div>
+                            <p className="text-xs font-black">📦 Carregamento (Armazém)</p>
+                            <p className="text-[9.5px] font-normal opacity-80 mt-0.5">Estoque Armazém / Não faturar equipe</p>
+                          </div>
+                          {editFaltaErrorType === "carregamento" && <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0" />}
+                        </button>
 
-                      <button
-                        type="button"
-                        onClick={() => setEditFaltaErrorType("entrega")}
-                        className={`p-2.5 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all flex flex-col items-center justify-center ${
-                          editFaltaErrorType === "entrega"
-                            ? "bg-amber-900/40 border-amber-500 text-amber-300 ring-1 ring-amber-500/50"
-                            : "bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800 hover:text-slate-300"
-                        }`}
-                      >
-                        <p className="text-xs font-bold">🚚 Erro de Entrega</p>
-                        <p className="text-[8.5px] font-medium opacity-80 mt-0.5">Rota Logística / Faturar + Vale Crew</p>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditFaltaErrorType("entrega")}
+                          className={`p-3 rounded-xl border text-xs font-bold text-left cursor-pointer transition-all flex items-center justify-between ${
+                            editFaltaErrorType === "entrega"
+                              ? "bg-amber-900/40 border-amber-500 text-amber-200 ring-2 ring-amber-500/50 shadow-lg shadow-amber-950/40"
+                              : "bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-300"
+                          }`}
+                        >
+                          <div>
+                            <p className="text-xs font-black">🚚 Erro de Entrega (Rota)</p>
+                            <p className="text-[9.5px] font-normal opacity-80 mt-0.5">Rota Logística / Faturar e Cobrar Vale Crew</p>
+                          </div>
+                          {editFaltaErrorType === "entrega" && <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0" />}
+                        </button>
 
-                      <button
-                        type="button"
-                        onClick={() => setEditFaltaErrorType("nao_identificado")}
-                        className={`p-2.5 rounded-xl border text-xs font-bold text-center cursor-pointer transition-all flex flex-col items-center justify-center ${
-                          editFaltaErrorType === "nao_identificado" || !editFaltaErrorType
-                            ? "bg-purple-900/40 border-purple-500 text-purple-300 ring-1 ring-purple-500/50"
-                            : "bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800 hover:text-slate-300"
-                        }`}
-                      >
-                        <p className="text-xs font-bold">❓ Não Identificado</p>
-                        <p className="text-[8.5px] font-medium opacity-80 mt-0.5">Sem Culpa Definida / Apurar</p>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditFaltaErrorType("nao_identificado")}
+                          className={`p-3 rounded-xl border text-xs font-bold text-left cursor-pointer transition-all flex items-center justify-between ${
+                            editFaltaErrorType === "nao_identificado" || !editFaltaErrorType
+                              ? "bg-purple-900/40 border-purple-500 text-purple-200 ring-2 ring-purple-500/50 shadow-lg shadow-purple-950/40"
+                              : "bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-300"
+                          }`}
+                        >
+                          <div>
+                            <p className="text-xs font-black">❓ Não Identificado</p>
+                            <p className="text-[9.5px] font-normal opacity-80 mt-0.5">Sem Culpa Definida / Apurar posteriormente</p>
+                          </div>
+                          {(editFaltaErrorType === "nao_identificado" || !editFaltaErrorType) && <CheckCircle2 className="w-4 h-4 text-purple-400 shrink-0" />}
+                        </button>
+                      </div>
                     </div>
-                  </div>
 
-                  {/* 2. Motorista name & CPF */}
-                  <div className="grid grid-cols-3 gap-2.5">
-                    <div className="col-span-2 space-y-1 font-sans font-medium">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Nome do Motorista:</label>
-                      <input
-                        type="text"
-                        list="motoristas-list"
-                        value={editFaltaMotorista}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setEditFaltaMotorista(val);
-                          const match = getCrewDetailByName(val);
-                          if (match) {
-                            setEditFaltaMotoristaCpf(match.cpf);
-                          }
-                        }}
-                        placeholder="Nome completo do condutor responsável"
-                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-sans"
-                      />
-                    </div>
-                    <div className="space-y-1 font-sans">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">CPF Motorista:</label>
-                      <input
-                        type="text"
-                        value={editFaltaMotoristaCpf}
-                        onChange={(e) => setEditFaltaMotoristaCpf(e.target.value)}
-                        placeholder="Ex: 123.456.789-00"
-                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  {/* 3. Ajudante 1 & CPF */}
-                  <div className="grid grid-cols-3 gap-2.5">
-                    <div className="col-span-2 space-y-1 font-sans">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono font-sans font-medium">Nome do Ajudante 1:</label>
-                      <input
-                        type="text"
-                        list="ajudantes-list"
-                        value={editFaltaAjudante1}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setEditFaltaAjudante1(val);
-                          const match = getCrewDetailByName(val);
-                          if (match) {
-                            setEditFaltaAjudante1Cpf(match.cpf);
-                          }
-                        }}
-                        placeholder="Nome do ajudante 1 da rota"
-                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-sans"
-                      />
-                    </div>
-                    <div className="space-y-1 font-sans">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">CPF Ajudante 1:</label>
-                      <input
-                        type="text"
-                        value={editFaltaAjudante1Cpf}
-                        onChange={(e) => setEditFaltaAjudante1Cpf(e.target.value)}
-                        placeholder="Ex: 000.000.000-00"
-                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  {/* 4. Ajudante 2 & CPF */}
-                  <div className="grid grid-cols-3 gap-2.5 font-sans">
-                    <div className="col-span-2 space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono font-sans font-medium">Nome do Ajudante 2 (Opcional):</label>
-                      <input
-                        type="text"
-                        list="ajudantes-list"
-                        value={editFaltaAjudante2}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setEditFaltaAjudante2(val);
-                          const match = getCrewDetailByName(val);
-                          if (match) {
-                            setEditFaltaAjudante2Cpf(match.cpf);
-                          }
-                        }}
-                        placeholder="Nome do ajudante 2 da rota"
-                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-sans"
-                      />
-                    </div>
-                    <div className="space-y-1 font-sans">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">CPF Ajudante 2:</label>
-                      <input
-                        type="text"
-                        value={editFaltaAjudante2Cpf}
-                        onChange={(e) => setEditFaltaAjudante2Cpf(e.target.value)}
-                        placeholder="Ex: 000.000.000-00"
-                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2 text-xs text-white focus:border-blue-500 focus:outline-none font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <datalist id="motoristas-list">
-                    {LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA")).map(crew => (
-                      <option key={crew.nome} value={crew.nome}>CPF: {crew.cpf}</option>
-                    ))}
-                  </datalist>
-                  <datalist id="ajudantes-list">
-                    {LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map(crew => (
-                      <option key={crew.nome} value={crew.nome}>CPF: {crew.cpf}</option>
-                    ))}
-                  </datalist>
-
-                  {/* 4. Dates row */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Data da Anomalia (Mapa):</label>
-                      <input
-                        type="text"
-                        value={editFaltaDataAnomalia}
-                        onChange={(e) => setEditFaltaDataAnomalia(e.target.value)}
-                        placeholder="Ex: 21/06/2026"
-                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Data de Entrega Recibo:</label>
-                      <input
-                        type="text"
-                        value={editFaltaDataEntrega}
-                        onChange={(e) => setEditFaltaDataEntrega(e.target.value)}
-                        placeholder="Ex: 22/06/2026"
-                        className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Municipio / Cidade do PDV (Manual edit) */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Município / Cidade do PDV:</label>
-                    <input
-                      type="text"
-                      value={editFaltaCidade}
-                      onChange={(e) => setEditFaltaCidade(e.target.value)}
-                      placeholder="Digite a cidade manualmente (caso não identificada no banco)"
-                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none uppercase font-bold"
-                    />
-                    <p className="text-[10px] text-slate-500">
-                      O sistema busca a cidade automaticamente no banco importado. Se não identificar, você pode digitar acima.
-                    </p>
-                  </div>
-
-                  {/* 5. Custom observing receipt */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Observações no Recibo / Justificativa:</label>
-                    <textarea
-                      value={editFaltaObservacao}
-                      onChange={(e) => setEditFaltaObservacao(e.target.value)}
-                      placeholder="Opcional. Ex: Entrega realizada com atraso, autorizado pelo supervisor."
-                      rows={2}
-                      className="w-full bg-slate-955 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:border-blue-500 focus:outline-none"
-                    />
-                  </div>
-
-                  {/* 6. Photo / Evidence upload section */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Foto / Evidência da Anomalia:</label>
-                    <div className="flex items-center gap-3 bg-slate-955 border border-slate-800 rounded-lg p-2.5">
-                      {editFaltaPhoto ? (
-                        <img src={editFaltaPhoto} alt="Evidência Anexada" className="w-12 h-12 object-cover rounded-lg border border-slate-700 shrink-0" />
-                      ) : (
-                        <div className="w-12 h-12 bg-slate-900 border border-dashed border-slate-700 rounded-lg flex items-center justify-center text-slate-500 shrink-0">
-                          <Camera className="w-5 h-5 text-amber-500" />
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0 text-left">
-                        <label className="px-3 py-1.5 bg-indigo-950 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 rounded-lg text-[10.5px] font-bold cursor-pointer inline-flex items-center gap-1.5 transition-colors">
-                          <Upload className="w-3.5 h-3.5 text-indigo-400" />
-                          <span>{editFaltaPhoto ? "Substituir Foto" : "Importar Foto / Comprovante"}</span>
+                    {/* Dates & Location */}
+                    <div className="bg-slate-955 p-4 rounded-2xl border border-slate-800 space-y-3 shadow-md">
+                      <span className="text-[11px] font-bold text-slate-300 uppercase block font-mono flex items-center gap-1.5">
+                        <Calendar className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Datas & Localidade:</span>
+                      </span>
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Data da Anomalia:</label>
                           <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) {
-                                const reader = new FileReader();
-                                reader.onload = (evt) => {
-                                  if (evt.target?.result) {
-                                    setEditFaltaPhoto(evt.target.result as string);
-                                  }
-                                };
-                                reader.readAsDataURL(file);
-                              }
-                            }}
+                            type="text"
+                            value={editFaltaDataAnomalia}
+                            onChange={(e) => setEditFaltaDataAnomalia(e.target.value)}
+                            placeholder="Ex: 21/06/2026"
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-amber-400 focus:outline-none"
                           />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Entrega Recibo:</label>
+                          <input
+                            type="text"
+                            value={editFaltaDataEntrega}
+                            onChange={(e) => setEditFaltaDataEntrega(e.target.value)}
+                            placeholder="Ex: 22/06/2026"
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-amber-400 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Municipio */}
+                      <div className="space-y-1 pt-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono flex items-center gap-1">
+                          <MapPin className="w-3 h-3 text-emerald-400" />
+                          <span>Município / Cidade do PDV:</span>
                         </label>
-                        <p className="text-[9.5px] text-slate-500 mt-1 font-sans">
-                          {editFaltaPhoto ? "Foto anexada. Ela será salva no card da anomalia." : "Anexe uma foto do canhoto, avaria ou mapa de carga."}
-                        </p>
+                        <input
+                          type="text"
+                          value={editFaltaCidade}
+                          onChange={(e) => setEditFaltaCidade(e.target.value)}
+                          placeholder="Cidade do PDV"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white uppercase font-bold focus:border-amber-400 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Observações & Foto */}
+                    <div className="bg-slate-955 p-4 rounded-2xl border border-slate-800 space-y-3 shadow-md">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Observações no Recibo / Justificativa:</label>
+                        <textarea
+                          value={editFaltaObservacao}
+                          onChange={(e) => setEditFaltaObservacao(e.target.value)}
+                          placeholder="Opcional. Ex: Entrega realizada com atraso, autorizado pelo supervisor."
+                          rows={2}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-xs text-white focus:border-amber-400 focus:outline-none"
+                        />
+                      </div>
+
+                      {/* Foto / Evidência */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase block font-mono">Evidência / Foto:</label>
+                        <div className="flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-xl p-2.5">
+                          {editFaltaPhoto ? (
+                            <img src={editFaltaPhoto} alt="Evidência" className="w-11 h-11 object-cover rounded-lg border border-slate-700 shrink-0" />
+                          ) : (
+                            <div className="w-11 h-11 bg-slate-950 border border-dashed border-slate-700 rounded-lg flex items-center justify-center text-slate-500 shrink-0">
+                              <Camera className="w-5 h-5 text-amber-500" />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0 text-left">
+                            <label className="px-2.5 py-1 bg-indigo-950 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 rounded-lg text-[10px] font-bold cursor-pointer inline-flex items-center gap-1 transition-colors">
+                              <Upload className="w-3 h-3 text-indigo-400" />
+                              <span>{editFaltaPhoto ? "Trocar Foto" : "Importar Anexo"}</span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    const reader = new FileReader();
+                                    reader.onload = (evt) => {
+                                      if (evt.target?.result) {
+                                        setEditFaltaPhoto(evt.target.result as string);
+                                      }
+                                    };
+                                    reader.readAsDataURL(file);
+                                  }
+                                }}
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column: MAXIMIZED RESPONSIBLE PLACEMENT & RATEIO AREA (7 cols on lg, 8 cols on xl) */}
+                  <div className="lg:col-span-7 xl:col-span-8 space-y-4">
+                    {/* Main Responsible Box */}
+                    <div className="bg-slate-955 p-4 sm:p-6 rounded-3xl border-2 border-slate-800 space-y-5 font-sans text-left shadow-2xl">
+                      
+                      {/* Section Header & Collaborator Quantity Picker */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
+                        <div>
+                          <span className="text-sm sm:text-base font-extrabold text-white uppercase font-mono flex items-center gap-2">
+                            <Users className="w-5 h-5 text-amber-400" />
+                            <span>Colocação de Responsáveis & Rateio ({editFaltaCrew.length})</span>
+                          </span>
+                          <p className="text-xs text-slate-400 font-sans mt-0.5">
+                            Defina os colaboradores responsáveis da rota para cálculo do rateio e emissão dos comprovantes
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {[1, 2, 3, 4].map(num => (
+                            <button
+                              key={`ef_q_${num}`}
+                              type="button"
+                              onClick={() => handleSetEditFaltaCrewQuantity(num)}
+                              className={`px-3.5 py-2 rounded-xl text-xs sm:text-sm font-mono font-bold transition-all cursor-pointer ${
+                                editFaltaCrew.length === num
+                                  ? "bg-amber-500 text-slate-950 shadow-lg ring-2 ring-amber-400 scale-105 font-black"
+                                  : "bg-slate-900 hover:bg-slate-850 text-slate-300 border border-slate-750"
+                              }`}
+                            >
+                              {num} {num === 1 ? "Colaborador" : "Colaboradores"}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => handleSetEditFaltaCrewQuantity(editFaltaCrew.length + 1)}
+                            className="px-3 py-2 bg-slate-900 hover:bg-slate-850 text-amber-400 hover:text-amber-300 border border-dashed border-amber-500/60 rounded-xl text-xs sm:text-sm font-mono font-bold flex items-center gap-1.5 cursor-pointer transition-colors shadow-sm"
+                            title="Adicionar mais um colaborador"
+                          >
+                            <Plus className="w-4 h-4" />
+                            <span>+1</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* LIVE RATEIO PREVIEW BANNER */}
+                      {(() => {
+                        const lackTotalValue = getRequestValue(editingFalta, promaxRecords);
+                        const rateio = calculateValeRateio(
+                          lackTotalValue,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          editFaltaCrew
+                        );
+                        const payingCount = rateio.crew.filter(c => !c.isExempt).length;
+
+                        return (
+                          <div className={`p-4 rounded-2xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs sm:text-sm font-mono shadow-lg ${
+                            rateio.isDriverX 
+                              ? "bg-purple-950/40 border-purple-800 text-purple-200" 
+                              : "bg-slate-900 border-slate-750 text-slate-200"
+                          }`}>
+                            <div className="space-y-1 text-left">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-extrabold uppercase text-amber-400 text-sm sm:text-base">
+                                  Total a Ratear: {formatCurrency(lackTotalValue)}
+                                </span>
+                                <span className="text-xs text-slate-400 font-sans">
+                                  ({rateio.count} envolvido(s) • {payingCount} pagante(s))
+                                </span>
+                              </div>
+                              <p className="text-xs text-slate-300 font-sans">
+                                {rateio.isDriverX
+                                  ? `⭐ Regra Motorista X: Motorista Isento. R$ ${formatCurrency(rateio.individualValue)} para cada ajudante pagante.`
+                                  : `Divisão igualitária de ${formatCurrency(rateio.individualValue)} por colaborador pagante.`}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {rateio.crew.map((member, mIdx) => (
+                                <span 
+                                  key={`ef_rateio_${mIdx}`} 
+                                  className={`px-3 py-1.5 rounded-xl text-xs font-mono border-2 ${
+                                    member.isExempt 
+                                      ? "bg-purple-900/60 border-purple-700 text-purple-300 italic font-bold" 
+                                      : "bg-rose-950/80 border-rose-800 text-rose-300 font-black"
+                                  }`}
+                                >
+                                  {member.role}: {formatCurrency(member.value)}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* MAXIMIZED CREW MEMBERS LIST - SPACIOUS, LARGE INPUTS */}
+                      <div className="space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs text-slate-400 font-mono">
+                          <span className="font-extrabold uppercase text-slate-200 text-xs sm:text-sm flex items-center gap-1.5">
+                            <Users className="w-4 h-4 text-amber-400" />
+                            <span>Campos de Preenchimento dos Responsáveis ({editFaltaCrew.length}):</span>
+                          </span>
+                          <span className="text-[11px] text-slate-400">
+                            Selecione da base oficial Pau Brasil ou digite para atualizar nome e CPF
+                          </span>
+                        </div>
+
+                        {editFaltaCrew.map((member, index) => {
+                          const isDriver = member.role.toLowerCase().includes("motorista");
+                          const isX = isDriverX(member.name) || !!member.isExempt;
+                          const lackTotalValue = getRequestValue(editingFalta, promaxRecords);
+                          const rateio = calculateValeRateio(lackTotalValue, null, null, null, null, null, null, null, editFaltaCrew);
+                          const memberRateioInfo = rateio.crew[index];
+
+                          return (
+                            <div 
+                              key={member.id || `ef_crew_card_${index}`}
+                              className={`p-5 sm:p-6 rounded-3xl border-2 space-y-4 transition-all shadow-xl ${
+                                isX 
+                                  ? "bg-purple-955/30 border-purple-700/80 shadow-purple-950/20" 
+                                  : isDriver 
+                                    ? "bg-slate-950/95 border-amber-500/60 shadow-amber-950/20" 
+                                    : "bg-slate-950/95 border-slate-700 shadow-slate-950/40"
+                              }`}
+                            >
+                              {/* Card Top Row: Index Badge, Role, Quick Select from Database, Exemption checkbox, Delete */}
+                              <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                                <div className="flex items-center gap-2.5 flex-wrap flex-1 min-w-[260px]">
+                                  <span className="font-mono font-black text-amber-300 text-xs sm:text-sm px-3 py-1.5 bg-amber-500/15 border border-amber-500/40 rounded-xl flex items-center gap-1">
+                                    <span>#{index + 1}</span>
+                                  </span>
+                                  
+                                  {/* Role Selector */}
+                                  <select
+                                    value={member.role}
+                                    onChange={(e) => handleUpdateEditFaltaCrewMember(index, "role", e.target.value)}
+                                    className="bg-slate-900 border-2 border-slate-700 hover:border-slate-600 text-white font-mono font-bold text-xs sm:text-sm rounded-xl px-3 h-11 focus:border-amber-500 focus:outline-none cursor-pointer transition-colors shadow-sm"
+                                  >
+                                    <option value="Motorista">🚚 Motorista</option>
+                                    <option value="Ajudante 1">👥 Ajudante 1</option>
+                                    <option value="Ajudante 2">👥 Ajudante 2</option>
+                                    <option value="Ajudante 3">👥 Ajudante 3</option>
+                                    <option value="Ajudante 4">👥 Ajudante 4</option>
+                                    <option value="Ajudante">👥 Ajudante</option>
+                                    <option value="Auxiliar">🤝 Auxiliar</option>
+                                  </select>
+
+                                  {/* Quick select from Pau Brasil team */}
+                                  <div className="flex-1 min-w-[260px] sm:min-w-[320px]">
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (!val) return;
+                                        handleUpdateEditFaltaCrewMember(index, "name", val);
+                                      }}
+                                      className="w-full bg-slate-900 border-2 border-indigo-800/80 hover:border-indigo-500 text-indigo-200 font-bold rounded-xl px-3.5 h-11 text-xs sm:text-sm font-mono focus:border-indigo-400 focus:outline-none cursor-pointer transition-colors shadow-sm"
+                                    >
+                                      <option value="">🔍 Buscar na Base de Colaboradores Pau Brasil...</option>
+                                      <optgroup label="🚚 Motoristas de Distribuição">
+                                        {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA")).map((m, mIdx) => (
+                                          <option key={`ef_m_${m.cpf || m.nome}_${mIdx}`} value={m.nome}>{m.nome} ({m.cargo})</option>
+                                        ))}
+                                      </optgroup>
+                                      <optgroup label="👥 Ajudantes de Distribuição">
+                                        {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map((a, aIdx) => (
+                                          <option key={`ef_a_${a.cpf || a.nome}_${aIdx}`} value={a.nome}>{a.nome} ({a.cargo})</option>
+                                        ))}
+                                      </optgroup>
+                                    </select>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-3 flex-wrap">
+                                  {memberRateioInfo && (
+                                    <span className={`px-3 py-1.5 rounded-xl text-xs sm:text-sm font-mono font-black border-2 ${
+                                      memberRateioInfo.isExempt
+                                        ? "bg-purple-900/60 border-purple-700 text-purple-300 italic"
+                                        : "bg-rose-950/80 border-rose-800 text-rose-300"
+                                    }`}>
+                                      {memberRateioInfo.isExempt ? "⭐ Isento de Cobrança" : `Rateio: ${formatCurrency(memberRateioInfo.value)}`}
+                                    </span>
+                                  )}
+
+                                  <label className="flex items-center gap-2 text-xs sm:text-sm font-mono text-slate-300 cursor-pointer select-none bg-slate-900 px-3.5 py-2 rounded-xl border border-slate-700 hover:border-purple-500 transition-colors">
+                                    <input
+                                      type="checkbox"
+                                      checked={!!member.isExempt}
+                                      onChange={(e) => handleUpdateEditFaltaCrewMember(index, "isExempt", e.target.checked)}
+                                      className="rounded border-slate-700 text-purple-600 focus:ring-purple-500 cursor-pointer w-4 h-4"
+                                    />
+                                    <span className={member.isExempt ? "text-purple-300 font-extrabold" : "text-slate-400"}>Regra Motorista X</span>
+                                  </label>
+
+                                  {editFaltaCrew.length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditFaltaCrew(prev => prev.filter((_, i) => i !== index));
+                                      }}
+                                      className="p-2 text-slate-400 hover:text-rose-400 hover:bg-rose-950/60 rounded-xl transition-colors cursor-pointer border border-slate-800 hover:border-rose-800"
+                                      title="Remover este colaborador"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Card Main Row: Large Name Input & Large CPF Input with clear, prominent labels */}
+                              <div className="grid grid-cols-1 md:grid-cols-12 gap-4 pt-1">
+                                {/* Name input (takes 8 cols on md+) */}
+                                <div className="md:col-span-8 space-y-1.5 text-left">
+                                  <label className="text-xs sm:text-sm font-extrabold text-slate-300 uppercase font-mono flex items-center gap-1.5">
+                                    <User className="w-4 h-4 text-amber-400" />
+                                    <span>Nome Completo do Colaborador (Responsável):</span>
+                                  </label>
+                                  <input
+                                    type="text"
+                                    placeholder="DIGITE O NOME COMPLETO DO MOTORISTA OU AJUDANTE"
+                                    value={member.name}
+                                    onChange={(e) => handleUpdateEditFaltaCrewMember(index, "name", e.target.value)}
+                                    className="w-full bg-slate-900 border-2 border-slate-700 focus:border-amber-400 text-white uppercase font-sans font-black rounded-2xl px-4 h-12 text-sm sm:text-base focus:outline-none transition-all shadow-inner placeholder:text-slate-600 placeholder:font-normal"
+                                  />
+                                </div>
+
+                                {/* CPF input (takes 4 cols on md+) */}
+                                <div className="md:col-span-4 space-y-1.5 text-left">
+                                  <label className="text-xs sm:text-sm font-extrabold text-slate-300 uppercase font-mono flex items-center gap-1.5">
+                                    <FileText className="w-4 h-4 text-amber-400" />
+                                    <span>CPF do Colaborador:</span>
+                                  </label>
+                                  <input
+                                    type="text"
+                                    placeholder="000.000.000-00"
+                                    value={member.cpf}
+                                    onChange={(e) => handleUpdateEditFaltaCrewMember(index, "cpf", e.target.value)}
+                                    className="w-full bg-slate-900 border-2 border-slate-700 focus:border-amber-400 text-amber-300 font-mono font-black rounded-2xl px-4 h-12 text-sm sm:text-base focus:outline-none transition-all shadow-inner placeholder:text-slate-600 placeholder:font-normal"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {/* Large Action to Add Another Member */}
+                        <button
+                          type="button"
+                          onClick={() => handleSetEditFaltaCrewQuantity(editFaltaCrew.length + 1)}
+                          className="w-full py-3.5 bg-slate-900 hover:bg-slate-850 text-amber-400 hover:text-amber-300 border-2 border-dashed border-amber-500/40 hover:border-amber-400 rounded-2xl text-xs sm:text-sm font-mono font-bold flex items-center justify-center gap-2 cursor-pointer transition-all shadow-sm"
+                        >
+                          <Plus className="w-5 h-5" />
+                          <span>Adicionar Outro Colaborador à Equipe</span>
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -7414,21 +8151,32 @@ export default function PendingRequestsTab() {
               </div>
 
               {/* Fixed Footer */}
-              <div className="p-4 sm:p-5 border-t border-slate-800 flex justify-end gap-2.5 shrink-0 bg-slate-900 rounded-b-2xl">
+              <div className="p-4 sm:p-5 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0 bg-slate-900 rounded-b-3xl">
                 <button
                   type="button"
                   onClick={() => setEditingFalta(null)}
-                  className="px-4 py-2 bg-slate-955 hover:bg-slate-850 border border-slate-850 rounded-lg text-xs font-bold text-slate-400 cursor-pointer"
+                  className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs sm:text-sm font-bold text-slate-300 cursor-pointer transition-colors"
                 >
                   Cancelar
                 </button>
-                <button
-                  type="button"
-                  onClick={handleSaveFaltaDetails}
-                  className="px-5 py-2 bg-indigo-650 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold cursor-pointer"
-                >
-                  Salvar Informações
-                </button>
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => handleSaveFaltaDetails(false)}
+                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs sm:text-sm font-bold cursor-pointer transition-colors shadow-lg"
+                  >
+                    Salvar Informações
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSaveFaltaDetails(true)}
+                    className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs sm:text-sm font-mono flex items-center gap-2 cursor-pointer shadow-xl transition-all"
+                    title="Salvar alterações e abrir o Vale Oficial com o rateio para conferência e assinatura"
+                  >
+                    <Signature className="w-4 h-4" />
+                    <span>Salvar e Emitir Vale</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -7501,6 +8249,20 @@ export default function PendingRequestsTab() {
 
         // Helper to retrieve split information for logistics team vouchers (vales)
         const getValeSplitInfo = () => {
+          if (printValeCrew && printValeCrew.length > 0) {
+            return calculateValeRateio(
+              totalPricingValue,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              printValeCrew
+            );
+          }
+
           const driverName = cast.faltaMotorista || "Motorista";
           const driverCpf = cast.faltaMotoristaCpf || "";
           
@@ -7546,7 +8308,7 @@ export default function PendingRequestsTab() {
                 <button
                   onClick={handleSavePrintDocEdits}
                   className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-extrabold cursor-pointer flex items-center gap-1.5 shadow"
-                  title="Salvar edições de peças, unidade ou valores no banco de dados"
+                  title="Salvar edições de peças, unidade, motorista, ajudantes e rateio no banco de dados"
                 >
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
                   <span>Salvar Alterações</span>
@@ -7566,6 +8328,257 @@ export default function PendingRequestsTab() {
                 </button>
               </div>
             </div>
+
+            {/* INTERACTIVE CONTROLS FOR VALE CREW AND RATEIO (HIDDEN DURING PHYSICAL PRINT) */}
+            {isVale && (
+              <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 mb-5 shadow-2xl text-left no-print space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400">
+                      <Users className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-sm text-white font-mono uppercase tracking-wide flex items-center gap-2">
+                        <span>Equipe & Rateio do Vale</span>
+                        <span className="px-2 py-0.5 bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[10px] rounded-full font-sans font-bold">
+                          Configuração Interativa
+                        </span>
+                      </h3>
+                      <p className="text-[11px] text-slate-400 mt-0.5 font-sans">
+                        Selecione a quantidade de colaboradores e defina motoristas e ajudantes responsáveis para gerar automaticamente o rateio e os campos de assinatura na folha.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* QUANTITY OF COLLABORATORS SELECTOR */}
+                <div className="bg-slate-950 p-3.5 sm:p-4 rounded-xl border border-slate-800 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                    <div>
+                      <span className="text-xs font-bold text-slate-200 uppercase font-mono flex items-center gap-1.5">
+                        <Users className="w-3.5 h-3.5 text-amber-400" />
+                        Quantidade de Colaboradores Envolvidos:
+                      </span>
+                      <p className="text-[10px] text-slate-400 font-sans mt-0.5">
+                        Dividir entre condutor e equipe da rota para emissão do termo de débito.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {[1, 2, 3, 4].map(num => (
+                        <button
+                          key={num}
+                          type="button"
+                          onClick={() => handleSetPrintValeCrewQuantity(num)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                            printValeCrew.length === num
+                              ? "bg-amber-500 text-slate-950 shadow-md ring-2 ring-amber-400 scale-105 font-black"
+                              : "bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800"
+                          }`}
+                        >
+                          {num} {num === 1 ? "Colaborador" : "Colaboradores"}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={handleAddPrintValeCrewMember}
+                        className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-amber-400 hover:text-amber-300 border border-dashed border-amber-500/50 rounded-lg text-xs font-mono font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Adicionar mais um colaborador"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>+1</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* LIVE RATEIO SUMMARY BANNER */}
+                  {(() => {
+                    const itemsToRender = printDocItems.length > 0 ? printDocItems : printableItems;
+                    const currentDocTotalVal = itemsToRender.reduce((sum, sub) => {
+                      const itemCode = sub.item || sub.itemCode || "";
+                      const itemQty = Number(sub.quantidade) || 0;
+                      const dbProduct = PRODUCT_DATABASE.find(p => p.codigo === itemCode || p.codigo === itemCode.replace(/^0+/, ""));
+                      const embalagem = dbProduct?.fator && dbProduct.fator > 0 ? dbProduct.fator : (sub.fatorEmbalagem || 12);
+                      const umStr = (sub.unidadeMedida || sub.um || "sku").toLowerCase().trim();
+                      const isUnd = umStr === "und" || umStr === "un" || umStr === "unidade" || umStr === "unidades";
+                      let boxPrice = dbProduct?.valor || 0;
+                      if (!boxPrice || boxPrice <= 0) {
+                        const promaxMatch = promaxRecords.find(r => r.produto === itemCode);
+                        if (promaxMatch?.valorUnitario && promaxMatch.valorUnitario > 0) {
+                          boxPrice = promaxMatch.valorUnitario < 15 ? (promaxMatch.valorUnitario * embalagem) : promaxMatch.valorUnitario;
+                        }
+                      }
+                      if (!boxPrice || boxPrice <= 0) boxPrice = 98.50;
+                      let unitPrice = 0;
+                      if (sub.customUnitPrice && Number(sub.customUnitPrice) > 0) {
+                        const cu = Number(sub.customUnitPrice);
+                        unitPrice = isUnd ? (cu > 15 ? cu / embalagem : cu) : (cu < 15 ? cu * embalagem : cu);
+                      } else {
+                        unitPrice = isUnd ? (boxPrice / embalagem) : boxPrice;
+                      }
+                      return sum + (itemQty * unitPrice);
+                    }, 0);
+
+                    const rateio = calculateValeRateio(currentDocTotalVal, null, null, null, null, null, null, null, printValeCrew.length > 0 ? printValeCrew : null);
+                    const payingCount = rateio.crew.filter(c => !c.isExempt).length;
+
+                    return (
+                      <div className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-mono ${
+                        rateio.isDriverX ? "bg-purple-950/40 border-purple-800/70 text-purple-200" : "bg-slate-900 border-slate-800 text-slate-200"
+                      }`}>
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold uppercase text-amber-400">Total a Ratear: {formatCurrency(currentDocTotalVal)}</span>
+                            <span className="text-[10px] text-slate-400 font-sans">({rateio.count} envolvido(s) • {payingCount} pagante(s))</span>
+                          </div>
+                          <p className="text-[11px] text-slate-300">
+                            {rateio.isDriverX
+                              ? `⭐ Regra Motorista X: Motorista Isento. R$ ${formatCurrency(rateio.individualValue)} para cada ajudante.`
+                              : `Divisão igualitária de ${formatCurrency(rateio.individualValue)} por colaborador pagante.`}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {rateio.crew.map((member, mIdx) => (
+                            <span 
+                              key={mIdx} 
+                              className={`px-2 py-1 rounded-lg text-[10px] border ${
+                                member.isExempt 
+                                  ? "bg-purple-900/60 border-purple-700 text-purple-300 italic" 
+                                  : "bg-rose-950/60 border-rose-800/80 text-rose-300 font-bold"
+                              }`}
+                            >
+                              {member.role}: {formatCurrency(member.value)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* COLLABORATORS LIST AND ROLES */}
+                <div className="space-y-2.5">
+                  <div className="flex justify-between items-center text-[11px] text-slate-400 font-mono">
+                    <span className="font-bold uppercase text-slate-300">Responsáveis Envolvidos ({printValeCrew.length}):</span>
+                    <span>Selecione da base ou digite para atualizar nome e CPF</span>
+                  </div>
+
+                  {printValeCrew.map((member, index) => {
+                    const isDriver = member.role.toLowerCase().includes("motorista");
+                    const isX = isDriverX(member.name) || !!member.isExempt;
+
+                    return (
+                      <div 
+                        key={member.id || index}
+                        className={`p-3 rounded-xl border text-xs space-y-2 transition-all ${
+                          isX 
+                            ? "bg-purple-950/20 border-purple-800/60" 
+                            : isDriver 
+                              ? "bg-slate-950 border-amber-900/50" 
+                              : "bg-slate-950 border-slate-800"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-amber-400 text-xs">
+                              #{index + 1}
+                            </span>
+                            <select
+                              value={member.role}
+                              onChange={(e) => handleUpdatePrintValeCrewMember(index, "role", e.target.value)}
+                              className="bg-slate-900 border border-slate-750 text-white font-mono font-bold text-xs rounded-lg px-2 py-1 focus:border-amber-500 focus:outline-none cursor-pointer"
+                            >
+                              <option value="Motorista">🚚 Motorista</option>
+                              <option value="Ajudante 1">👥 Ajudante 1</option>
+                              <option value="Ajudante 2">👥 Ajudante 2</option>
+                              <option value="Ajudante 3">👥 Ajudante 3</option>
+                              <option value="Ajudante 4">👥 Ajudante 4</option>
+                              <option value="Ajudante">👥 Ajudante</option>
+                              <option value="Auxiliar">🤝 Auxiliar</option>
+                            </select>
+                            {isX && (
+                              <span className="px-2 py-0.5 bg-purple-900/80 border border-purple-700 text-purple-200 text-[9.5px] font-bold rounded font-mono">
+                                ISENTO DE COBRANÇA
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <label className="flex items-center gap-1.5 text-[10.5px] font-mono text-slate-400 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={!!member.isExempt}
+                                onChange={(e) => handleUpdatePrintValeCrewMember(index, "isExempt", e.target.checked)}
+                                className="rounded border-slate-700 text-purple-600 focus:ring-purple-500 cursor-pointer"
+                              />
+                              <span className={member.isExempt ? "text-purple-300 font-bold" : ""}>Isento (Regra Motorista X)</span>
+                            </label>
+                            {printValeCrew.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemovePrintValeCrewMember(index)}
+                                className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition-colors cursor-pointer"
+                                title="Remover este colaborador"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                          {/* Quick Select from Crew database */}
+                          <div className="sm:col-span-4">
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (!val) return;
+                                handleUpdatePrintValeCrewMember(index, "name", val);
+                              }}
+                              className="w-full bg-slate-900 border border-slate-750 text-slate-300 rounded-lg px-2 py-1.5 text-xs font-mono focus:border-amber-500 focus:outline-none cursor-pointer"
+                            >
+                              <option value="">-- Selecionar da Equipe Pau Brasil --</option>
+                              <optgroup label="🚚 Motoristas de Distribuição">
+                                {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("MOTORISTA")).map((m, mIdx) => (
+                                  <option key={`${m.cpf}_${mIdx}`} value={m.nome}>{m.nome}</option>
+                                ))}
+                              </optgroup>
+                              <optgroup label="👥 Ajudantes de Distribuição">
+                                {DEFAULT_LISTA_CREW.filter(c => c.cargo.includes("AJUDANTE")).map((a, aIdx) => (
+                                  <option key={`${a.cpf}_${aIdx}`} value={a.nome}>{a.nome}</option>
+                                ))}
+                              </optgroup>
+                            </select>
+                          </div>
+
+                          {/* Name input */}
+                          <div className="sm:col-span-5">
+                            <input
+                              type="text"
+                              placeholder="NOME COMPLETO DO COLABORADOR"
+                              value={member.name}
+                              onChange={(e) => handleUpdatePrintValeCrewMember(index, "name", e.target.value)}
+                              className="w-full bg-slate-900 border border-slate-750 text-white uppercase font-sans font-bold rounded-lg px-2.5 py-1 text-xs focus:border-amber-500 focus:outline-none"
+                            />
+                          </div>
+
+                          {/* CPF input */}
+                          <div className="sm:col-span-3">
+                            <input
+                              type="text"
+                              placeholder="CPF (000.000.000-00)"
+                              value={member.cpf}
+                              onChange={(e) => handleUpdatePrintValeCrewMember(index, "cpf", e.target.value)}
+                              className="w-full bg-slate-900 border border-slate-750 text-slate-300 font-mono rounded-lg px-2.5 py-1 text-xs focus:border-amber-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* HIGH-FIDELITY PRINT SHEET ROOT TEMPLATE */}
             {/* The class 'print-document-content' combined with the dynamic stylesheet inside hides the rest during physical print */}
@@ -8014,28 +9027,67 @@ export default function PendingRequestsTab() {
               {/* CREW RESPONSIBLE LOGISTICS PERSONNEL SECTION */}
               <div className="border border-gray-300 p-3 rounded mb-3.5 text-xs text-left font-sans bg-slate-50/20">
                 <span className="text-slate-500 uppercase font-bold text-[9px] block border-b border-gray-200 pb-1 mb-2 tracking-wider">Condutores e Auxiliares de Transporte Associados:</span>
-                <div className="grid grid-cols-2 gap-4">
-                  <p className="text-[11px]">🚚 Motorista Operacional: <strong className="text-black uppercase">{cast.faltaMotorista || "NÃO DECLARADO"}</strong> {cast.faltaMotoristaCpf && <span className="font-mono text-[9px] text-slate-600 block">(CPF: {cast.faltaMotoristaCpf})</span>}</p>
-                  <div className="text-[11px]">
-                    <p className="mb-1 text-slate-500">👥 Auxiliares / Ajudantes envolvidos:</p>
-                    {cast.faltaAjudante1 ? (
-                      <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-slate-800 font-sans">
-                        <li>
-                          <strong className="text-black uppercase">{cast.faltaAjudante1}</strong>
-                          {cast.faltaAjudante1Cpf && <span className="font-mono text-[9px] text-slate-600"> (CPF: {cast.faltaAjudante1Cpf})</span>}
-                        </li>
-                        {cast.faltaAjudante2 && (
-                          <li>
-                            <strong className="text-black uppercase">{cast.faltaAjudante2}</strong>
-                            {cast.faltaAjudante2Cpf && <span className="font-mono text-[9px] text-slate-600"> (CPF: {cast.faltaAjudante2Cpf})</span>}
-                          </li>
-                        )}
-                      </ul>
-                    ) : (
-                      <strong className="text-black uppercase">{cast.faltaAjudantes || "NÃO DECLARADOS"}</strong>
-                    )}
+                {isVale && printValeCrew.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-slate-500 text-[10px] font-semibold mb-1">🚚 Condutor(es) Responsável(eis):</p>
+                      {(() => {
+                        const drivers = printValeCrew.filter(c => c.role.toLowerCase().includes("motorista"));
+                        if (drivers.length === 0) return <p className="text-black uppercase font-bold text-[11px]">NÃO DECLARADO</p>;
+                        return (
+                          <ul className="space-y-1 text-[11px]">
+                            {drivers.map((d, dIdx) => (
+                              <li key={dIdx}>
+                                <strong className="text-black uppercase">{d.name || "NÃO DECLARADO"}</strong>
+                                {d.cpf && <span className="font-mono text-[9px] text-slate-600 block">(CPF: {d.cpf})</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        );
+                      })()}
+                    </div>
+                    <div>
+                      <p className="text-slate-500 text-[10px] font-semibold mb-1">👥 Auxiliares / Ajudantes da Rota:</p>
+                      {(() => {
+                        const helpers = printValeCrew.filter(c => !c.role.toLowerCase().includes("motorista"));
+                        if (helpers.length === 0) return <p className="text-slate-600 italic text-[10px]">Sem ajudante adicional</p>;
+                        return (
+                          <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-slate-800 font-sans">
+                            {helpers.map((h, hIdx) => (
+                              <li key={hIdx}>
+                                <strong className="text-black uppercase">{h.name || `${h.role} Não Declarado`}</strong>
+                                {h.cpf && <span className="font-mono text-[9px] text-slate-600"> (CPF: {h.cpf})</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        );
+                      })()}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-4">
+                    <p className="text-[11px]">🚚 Motorista Operacional: <strong className="text-black uppercase">{cast.faltaMotorista || "NÃO DECLARADO"}</strong> {cast.faltaMotoristaCpf && <span className="font-mono text-[9px] text-slate-600 block">(CPF: {cast.faltaMotoristaCpf})</span>}</p>
+                    <div className="text-[11px]">
+                      <p className="mb-1 text-slate-500">👥 Auxiliares / Ajudantes envolvidos:</p>
+                      {cast.faltaAjudante1 ? (
+                        <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-slate-800 font-sans">
+                          <li>
+                            <strong className="text-black uppercase">{cast.faltaAjudante1}</strong>
+                            {cast.faltaAjudante1Cpf && <span className="font-mono text-[9px] text-slate-600"> (CPF: {cast.faltaAjudante1Cpf})</span>}
+                          </li>
+                          {cast.faltaAjudante2 && (
+                            <li>
+                              <strong className="text-black uppercase">{cast.faltaAjudante2}</strong>
+                              {cast.faltaAjudante2Cpf && <span className="font-mono text-[9px] text-slate-600"> (CPF: {cast.faltaAjudante2Cpf})</span>}
+                            </li>
+                          )}
+                        </ul>
+                      ) : (
+                        <strong className="text-black uppercase">{cast.faltaAjudantes || "NÃO DECLARADOS"}</strong>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* DYNAMIC VALUE DIVISION BOX IN CASE OF VALES */}
                 {isVale && (() => {
@@ -8051,34 +9103,24 @@ export default function PendingRequestsTab() {
                     return sum + (itemQty * actualUnitPrice);
                   }, 0);
 
-                  const driverName = cast.faltaMotorista || "Motorista";
-                  const driverCpf = cast.faltaMotoristaCpf || "";
-                  
-                  let h1Name = cast.faltaAjudante1 || "";
-                  let h1Cpf = cast.faltaAjudante1Cpf || "";
-                  let h2Name = cast.faltaAjudante2 || "";
-                  let h2Cpf = cast.faltaAjudante2Cpf || "";
-
-                  if (!h1Name && cast.faltaAjudantes && cast.faltaAjudantes.trim().length > 0 && cast.faltaAjudantes.toUpperCase() !== "NÃO DECLARADOS") {
-                    const parts = cast.faltaAjudantes.split(",").map((s: string) => s.trim());
-                    if (parts[0]) h1Name = parts[0];
-                    if (parts[1]) h2Name = parts[1];
-                  }
-
                   const rateio = calculateValeRateio(
                     currentDocTotalVal,
-                    driverName,
-                    driverCpf,
-                    h1Name,
-                    h1Cpf,
-                    h2Name,
-                    h2Cpf
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    printValeCrew.length > 0 ? printValeCrew : null
                   );
+
+                  const payingCount = rateio.crew.filter(c => !c.isExempt).length;
 
                   return (
                     <div className={`mt-2.5 p-2 rounded text-xs text-left font-sans ${rateio.isDriverX ? "bg-purple-50 border border-purple-200" : "bg-rose-50 border border-rose-200"}`}>
                       <span className={`uppercase font-extrabold text-[8.5px] block border-b pb-0.5 mb-1 tracking-wider ${rateio.isDriverX ? "text-purple-900 border-purple-200" : "text-rose-900 border-rose-200/50"}`}>
-                        📊 RATEIO DE PAGAMENTO DO VALE {rateio.isDriverX ? `(MOTORISTA X ISENTO - DIVIDIDO EM ${rateio.count} AJUDANTE(S)):` : `(DIVISÃO EM ${rateio.count} INTEGRANTE(S)):`}
+                        📊 RATEIO DE PAGAMENTO DO VALE {rateio.isDriverX ? `(MOTORISTA X ISENTO - DIVIDIDO EM ${payingCount} AJUDANTE(S)):` : `(DIVISÃO EM ${rateio.count} INTEGRANTE(S)):`}
                       </span>
                       <div className="space-y-0.5">
                         {rateio.crew.map((member, idx) => (
@@ -8109,20 +9151,41 @@ export default function PendingRequestsTab() {
               <div className="mt-4 pt-3 border-t border-gray-200 font-sans text-xs">
                 {isVale ? (() => {
                   const { count, crew, individualValue } = getValeSplitInfo();
-                  const gridColsClass = crew.length === 1 ? "grid-cols-1" : crew.length === 2 ? "grid-cols-2" : "grid-cols-3";
+                  const gridColsClass = crew.length === 1 
+                    ? "grid-cols-1 max-w-xs mx-auto" 
+                    : crew.length === 2 
+                      ? "grid-cols-2 gap-8" 
+                      : crew.length === 3 
+                        ? "grid-cols-3 gap-5" 
+                        : crew.length === 4 
+                          ? "grid-cols-2 sm:grid-cols-4 gap-4" 
+                          : "grid-cols-3 gap-4";
+
                   return (
                     <div className="space-y-4">
-                      <p className="text-center text-[9.5px] text-slate-600 mb-2 font-semibold">Os assinantes abaixo declaram-se cientes e assumem responsabilidade no acerto operacional:</p>
-                      <div className={`grid ${gridColsClass} gap-6 pt-1 text-center`}>
+                      <p className="text-center text-[9.5px] text-slate-600 mb-2 font-semibold">
+                        Os {crew.length} assinantes abaixo declaram-se cientes e assumem responsabilidade no acerto operacional:
+                      </p>
+                      <div className={`grid ${gridColsClass} pt-1 text-center`}>
                         {crew.map((member, idx) => (
                           <div key={idx} className="space-y-1 font-sans">
                             <div className="border-t border-black w-full my-1"></div>
-                            <p className="font-extrabold uppercase text-black text-[9.5px] leading-tight truncate">{member.name}</p>
-                            <p className="text-slate-500 font-mono text-[7.5px] leading-tight block">CPF: {member.cpf || "_________________"}</p>
-                            <div className="text-[8.5px] text-rose-700 font-bold leading-tight uppercase font-mono mt-0.5">
-                              Pagar: {formatCurrency(individualValue)}
+                            <p className="font-extrabold uppercase text-black text-[9.5px] leading-tight truncate">
+                              {member.name || "NOME NÃO DECLARADO"}
+                            </p>
+                            <p className="text-slate-500 font-mono text-[7.5px] leading-tight block">
+                              CPF: {member.cpf || "_________________"}
+                            </p>
+                            <div className="text-[8.5px] font-bold leading-tight uppercase font-mono mt-0.5">
+                              {member.isExempt ? (
+                                <span className="text-purple-700 italic">ISENTO (R$ 0,00)</span>
+                              ) : (
+                                <span className="text-rose-700">Pagar: {formatCurrency(member.value)} ({member.label})</span>
+                              )}
                             </div>
-                            <p className="text-slate-500 font-sans text-[8px] font-medium">Assinatura do {member.role === "Motorista" ? "Condutor" : member.role}</p>
+                            <p className="text-slate-500 font-sans text-[8px] font-medium">
+                              Assinatura do {member.role.toLowerCase().includes("motorista") ? "Condutor / Motorista" : member.role}
+                            </p>
                           </div>
                         ))}
                       </div>
